@@ -1,209 +1,381 @@
-# Skill 进化研究现状（第一轮）
+# 适合 DSH 的 Skill 进化：面向真实使用的研究判断
 
-> 调研日期：2026-06-01
+> 修订日期：2026-09-25
 >
-> 范围：面向 LLM Agent 的外部、可组合、可版本化程序性知识（skill）如何被发现、生成、修订、评测和发布。这里不把“模型参数继续训练”与“Skill 文件/工作流演化”混为一谈。
+> 本文修订上一版研究结论。DSH 的日常使用面对开放任务、任务分布变化、反馈稀疏和模型行为随机性，因此不把固定 benchmark 当作在线评测体系，也暂时不讨论外部安全问题。研究重点是：如何从真实 DSH 会话中识别可归因的 Skill 问题，形成可复用的改进，且不让 Skill 库在长期使用中失控。
 
-## 结论先行
+## 核心判断
 
-当前研究已经从“让 Agent 记住经验”推进到“自动发现可复用技能”和“用失败轨迹指导技能修订”，但还没有形成一个被广泛接受的生产级闭环标准。研究成果主要集中在三层：
+适合 DSH 的 Skill evolution 不是“每次失败后自动改写 `SKILL.md`”，也不是“为所有 Skill 建一套固定测试集”。它更像一个由真实使用驱动的维护循环：
 
-1. **技能获取**：通过探索、反思、试错和轨迹压缩，把一次或多次任务经验提炼为可复用程序。
-2. **技能选择与对齐**：根据任务相关知识、技能覆盖度和任务对齐度，从技能库检索或组合候选。
-3. **运行时评测**：在有状态工具环境、真实网站或桌面环境中验证工具调用、策略遵循和最终任务结果。
+```text
+真实会话
+  ↓
+观察 Skill 是否被发现、加载、遵循和完成任务
+  ↓
+收集用户纠正、工具结果、测试结果和任务后续信号
+  ↓
+判断问题是否真的属于 Skill
+  ↓
+把重复出现的局部问题整理成实践案例
+  ↓
+生成小范围候选修改或新增 Skill
+  ↓
+用相关历史案例和新近任务做相对比较
+  ↓
+保留决策历史，按需发布、合并、暂停或回退
+```
 
-对 DSH 最关键的判断是：MVP 设计中的“失败案例 → 候选修改 → 三类回归 → 原子发布/回滚”方向是合理的，但还需要补上四个研究层能力：技能边界和触发条件、任务相关知识覆盖、长期遗忘/冲突管理，以及独立于生成器的行为级评测。
+这里的“评测”是动态形成的实践证据，不是一个预先声称覆盖所有任务的固定分数体系。固定案例仍然有用，但只能作为某个 Skill 的局部回归记忆，不能代表 DSH 的全部质量。
 
-## 1. 概念边界
+DSH 最适合研究的对象也不是模型参数，而是 **运行时可加载的外部程序性知识**：Skill 的描述和触发边界、正文中的步骤和判断、引用的资源、与其他 Skill 的关系，以及这些内容在真实任务中的实际作用。
 
-“Skill”在现有文献中不是单一对象，至少有四种形态：
+## 为什么上一版的固定评测思路不适合 DSH
 
-| 形态 | 典型内容 | 进化动作 | 与 DSH 的关系 |
-|---|---|---|---|
-| 程序性提示 | Markdown、规则、步骤、注意事项 | 增删改文本、合并去重 | 当前 `SKILL.md` 的主体 |
-| 轨迹抽象 | 从成功/失败轨迹提取的策略、子目标、经验 | 摘要、泛化、反事实修订 | 需要作为 candidate 的来源 |
-| 可执行技能 | 代码、宏、工具调用序列或环境操作 | 代码合成、修复、回归测试 | 需要更强沙箱和权限隔离 |
-| 记忆/知识条目 | 事实、偏好、任务知识、检索片段 | 写入、检索、遗忘、冲突消解 | 不应全部塞进 `SKILL.md` |
+上一版把 SWE-bench、ToolSandbox、OSWorld 等研究 benchmark 当成了 DSH 的候选评测体系，这个推导过远。
 
-Anthropic 的 Agent Skills 文档把 Skill 定义为包含 instructions、metadata 和可选 resources 的文件系统资源，并强调按需加载的 progressive disclosure。这支持 DSH 将 Skill 视为可发现、可加载的外部工件；但产品文档描述的是运行时架构，不足以证明自动进化有效。
+DSH 的实际任务有几个特点：
 
-## 2. 技能发现与自动生成
+- 用户任务通常没有预先定义的标准答案；
+- 一次会话可能同时加载多个 Skill，Skill 只是影响因素之一；
+- 任务成功经常由工具状态、仓库状态、模型能力和用户临时要求共同决定；
+- 用户反馈可能只表现为一句纠正、一次重新提问或继续修改，而不是明确的 pass/fail；
+- Skill 的价值可能要在几周后的相似任务中才显现；
+- Skill 触发失败、Skill 内容错误和模型没有遵循 Skill 是三种不同问题；
+- 任务分布会变化，固定案例很快会变成历史样本，而不是当前现实的完整代表。
 
-### EXIF：探索优先的技能发现
+因此，DSH 需要记录和比较局部证据，而不是假设存在一个可长期稳定的总分。研究 benchmark 可以用于离线方法比较，不能直接定义 DSH 的产品质量。
 
-[Automated Skill Discovery for Language Agents through Exploration and Iterative Feedback](https://arxiv.org/abs/2506.04287)（2025）提出 EXIF。探索代理 Alice 先与环境交互，生成可行且 grounded 的技能数据，再训练/指导目标代理 Bob；Alice 根据 Bob 的表现识别改进点，反馈到下一轮探索。论文在 WebShop 和 Crafter 上报告了无需人工干预的技能发现和迭代能力提升，并观察到 Alice 与 Bob 使用同一模型也能形成自我演化效果。
+## 2026 年研究带来的新方向
 
-对 DSH 的启示：失败轨迹不能直接等价为 Skill 文本修改。更稳健的链路是“失败诊断 → 需要补足的行为/知识 → 新案例或候选 Skill → 环境执行验证”。DSH 当前 Designer 输入失败案例的设计可以吸收这一点，增加“可行性证据”和“新增训练/评测案例”。
+### AutoSkill：把重复交互变成可复用行为
 
-### AlignEvoSkill：知识覆盖与任务对齐
+[AutoSkill](https://arxiv.org/abs/2603.01145)（2026）把用户反复表达的偏好和要求转化为可编辑、可检索、可版本化的 Skill，并将 Skill 抽取、维护、检索和复用放在同一个生命周期中。它的价值不在于某个固定 benchmark，而在于明确了“交互经验 → 显式行为知识”的转换。
 
-[AlignEvoSkill](https://arxiv.org/abs/2506.23149)（2025，页面显示 2026 修订版）指出，已有技能进化方法可能生成知识不完整或与目标任务无关的 Skill。其方法从失败轨迹识别任务相关知识标签，检索互补的已有技能，生成候选，再用知识覆盖和任务对齐联合筛选；论文在三个 benchmark、四个 LLM backbone 上报告相对非进化基线 34.7% 的提升。
+对 DSH 的启示是：只有当某种要求在多个会话或多个任务中表现出稳定性时，才适合提升为 Skill。单次用户要求更像当前任务上下文，不能自动升级成长期规则。
 
-对 DSH 的启示：当前 MVP 主要以失败案例和成功率做门禁，应该新增两个显式字段：`knowledgeGaps` 和 `taskAlignmentEvidence`。候选 Skill 不能只回答“是否修复了当前失败”，还要回答“覆盖了哪些缺口、是否扩大到无关任务”。
+### SkillHone：持久化决策历史比最终制品更重要
 
-### 从长期学习研究得到的共同模式
+[SkillHone](https://arxiv.org/abs/2606.08671)（2026）指出，持续演化不能只保存最新 Skill 文件，还要保存诊断、候选修改、使用过的证据、被拒绝的方案和最终结果。它把后续改进能否理解过去的决策，作为 Skill 长期维护能力的一部分。
 
-[awesome-lifelong-LLM-agent](https://github.com/qianlima-lab/awesome-lifelong-LLM-agent) 汇总的长期学习研究显示，经验积累通常包含：轨迹记录、经验压缩、经验检索、反思修订、技能库管理和遗忘/冲突处理。当前研究仍缺少统一的“技能版本仓库”抽象，大多以实验框架内的 memory 或 prompt library 存储。
+这非常适合 DSH。一次失败之后，未来的维护者需要知道：当时 Skill 是否真的加载、模型做了什么、用户纠正了什么、尝试过哪些修改、为什么接受或拒绝。Git diff 本身不包含这些原因。
 
-## 3. 反思、试错和经验回放
+### SkillEvo：反馈需要来自多轮交互，而不是一次问答分数
 
-这一类工作提供了 Skill 进化的机制来源，但不一定等价于 Skill 工程：
+[SkillEvo](https://arxiv.org/html/2608.13120)（2026 预印本）强调多轮交互可以逐层暴露单轮问答看不到的问题，并把用户模拟/后续追问从单纯评测终点变成持续反馈来源。它还区分知识缺口、能力限制和评测噪声，避免把所有失败都写回 Skill。
 
-- **Reflexion**：用语言反馈把失败转成可供后续尝试使用的 verbal reinforcement，说明失败总结可以改善后续行为，但反馈条目是否可泛化、何时失效，需要独立验证。
-- **Self-Refine / CRITIC**：让模型生成、批评、修订，说明生成器和评审器分离有价值；但“看起来更好”不等于真实环境成功，因此 DSH 应保留执行型 Evaluator。
-- **Voyager**：在 Minecraft 中积累可执行技能库，并按任务检索技能，说明技能库可以成为长期能力增长的中间层；其环境封闭、奖励明确，迁移到开放软件工程任务仍有差距。
-- **Toolformer / ToolLLM / Gorilla / ToolBench**：说明工具选择、参数生成和工具知识本身可以通过数据和训练改善；这些工作更偏模型能力或工具调用，不直接解决 `SKILL.md` 的版本治理。
-- **ADAS、Agent-Pro、Skill Set Optimization、Trial-and-Error、Contextual Experience Replay、ReasoningBank、SAMULE**：共同趋势是从轨迹中提炼策略模块、上下文经验或可复用程序，并通过后续任务验证收益。它们提示 DSH 需要记录 skill 触发上下文、执行轨迹和失败类型，而不是只记录一次最终成功/失败。
+DSH 不需要照搬它的用户模拟体系，但应借鉴两个判断：
 
-这类工作的共同限制是：经验往往在实验内存中存在，缺少长期版本、回滚、兼容性和权限治理；同时，生成器可能把偶然相关性写进经验。DSH 的 manifest、候选目录和 promote/reject/rollback 是工程化补位。
+1. 任务后续行为比一次最终评分更有信息量；
+2. 进化前必须先判断失败能否由 Skill 修复。
 
-## 4. 评测现状
+### MASkills 和 Library Drift：Skill 库需要归因、合并和退出
 
-### ToolSandbox：有状态和中间里程碑
+[MASkills](https://arxiv.org/abs/2609.02094)（2026）把 Skill 优化拆成 refinement、induction、consolidation 和 pruning，并尝试做 Skill 条件下的 credit assignment。[Library Drift](https://arxiv.org/html/2605.19576v1) 则指出，无限制积累会造成检索稀释和技能库漂移；需要根据实际结果判断某个 Skill 带来帮助、伤害或没有影响。
 
-[ToolSandbox](https://aclanthology.org/2025.findings-naacl.65/)（Findings of NAACL 2025）把评测从无状态、单轮 API 调用扩展到有状态工具执行、隐式状态依赖、用户模拟器和 on-policy 对话，并在中间和最终里程碑进行动态评测。论文指出，状态依赖、规范化和信息不足等任务即使对强模型也有挑战。
+对 DSH 而言，最重要的不是照搬“固定容量上限”，而是避免把“创建过”误认为“有效”。一个长期没有被加载的 Skill、被加载但没有改变行为的 Skill、反复导致用户纠正的 Skill，都应有不同的生命周期状态。
 
-对 DSH 的启示：Skill evaluator 不能只比较最终文本或单个断言。至少应记录工具调用序列、状态变化、中间里程碑、最终结果和策略违规；对于带副作用的工具，应使用可重置环境。
+### SkillsBench：固定 benchmark 的正确用法
 
-### 其他常用基准的定位
+[SkillsBench](https://arxiv.org/abs/2602.12670v1)（2026）显示，人工整理的 Skill 平均能带来收益，但不同领域差异很大，也有任务出现负收益；自生成 Skill 平均没有收益，聚焦的少量模块优于全面文档。
 
-- **ToolBench / ToolLLM**：大规模工具调用和 API 选择/参数生成，适合测试工具知识和调用正确性。
-- **AgentBench**：多环境 Agent 能力评估，适合跨环境比较，但不专门解决 Skill 版本演化。
-- **WebArena**：真实网站环境中的长期任务，适合测试流程性技能和网页交互迁移。
-- **τ-bench**：业务域工具、策略遵循和用户交互，适合检查 Skill 是否遵守组织规则和业务政策。
-- **OSWorld**：桌面环境中的真实操作，适合测试可执行流程和状态恢复。
+这并不意味着 DSH 应在线运行 SkillsBench，而是说明三件事：Skill 的效果高度依赖任务分布；Skill 越长不一定越好；“自动生成了一个看起来合理的 Skill”不是有效性的证据。DSH 应优先做小而具体的 Skill，并观察它在真实任务中的使用和后续影响。
 
-这些 benchmark 共同支持 DSH 的“三类回归案例”设计，但需要把案例元数据细化为任务域、状态依赖、工具权限、成功判据和风险等级。
+## DSH 的真实进化对象
 
-## 5. 安全与失败模式
+从 DSH 现有实现看，Skill 有几个清晰的运行时阶段：
 
-Skill 进化带来的风险比静态提示更复杂：
+1. filesystem provider 从 project、user、custom 等根目录发现 Skill；
+2. registry 合并候选并按 scope、rank 和 provider 解析可见 Skill；
+3. tool-skill 把摘要写入会话 catalog；
+4. 模型通过 `skill` tool 加载正文，或由用户显式调用；
+5. provider watcher 发现文件变化并调用 `invalidate`，catalog 在后续步骤刷新。
 
-1. **错误泛化**：为解决一个任务加入的规则，扩大了误触发范围。
-2. **权限漂移**：候选 Skill 引导模型调用更高权限工具、扩大文件或网络访问范围。
-3. **提示注入持久化**：轨迹中的恶意网页、文档或工具返回值被写入长期 Skill，后续任务重复触发。
-4. **评测污染**：生成器看到评测案例或答案，造成自我验证和门禁绕过。
-5. **版本冲突**：多个 Skill 对同一工具、策略或领域规则给出互相矛盾的指令。
-6. **遗忘与膨胀**：持续追加经验使 Skill 过长，触发成本上升并降低规则可执行性。
+因此，DSH 的 Skill evolution 不应首先改造 registry。更适合的边界是增加一个独立的演化层，观察这些已经存在的事件：
 
-因此，MVP 中“候选目录隔离、Evaluator 与 Designer 分离、禁止自动修改工具权限、保留版本并可回滚”的边界应保留。还应增加：来源内容的可信等级、敏感操作的人工门禁、Skill 触发率和误触发率、候选与评测集的隔离，以及过期/冲突规则的处理。
+- Skill 是否出现在当前 session 的 catalog；
+- 模型是否调用了该 Skill；
+- 实际加载的是哪个 provider、路径和正文版本；
+- 加载后发生了哪些工具调用和文件/仓库变化；
+- 用户是否继续纠正、重做、撤销或追加要求；
+- 任务之后是否产生测试通过、命令成功、代码 diff 或其他可观察结果；
+- Skill 文件是否被修改、catalog 是否 invalidate 和刷新。
 
-## 6. 对现有 MVP 设计的具体修订建议
+Registry 继续回答“当前有哪些 Skill、应该加载哪个版本”；Evolution 层回答“这个 Skill 在哪些任务中产生了什么证据、下一次是否值得修改”。
 
-### 保留的核心设计
+## 适合 DSH 的反馈信号
 
-- Provider 负责发现和加载，Evolution Service 负责质量与生命周期。
-- 失败案例、候选 patch、评测结果和发布事件全部结构化持久化。
-- 原失败、历史成功、边界案例三类回归。
-- 候选 Skill 不覆盖生产版本，发布动作原子化，旧版本可回滚。
+DSH 不应把所有信号压成一个 `successRate`。建议把反馈分成四类，并保留原始证据：
 
-### 建议新增的数据字段
+### 强反馈
+
+可以较有把握地说明行为问题的信号：
+
+- 用户明确说“这一步错了”“应当先做 X”；
+- 用户在同一任务中反复纠正同一条规则；
+- 工具或命令返回失败，且失败步骤与 Skill 明确要求有关；
+- 测试、lint、类型检查或结构化校验失败；
+- 用户撤销了 Skill 引导的修改并给出原因；
+- 同一类任务中出现相同的可定位遗漏。
+
+### 中等反馈
+
+可以用于积累案例，但不足以单独触发自动修改：
+
+- 用户重新描述了相同要求；
+- 模型加载了 Skill 但没有使用关键步骤；
+- 用户在结果后继续补充大量手工操作；
+- 任务完成了，但成本、步骤数或返工明显增加；
+- Skill 被频繁加载，却没有观察到行为差异。
+
+### 弱反馈
+
+只用于检索和分析：
+
+- 模型是否调用了 Skill；
+- Skill 被调用的次数；
+- 会话持续时间和工具调用数量；
+- 用户是否很快结束会话；
+- 单次模型自评或单次 LLM judge 分数。
+
+### 反证和缺失反馈
+
+“没有用户抱怨”不能等价于成功。“Skill 没有被调用”也不能等价于无用，因为可能是 catalog 描述、触发词或模型选择出了问题。DSH 应显式记录 `unknown`、`not-observed` 和 `not-attributable`，不要把缺失信号转成正面奖励。
+
+## Skill 归因比任务评分更重要
+
+真实 DSH 任务中，最难的问题不是算分，而是判断 Skill 是否应该承担责任。建议为每次使用记录一个归因结果：
 
 ```ts
-interface SkillEvolutionEvidence {
-  sourceType: 'trajectory' | 'test' | 'user' | 'review' | 'external'
-  sourceId: string
-  trust: 'low' | 'medium' | 'high'
-  taskDomain?: string
-  stateDependencies?: string[]
-  toolEffects?: 'none' | 'reversible' | 'external-side-effect'
-}
-
-interface SkillCandidateChange {
-  // 现有字段保留
-  knowledgeGaps: string[]
-  taskAlignmentEvidence: string[]
-  triggerChanges: string[]
-  permissionChanges: string[]
-  riskAssessment: string[]
+interface SkillImpactRecord {
+  sessionId: string
+  taskId?: string
+  skillName: string
+  skillVersion?: string
+  visibility: 'catalogued' | 'loaded' | 'user-invoked'
+  impact: 'helped' | 'hurt' | 'neutral' | 'not-attributable' | 'unknown'
+  evidence: Array<{
+    kind: 'user-correction' | 'tool-result' | 'test-result' | 'follow-up' | 'manual-review'
+    summary: string
+    sourceId?: string
+  }>
+  affectedStep?: string
+  confidence: 'low' | 'medium' | 'high'
+  createdAt: string
 }
 ```
 
-### 建议新增的评测指标
+这里的 `impact` 不是模型自己随便填写的标签，而是基于事件和后续行为形成的暂时判断。一个任务失败，可能是：
 
-| 指标 | 目的 |
-|---|---|
-| 原失败修复率 | 验证候选是否解决触发进化的问题 |
-| 历史成功保持率 | 检测回归 |
-| 边界误触发率 | 检测 Skill 适用范围是否扩大 |
-| 工具调用正确率 | 检测工具选择、参数和调用顺序 |
-| 状态恢复率 | 检测有状态环境中的中断恢复 |
-| 知识覆盖率 | 检测候选是否覆盖声明的缺口 |
-| 任务对齐度 | 检测是否加入无关规则 |
-| 权限漂移 | 检测工具、文件、网络权限变化 |
-| token/延迟成本 | 检测 Skill 变长带来的运行时成本 |
+- Skill 没有被发现；
+- Skill 被发现但没有加载；
+- Skill 被加载但触发描述不匹配；
+- Skill 内容遗漏了步骤；
+- 模型没有遵循已有步骤；
+- 工具或环境本身失败；
+- 用户临时改变了目标。
 
-## 7. 工程生态对照
+只有前四类中的部分情况适合进入 Skill 修改；模型能力和外部环境问题应留在诊断记录中。
 
-| 项目/协议 | 生成/演化 | 版本/发布 | 评测与反馈 | 适合借鉴的部分 |
-|---|---|---|---|---|
-| Agent Skills 开放标准 | 规范 Skill 目录、`SKILL.md`、scripts/references/assets 和渐进式披露；不规定自动生成 | 有 metadata，但没有统一的 Skill 版本/注册发布协议 | 提供评测指导，反馈闭环由客户端或外部系统实现 | 可作为跨客户端的制品格式和内容边界 |
-| Anthropic Agent Skills + Skill Creator/API | Skill Creator 覆盖 create/eval/improve/benchmark | 提供 Skill Management CRUD 和版本 API | 当前最接近显式的 create → eval → improve → benchmark → version 生命周期 | 借鉴生命周期接口和版本模型，同时保留 DSH 自己的证据与发布门禁 |
-| DSPy GEPA | 反馈驱动优化 textual instruction/program，维护候选谱系和 Pareto 候选 | 可保存/加载程序并保留 lineage，但不是独立 Skill registry | metric 返回分数与自然语言 feedback，低分轨迹进入反思和候选重评估 | 借鉴候选谱系、自然语言反馈、Pareto 保留和 audit trail |
-| Voyager | 自动生成可执行代码 Skill，验证后写入 skill library | 有技能库积累，缺少生产级版本、回滚和权限治理 | 环境执行反馈驱动代码修订和技能复用 | 借鉴“探索 → 执行验证 → 写入库 → 迁移”的研究闭环 |
-| LangGraph + LangSmith | 编排与观测基础设施，Skill 生成需应用层实现 | checkpointer、prompt/run 管理和数据集可支持版本化 | 线上 trace、人工反馈、在线/离线 evaluator、回归数据集较完整 | 借鉴真实轨迹转回归集、线上评测和持久化状态 |
-| SWE-agent | YAML 配置、prompt、demonstration trajectory 可改变 Agent 行为 | Git/config 可追踪，缺少通用 Skill registry | SWE-bench、轨迹 JSON、工具/测试反馈 | 借鉴工程任务轨迹、可复现 benchmark 和测试验证 |
-| MCP | 不生成 Skill，提供 tools/resources/prompts 的互操作底座 | 协议和服务器有版本/注册机制，非 Skill 生命周期 | 不规定质量评测和反馈回写 | 把工具 schema、版本漂移和权限边界纳入 Skill 依赖记录 |
+## DSH 不需要固定评测体系，而需要动态实践集
 
-综合判断：Anthropic 的生命周期抽象、DSPy GEPA 的反馈优化、Voyager 的执行验证、LangSmith 的 trace/eval 基础设施和 Agent Skills 的可移植制品格式可以组合成 DSH 的参考架构；MCP 更适合作为工具能力底座，而不是 Skill 进化层。
+建议把“评测集”改成三个来源组成的实践集：
 
-## 7. 评测与安全深化
+### 最近案例
 
-### 从终局成功转向可回放的状态评测
+保留最近一段时间真实使用中出现的、与当前 Skill 相关的任务片段。它反映当前任务分布，但容易受短期热点影响。
 
-[SWE-bench](https://arxiv.org/abs/2310.06770) 说明真实仓库中的修改必须通过测试和 patch 验证，不能只由 LLM judge 判断最终文本。[τ-bench](https://arxiv.org/abs/2406.12045) 进一步用 `pass^k` 衡量多次独立运行的可靠性；这意味着 Skill 评测至少要同时报告单次成功率、重复运行稳定性、状态/文件结果和策略遵循。
+### 稳定案例
 
-[ToolSandbox](https://arxiv.org/html/2408.04682v2) 提供了更具体的评测设计：有状态工具、隐式状态依赖、用户模拟器、milestone DAG 和 minefield。对 DSH 而言，正确轨迹不应被固定成唯一的 tool-call 序列；评测应允许多条合法路径，同时明确哪些高风险动作绝不能发生。
+从历史上反复出现、已经确认具有代表性的任务中保留少量案例。它们不是完整 benchmark，而是 Skill 的长期记忆。
 
-[OSWorld](https://arxiv.org/html/2404.07972) 则说明文件、浏览器和 GUI Skill 应在隔离 VM 或可重置快照中测试，并使用任务专属 execution-based evaluator。由此建议 DSH 的 `SkillEvalResult` 增加：中间 milestone、禁行动命中、状态 diff、成本/回合数、重复 rollout 方差和环境版本。
+### 触发案例
 
-### 安全评测必须进入发布门禁
+每次确认某个 Skill 问题后，把原始任务压缩成最小可重放案例。候选修改必须先在这些案例上说明自己解决了什么。
 
-[AgentDojo](https://arxiv.org/html/2406.13352v3) 和 [InjecAgent](https://arxiv.org/html/2403.02691) 表明，网页、文档、邮件和工具返回值中的间接 prompt injection 可以劫持工具调用；技能进化管线如果把这些内容直接写入长期 Skill，就会把一次攻击持久化。安全设计应遵守以下信任层级：系统/开发者规则高于用户目标，高于已审核 Skill 指令，高于外部资料和工具输出。外部内容默认是数据，不能改变权限、系统策略或永久记忆。
+这三类案例都应带时间、Skill 版本、任务上下文和证据来源。实践集不是一次性冻结的：新案例进入，过时案例降权，长期无关案例可以归档，失败案例可重新打开。
 
-发布门禁应同时要求：
+评测结果也不应只有 pass/fail，至少包括：
 
-- 工具、文件、网络和凭证权限不得由候选 Skill 自行扩张；
-- 候选包通过 schema 校验、静态扫描、来源/签名检查和沙箱试运行；
-- 在 benign utility 和 injection regression 两套集合上都不退化；
-- 高影响动作使用 allowlist、二次确认、确定性状态检查和可回滚快照；
-- evaluator 与被测 Agent 的上下文隔离，安全判定不能交给可能被注入的同一个模型。
+- 是否改善触发案例；
+- 是否影响最近案例；
+- 是否改变 Skill 触发频率；
+- 是否引入明显的步骤或 token 成本；
+- 是否让用户纠正减少、增加或没有变化；
+- 证据是否足以支持这次修改。
 
-建议统一记录一条可重放轨迹：`task/user_goal`、`skill_version`、`model`、`tool_schema`、`observation`、`action/tool_call`、`tool_result`、`state_diff`、`milestone/minefield`、`cost/latency`、`termination`、`utility/security_outcome` 和 `failure_taxonomy`。所有轨迹、Skill diff、evaluator 和环境版本都应可 hash 和追溯。
+这些结果用于候选比较和人工审阅，而不是组成一个永远固定的总分。
 
-## 8. 当前研究空白
+## 推荐的进化循环
 
-1. **没有统一的 Skill 表示和生命周期标准**：Markdown Skill、代码技能、memory entry 和 policy module 常被混用。
-2. **缺少长期版本演化 benchmark**：多数实验比较一次性生成前后性能，较少测量多轮演化中的遗忘、冲突、膨胀和回滚。
-3. **从失败到规则的因果链不清晰**：失败轨迹可能由模型、工具、环境状态或任务理解造成，不能简单归因给 Skill。
-4. **评测器可靠性不足**：LLM-as-a-judge 容易与生成器共享偏差，真实执行和结构化检查仍需占主导。
-5. **安全研究与能力研究割裂**：Skill injection、工具权限和持久化记忆污染需要纳入同一条演化流水线。
-6. **生产成本很少被报告**：候选数量、评测调用、延迟、存储增长和人工审查负担经常被忽略。
+### 1. 记录，不立即进化
 
-## 9. 建议的研究路线
+每次会话只记录事实：Skill 的可见性、加载、版本、工具事件、用户后续行为和可观察结果。默认不修改 Skill。
 
-### R0：可观测性和数据协议
+### 2. 建立问题簇
 
-实现 `SkillUsageRecord`、`SkillFailureCase`、`SkillCandidateChange`、`SkillEvalResult`，并从 DSH 现有 session/tool 事件重建一次完整轨迹。先保证每条规则都能回溯到证据。
+把相似的用户纠正、工具失败和后续返工聚在一起。单个模糊反馈只形成待观察问题；重复出现或证据很强的问题才进入候选生成。
 
-### R1：离线候选评测
+### 3. 先做归因
 
-不接自动发布。用人工构造的 API debugging 或 repository maintenance 任务，比较静态 Skill、失败摘要、候选 patch 在三类回归集上的表现，建立成本和质量基线。
+Evolution Designer 需要输出：问题是否属于 Skill、对应的是触发描述、正文步骤、参考资料还是 Skill 拆分问题。如果归因不确定，保留诊断，不生成自动 patch。
 
-### R2：知识缺口与触发边界
+### 4. 生成最小变化
 
-在失败聚类后抽取知识缺口、任务对齐证据和触发条件变化，验证加入这些字段是否减少无关 Skill 和误触发。
+候选修改优先是局部补充、删减、重排或拆分。禁止把完整轨迹倾倒进 `SKILL.md`。候选应说明：解决哪些案例、依赖哪些证据、预期改变什么行为、可能影响哪些已有用法。
 
-### R3：在线但受控的闭环
+### 5. 做相对回放
 
-允许自动生成 candidate，仍要求门禁和人工审核才能 promote。加入小流量 shadow evaluation、版本回滚和 catalog invalidate，观测真实会话中的收益、回归和成本。
+不要求候选通过一个固定世界的全部测试。只做与本次修改有关的实践集回放：触发案例、相邻历史案例、最近案例和人工挑选的反例。比较新旧版本差异，并保留原始结果。
 
-### R4：长期演化实验
+### 6. 形成决策历史
 
-运行多轮任务流，专门测量 Skill 膨胀、冲突、遗忘、版本选择和失败复发。把结果沉淀成 DSH Skill Evolution Benchmark。
+每次候选都记录 `diagnosis → patch → evidence → decision`。被拒绝的 patch 也要记录，否则下一轮会重复走同一条路。
 
-## 10. 第一轮结论
+### 7. 小范围发布和观察
 
-研究现状支持把 Skill 当作 Agent 的外部程序性基础设施来管理，也支持从探索和失败轨迹中自动生成候选能力；但现有工作大多证明“某种经验积累方法能提高特定 benchmark 表现”，还没有证明“任意生产 Skill 可以安全地自我修改”。
+对于证据有限的候选，先进入显式加载或低优先级的观察状态；只有在后续真实任务中再次得到支持，才提升为默认 Skill。DSH 已有 provider rank、scope 和 catalog invalidate，可以承载这种分层发布，而不必把所有候选都放入默认 catalog。
 
-因此，`dsh-skill-evo` 的研究价值不在于再做一个自动写提示词的 Designer，而在于把以下问题做成可复现实验：什么证据足以触发演化、候选如何证明解决了失败、怎样检测边界回归、如何限制权限漂移，以及长期多轮演化后系统是否仍然可解释、可回滚、可维护。
+### 8. 合并、拆分和退出
+
+Skill 长期无加载、无明显影响、与另一个 Skill 高度重叠或持续导致纠正时，应进入 `dormant`、`merged` 或 `retired` 状态。Skill evolution 的结果不只是 Skill 越来越多，也包括变短、合并和退出。
+
+## 推荐数据模型
+
+```ts
+interface SkillUseObservation {
+  id: string
+  sessionId: string
+  taskId?: string
+  skillName: string
+  skillVersion?: string
+  catalogued: boolean
+  loaded: boolean
+  invokedBy: 'model' | 'user' | 'none'
+  taskContext: string
+  toolEventIds: string[]
+  followUpEventIds: string[]
+  outcome: 'completed' | 'corrected' | 'abandoned' | 'unknown'
+  createdAt: string
+}
+
+interface SkillPracticeCase {
+  id: string
+  skillName: string
+  sourceObservationIds: string[]
+  taskPattern: string
+  initialContext: string
+  expectedEvidence: string[]
+  status: 'active' | 'watching' | 'archived'
+  lastObservedAt: string
+}
+
+interface SkillEvolutionDecision {
+  id: string
+  skillName: string
+  baseVersion: string
+  diagnosis: string
+  attribution: 'trigger' | 'content' | 'reference' | 'composition' | 'not-skill' | 'uncertain'
+  addressedCaseIds: string[]
+  patch: string
+  evidenceIds: string[]
+  decision: 'accepted' | 'rejected' | 'deferred' | 'needs-observation'
+  outcomeSummary?: string
+  createdAt: string
+}
+```
+
+与上一版相比，关键变化是：
+
+- 不把 `successRate` 作为核心字段；
+- 把 catalogued、loaded、invoked 分开；
+- 把任务结果和 Skill 归因分开；
+- 把实践案例视为动态资产；
+- 把 rejected 和 deferred 决策持久化；
+- 把“是否值得继续观察”作为正式状态。
+
+## 对 DSH 架构的具体建议
+
+### 第一阶段：只做观察层
+
+新增独立的 `dsh-skill-evolution` 插件，订阅现有 session、tool、filesystem 和 agent 事件，先生成 JSONL 观察记录。不要修改 agent loop，也不要让它自动编辑生产 Skill。
+
+这一阶段的验收不是“自动改进成功率”，而是能回答：
+
+- 某个 Skill 什么时候进入 catalog；
+- 模型什么时候真正加载它；
+- 加载后执行了哪些相关动作；
+- 用户后续是否纠正或继续追问；
+- 这个观察是否足以形成一个实践案例。
+
+### 第二阶段：人工确认的问题簇
+
+提供按 Skill、版本、任务模式、影响归因和时间查询的视图。人工确认问题簇后，再调用 Designer 生成 candidate。这样可以先验证归因和数据模型，避免一开始就把模型生成错误固化进 Skill。
+
+### 第三阶段：候选回放与决策历史
+
+实现 practice case 的最小回放协议，保存新旧 Skill 的行为证据和决策历史。回放器可以执行命令、测试或重放工具交互，但它服务于当前候选的相对比较，不承担覆盖所有 DSH 任务的职责。
+
+### 第四阶段：观察式发布
+
+候选先以不改变默认行为的方式加载或由用户显式调用，收集真实使用证据。经过多个相关案例支持后，再更新生产路径并触发 filesystem provider 的 invalidate。回滚使用版本指针或恢复上一份内容，不删除决策历史。
+
+## 运行节奏：进化不是每次会话里的副作用
+
+DSH 的在线请求路径应只负责记录观察，不应在用户任务中同步改写稳定 Skill。适合的节奏是：
+
+| 节奏 | 允许动作 | 目的 |
+|---|---|---|
+| 实时/日内 | 记录 catalog 命中、加载、使用、后续反馈；生成待观察问题 | 不改变当前任务的行为 |
+| 每日或每两日 | 合并问题簇，生成 proposal，做 schema、依赖和相关实践集回放 | 批量减少噪声和重复修改 |
+| 每周 | 对少量候选做按任务簇的 shadow/canary，保留旧版本对照 | 观察真实分布中的相对收益 |
+| 每月或季度 | 合并、拆分、暂停、归档 Skill；检查目录、版本和维护成本 | 管理 Skill 组合而不是只增加 Skill 数量 |
+
+这里的 shadow/canary 不需要引入一个统一总分。候选版本只需在与其修改意图相关的任务簇上，与旧版本比较，并满足最小实际改进幅度；如果样本不足，就保持 `needs-observation`，不要强行发布。
+
+建议按时间窗口和任务簇切分证据：最近案例反映当前分布，稳定案例保留长期行为，触发案例解释本次修改。报告时保留“不可判定”桶，并区分 exposure：未进入 catalog、进入但未加载、加载但未执行、执行后未产生影响，这些不能混成 Skill 内容失败。
+
+## 进化操作的优先级
+
+按对真实系统的可解释性和可回退性排序，优先做：
+
+1. 修正 `description`、`whenToUse`、标签、适用范围和依赖关系；
+2. 补充前置条件、失败处理、输出格式和少量示例；
+3. 合并重复内容，减少过长 Skill 和无效引用；
+4. 在长期证据支持后拆分 Skill，或把一个 Skill 的部分内容移到引用资源；
+5. 最后才做跨 Skill 组合、路由策略和自动淘汰。
+
+这一区分很重要：如果 Skill 从未被加载，先修 catalog 描述；如果加载后用户仍然反复纠正步骤，才考虑正文；如果多个 Skill 同时被加载且影响无法区分，先改善边界和组合关系，不能直接改写所有参与过的 Skill。
+
+
+- 每次失败都自动追加一段经验到 `SKILL.md`；
+- 用一次任务成功直接奖励所有参与过的 Skill；
+- 用单一总分决定 Skill 是否发布；
+- 把固定 benchmark 的成绩当成真实用户收益；
+- 只保存最新 Skill，不保存被拒绝的修改和证据；
+- 把长期偏好、一次性任务上下文、事实记忆和操作流程全部混成一个 Skill；
+- 用 Skill 的加载次数代替 Skill 的实际影响；
+- 让 Designer 同时负责归因、生成、评测和发布决策。
+
+## 当前最值得研究的问题
+
+DSH 的研究重点应从“能不能自动写出更好的 Skill”转成以下问题：
+
+1. 在没有明确评分的真实会话中，哪些行为信号足以说明 Skill 有问题？
+2. 如何区分触发失败、Skill 内容失败、模型未遵循和环境失败？
+3. 多个 Skill 同时加载时，如何做局部归因？
+4. 什么时候一次反馈已经足够，什么时候必须等待重复案例？
+5. 如何从真实任务提取最小实践案例，而不是保存完整轨迹？
+6. 如何让实践集随任务分布变化而更新、降权和归档？
+7. Skill 变长、变多之后，何时应拆分、合并或退出？
+8. 如何让后续 Designer 理解以前为什么接受或拒绝某个修改？
+9. Skill evolution 如何帮助 catalog 的触发描述，而不只修改正文？
+10. 用户偏好、团队规范和领域流程应如何分层，避免不同来源互相覆盖？
+
+## 结论
+
+适合 DSH 的 Skill 进化是 **真实会话驱动、证据逐步积累、问题先归因、候选小步修改、动态实践集回放、决策历史持久化、观察式发布** 的维护系统。
+
+它的基本单位不是一个 benchmark 分数，而是一条可追溯的实践证据：某个 Skill 在某类任务中被发现、被加载、影响了什么行为、用户或工具给出了什么后续信号，以及这个信号是否足以支持修改。
+
+DSH 当前的 Skill registry、filesystem provider、catalog loader 和 invalidate 机制已经提供了运行时底座。下一步最合理的工作不是先造 Designer，而是先把“可见 → 加载 → 使用 → 后续反馈 → 归因 → 实践案例”这条观察链记录完整。只有这条链成立，后面的自动进化才有研究意义。

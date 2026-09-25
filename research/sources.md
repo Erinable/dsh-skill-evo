@@ -64,7 +64,11 @@
 | OpenAI Operator System Card | 2025 | 浏览器/电脑 Agent 的 prompt injection 和动作风险 | https://openai.com/index/operator-system-card/ |
 | Anthropic computer-use best practices | 2024 | 电脑操作 Agent 的 VM 隔离、数据和动作风险 | https://github.com/anthropics/claude-quickstarts/blob/main/computer-use-best-practices/README.md |
 
-## 解释口径
+| AutoSkill: Experience-Driven Lifelong Learning via Skill Self-Evolution | 2026 | 从交互经验抽取、维护、检索和版本化 Skill | https://arxiv.org/abs/2603.01145 |
+| SkillsBench | 2026 | 比较无 Skill、人工整理 Skill 和自生成 Skill 的任务效果 | https://arxiv.org/abs/2602.12670v1 |
+| SkillHone: A Harness for Continual Agent Skill Evolution Through Persistent Decision History | 2026 | 持久化诊断、候选修改、评测证据和决策历史 | https://arxiv.org/abs/2606.08671 |
+| SkillEvo: Self-Renewing Evolution Gradients from Multi-Turn Interaction Feedback | 2026 预印本 | 用多轮交互反馈持续暴露问题并约束 Skill 演化 | https://arxiv.org/html/2608.13120 |
+| MASkills: Continual Skills Optimization for Multi-Agent LLM Systems | 2026 | Skill 条件归因、精炼、归纳、合并和剪枝 | https://arxiv.org/abs/2609.02094 |
 
 - “Skill evolution”在不同工作中可能指：技能发现、技能文本/程序合成、从失败轨迹修订技能、长期记忆积累，或模型参数层面的持续学习。本项目优先研究可版本化的外部程序性知识。
 - 官方产品文档适合说明运行时架构和工程约束，论文与 benchmark 适合支撑算法和评测结论；两类证据不能互相替代。
