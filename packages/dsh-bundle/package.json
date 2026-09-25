@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/*.spec.mjs"
+  },
   "files": ["index.js", "cordis.patch.yml"],
   "license": "MIT",
   "dsh": {
