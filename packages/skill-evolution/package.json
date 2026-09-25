@@ -5,6 +5,9 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "bin": {
+    "dsh-skill-evolution": "bin/dsh-skill-evolution.mjs"
+  },
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -13,7 +16,7 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
-  "files": ["lib"],
+  "files": ["lib", "bin"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run tests"

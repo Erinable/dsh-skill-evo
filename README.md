@@ -13,6 +13,8 @@
 - 已实现完整演化核心包（观察、Experience、候选、评测、发布、回滚和 portfolio 维护）：[packages/skill-evolution/README.md](./packages/skill-evolution/README.md)。
 - 已实现 DSH 运行时事实适配器：[packages/dsh-adapter/README.md](./packages/dsh-adapter/README.md)。
 - 已实现 DSH session 事件到 catalog、Skill load、工具结果和用户 follow-up 观察的默认映射：[packages/dsh-bundle/README.md](./packages/dsh-bundle/README.md)。
+- 已提供维护入口：`dsh-skill-evolution` CLI、`/skill-evolution` DSH 命令、Markdown proposal 报告、显式反馈和运营 metrics。
+- CLI 还提供 `repair`、`rotate` 和 projection worker；proposal 发布要求 accepted 审阅，评测策略、反馈归因和 JSONL 长期运行边界均可配置或审计。
 - 研究现状调研结果见 [docs/research-landscape-zh.md](./docs/research-landscape-zh.md)。
 - 研究来源索引见 [research/sources.md](./research/sources.md)。
 

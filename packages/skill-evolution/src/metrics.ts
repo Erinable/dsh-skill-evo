@@ -1,0 +1,84 @@
+import type { DecisionRecord, RuntimeObservation, SkillProposal } from './types.js'
+
+export interface SkillUsageMetric {
+  readonly skillName: string
+  readonly exposed: number
+  readonly loadRequested: number
+  readonly loadSucceeded: number
+  readonly loadFailed: number
+  readonly followUps: number
+  readonly exposureToLoadRate: number
+  readonly loadFailureRate: number
+  readonly followUpRate: number
+}
+
+export interface EvolutionMetrics {
+  readonly observations: number
+  readonly sessions: number
+  readonly skills: readonly SkillUsageMetric[]
+  readonly proposals: { readonly total: number; readonly promoted: number; readonly rejected: number; readonly rolledBack: number }
+  readonly contextCost: number
+}
+
+/** Aggregate exportable operational metrics without assigning causal credit. */
+export function aggregateMetrics(
+  events: readonly RuntimeObservation[],
+  proposals: readonly SkillProposal[] = [],
+  decisions: readonly DecisionRecord[] = [],
+): EvolutionMetrics {
+  const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string> }>()
+  const sessions = new Set<string>()
+  let contextCost = 0
+  for (const event of events) {
+    if (event.sessionId !== undefined) sessions.add(event.sessionId)
+    const name = event.skill?.name
+    if (name === undefined) continue
+    const metric = bySkill.get(name) ?? { exposed: new Set(), requested: new Set(), succeeded: new Set(), failed: new Set(), followUps: new Set() }
+    if (event.sessionId !== undefined) {
+      if (event.kind === 'catalog-visible') metric.exposed.add(event.sessionId)
+      if (event.kind === 'skill-load-requested') metric.requested.add(event.sessionId)
+      if (event.kind === 'skill-loaded') metric.succeeded.add(event.sessionId)
+      if (event.kind === 'skill-load-failed') metric.failed.add(event.sessionId)
+      if (event.kind === 'user-follow-up') metric.followUps.add(event.sessionId)
+    }
+    const tokens = event.payload.inputTokens
+    if (typeof tokens === 'number' && Number.isFinite(tokens)) contextCost += tokens
+    bySkill.set(name, metric)
+  }
+  const skills = [...bySkill.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([skillName, metric]) => ({
+    skillName,
+    exposed: metric.exposed.size,
+    loadRequested: metric.requested.size,
+    loadSucceeded: metric.succeeded.size,
+    loadFailed: metric.failed.size,
+    followUps: metric.followUps.size,
+    exposureToLoadRate: rate(metric.requested.size, metric.exposed.size),
+    loadFailureRate: rate(metric.failed.size, metric.requested.size),
+    followUpRate: rate(metric.followUps.size, metric.succeeded.size),
+  }))
+  const latestProposals = new Map<string, SkillProposal>()
+  for (const proposal of proposals) latestProposals.set(proposalRootId(proposal.id), proposal)
+  const promoted = new Set(decisions.filter(decision => decision.action === 'promoted').map(decision => decision.proposalId ?? decision.id))
+  const rejected = new Set(decisions.filter(decision => decision.action === 'rejected').map(decision => decision.proposalId ?? decision.id))
+  const rolledBack = new Set(decisions.filter(decision => decision.action === 'rollback' || decision.action === 'reverted').map(decision => decision.proposalId ?? decision.id))
+  return {
+    observations: events.length,
+    sessions: sessions.size,
+    skills,
+    proposals: {
+      total: latestProposals.size,
+      promoted: promoted.size,
+      rejected: rejected.size,
+      rolledBack: rolledBack.size,
+    },
+    contextCost,
+  }
+}
+
+function proposalRootId(id: string): string {
+  return id.replace(/(?::(?:evaluating|evaluated|accepted|promoted|rolled-back|replayed|observed|rejected|deferred))+$/, '')
+}
+
+function rate(numerator: number, denominator: number): number {
+  return denominator === 0 ? 0 : Number((numerator / denominator).toFixed(4))
+}

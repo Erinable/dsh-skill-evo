@@ -1,2 +1,5 @@
 export * from './adapter.js'
+export * from './evaluator.js'
+export * from './reference-executor.js'
+export * from './fake-executor.js'
 export * from './types.js'

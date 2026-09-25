@@ -86,6 +86,21 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
 
   const cases: SkillFailureCase[] = []
   for (const event of events) {
+    if (event.kind === 'user-follow-up' && event.payload.explicit === true && event.skill !== undefined) {
+      const feedbackKind = event.payload.feedbackKind
+      if (feedbackKind === 'satisfied') continue
+      cases.push({
+        id: `failure:${event.id}`,
+        skillName: event.skill.name,
+        task: taskText(event),
+        failure: textPayload(event) ?? `Explicit feedback: ${String(feedbackKind ?? 'other')}`,
+        evidenceEventIds: [event.id],
+        severity: feedbackKind === 'incorrect' ? 'high' : feedbackKind === 'dissatisfied' || feedbackKind === 'retry' ? 'medium' : 'low',
+        createdAt: event.occurredAt,
+        status: 'open',
+      })
+      continue
+    }
     if (event.kind === 'skill-load-failed' && event.skill !== undefined) {
       cases.push({
         id: `failure:${event.id}`,
@@ -221,12 +236,19 @@ function outcomeFor(events: readonly RuntimeObservation[]): ExperienceOutcome {
 }
 
 function attributionFor(events: readonly RuntimeObservation[]): Attribution {
+  const override = events.find(event => isAttribution(event.payload.attributionOverride))?.payload.attributionOverride
+  if (isAttribution(override)) return override
   if (events.some(event => event.kind === 'skill-load-failed')) return 'composition'
   if (events.some(event => event.kind === 'user-follow-up')
     && new Set(events.flatMap(event => event.skill?.name === undefined ? [] : [event.skill.name])).size > 1) return 'not-attributable'
   if (events.every(event => event.skill === undefined)) return 'not-attributable'
   if (events.some(event => event.kind === 'user-follow-up')) return 'unknown'
   return 'unknown'
+}
+
+function isAttribution(value: unknown): value is Attribution {
+  return value === 'routing' || value === 'content' || value === 'composition' || value === 'model'
+    || value === 'tool' || value === 'task-change' || value === 'not-attributable' || value === 'unknown'
 }
 
 function confidenceFor(events: readonly RuntimeObservation[]): number {

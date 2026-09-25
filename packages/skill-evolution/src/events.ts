@@ -6,6 +6,14 @@ export function createContentHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
 }
 
+/** Remove common credentials before user/tool text enters durable evidence. */
+export function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '[REDACTED_AUTH]')
+    .replace(/\b(password|passwd|token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+}
+
 /** Build a runtime observation while enforcing the fixed schema version. */
 export function createObservation(
   input: Omit<RuntimeObservation, 'schemaVersion'>,

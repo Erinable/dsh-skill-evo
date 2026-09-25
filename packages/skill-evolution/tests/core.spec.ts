@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   JsonlEventStore,
   StaleAdoptionBaseError,
@@ -12,9 +15,12 @@ import {
   type AdoptionCandidate,
   type RuntimeObservation,
   type SkillRef,
+  repairJsonlFile,
+  rotateJsonl,
 } from '../src/index.js'
 
 const dirs: string[] = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true })))
@@ -95,6 +101,54 @@ describe('JsonlEventStore', () => {
       store.append(observation('ordered-3', 'agent-step')),
     ])
     expect((await store.readAll()).map(item => item.id)).toEqual(['ordered-1', 'ordered-2', 'ordered-3'])
+  })
+
+  it('deduplicates same-ID appends from separate Node processes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-process-lock-'))
+    dirs.push(dir)
+    const path = join(dir, 'events.jsonl')
+    const modulePath = new URL('../lib/index.js', import.meta.url).pathname
+    const script = `import { JsonlEventStore } from ${JSON.stringify(modulePath)}; const store = new JsonlEventStore(process.argv[1]); await store.append(${JSON.stringify(observation('cross-process', 'agent-step'))})`
+    await Promise.all([
+      execFileAsync(process.execPath, ['--input-type=module', '-e', script, path]),
+      execFileAsync(process.execPath, ['--input-type=module', '-e', script, path]),
+    ])
+    expect(await new JsonlEventStore(path).readAll()).toHaveLength(1)
+  })
+
+  it('repairs duplicate, invalid, and unterminated JSONL records', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-'))
+    dirs.push(dir)
+    const path = join(dir, 'events.jsonl')
+    const event = observation('repair-1', 'agent-step')
+    await writeFile(path, `${JSON.stringify(event)}\n${JSON.stringify(event)}\nnot-json`, 'utf8')
+    const result = await repairJsonlFile(path)
+    expect(result).toMatchObject({ validRecords: 1, removedDuplicates: 1, removedInvalidLines: 1 })
+    expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({ id: 'repair-1' })
+    expect(result.invalidQuarantine).toBeDefined()
+  })
+
+  it('reclaims a dead file lock before repairing JSONL', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lock-repair-'))
+    dirs.push(dir)
+    const path = join(dir, 'events.jsonl')
+    await writeFile(path, `${JSON.stringify(observation('locked', 'agent-step'))}\n`, 'utf8')
+    await writeFile(`${path}.lock`, JSON.stringify({ pid: 999999, hostname: hostname(), createdAt: new Date().toISOString() }), 'utf8')
+    await expect(repairJsonlFile(path)).resolves.toMatchObject({ validRecords: 1 })
+  })
+
+  it('rotates only archives belonging to the selected JSONL file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-rotate-'))
+    dirs.push(dir)
+    const observations = join(dir, 'observations.jsonl')
+    const feedback = join(dir, 'feedback.jsonl')
+    await writeFile(observations, 'x'.repeat(20), 'utf8')
+    await mkdir(join(dir, 'archive'), { recursive: true })
+    await writeFile(join(dir, 'archive', 'feedback.jsonl.old.jsonl'), 'feedback', 'utf8')
+    await writeFile(feedback, 'feedback', 'utf8')
+    const result = await rotateJsonl(observations, { maxBytes: 1, retentionDays: 30 })
+    expect(result.rotated).toBeDefined()
+    expect(await readFile(join(dir, 'archive', 'feedback.jsonl.old.jsonl'), 'utf8')).toBe('feedback')
   })
 })
 

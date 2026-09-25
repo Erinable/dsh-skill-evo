@@ -49,5 +49,30 @@ Phase 5 APIs:
   dormant/retired signals, reversible portfolio edits, and durable curator
   decisions.
 
+Operational reporting:
+
+- `aggregateMetrics` and `EvolutionService.metrics()` export exposure, load,
+  failure, follow-up, proposal, rollback, and context-cost metrics.
+- The `dsh-skill-evolution` binary provides maintenance commands and writes
+  Markdown proposal artifacts under `.skill-evolution/proposals/` by default.
+- `repair` validates JSONL IDs, quarantines malformed lines, rebuilds the
+  projection checkpoint, preserves live publication locks, and reports manifest
+  hash mismatches. `rotate` archives oversized JSONL files with retention.
+- `health` is a read-only readiness probe for file existence, permissions,
+  malformed records, byte size, and trailing partial lines.
+- Proposal transitions are recorded with actor, status pair, evidence, hashes,
+  and evaluation policy version; `accept`, `reject`, and `defer` are explicit
+  review operations.
+- Pass `--root project` and optionally `--store events.jsonl`; pass a JSON policy
+  with `--policy policy.json` to the CLI `evaluate` command;
+  the same `EvaluationPolicy` is available through `EvolutionServiceOptions`.
+
 Designer generation remains an injected callback so model-generated changes stay
 reviewable and cannot write production files implicitly.
+
+The JSONL writer uses per-file local-filesystem locks for reads, appends,
+repairs, rotations, and projection replacement. Locks coordinate processes on
+the same host and filesystem; network filesystems are not supported. `repair`
+only removes dead local-owner locks and preserves unknown owners. User and feedback text is redacted for common
+API keys, bearer credentials, passwords, tokens, and secrets before it becomes
+durable evidence.

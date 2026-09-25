@@ -7,6 +7,7 @@ This repository contains research documentation and three independently packaged
 - `packages/skill-evolution/`: core evidence, JSONL storage, exposure views, and adoption validation.
 - `packages/dsh-adapter/`: DSH runtime fact translation into core observations.
 - `packages/dsh-bundle/`: installable DSH observer bundle and `cordis.patch.yml` integration.
+- `packages/skill-evolution/bin/`: stable maintenance CLI (`observe`, `propose`, `evaluate`, `accept`, `promote`, `rollback`, `repair`, `rotate`).
 - `docs/`, `research/`, and `skill-进化设计-MVP.md`: architecture, mechanism, and research notes.
 - Each package keeps implementation in `src/` (where applicable) and tests in `tests/`.
 
@@ -21,6 +22,7 @@ npm --prefix packages/skill-evolution run build  # compile TypeScript to lib/
 npm --prefix packages/dsh-adapter test           # run Vitest tests
 npm --prefix packages/skill-evolution test       # run core Vitest tests
 npm --prefix packages/dsh-bundle test            # run node:test bundle tests
+npm --prefix packages/dsh-adapter run build    # compile adapter declarations and runtime
 ```
 
 Build both TypeScript packages before publishing or checking generated declarations. The bundle is exercised directly from its JavaScript entry point.

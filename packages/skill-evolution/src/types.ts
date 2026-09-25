@@ -142,7 +142,7 @@ export interface SkillDiagnosis {
   readonly createdAt: string
 }
 
-export type ProposalStatus = 'draft' | 'replayed' | 'observed' | 'accepted' | 'rejected' | 'deferred' | 'reverted'
+export type ProposalStatus = 'draft' | 'proposed' | 'evaluating' | 'evaluated' | 'replayed' | 'observed' | 'accepted' | 'rejected' | 'deferred' | 'promoted' | 'rolled-back' | 'reverted'
 
 export type ProposalSurface = 'description' | 'trigger' | 'procedure' | 'reference' | 'composition'
 
@@ -206,9 +206,57 @@ export interface SkillEvalResult {
   readonly schemaValid: boolean
   readonly invocationPolicyUnchanged: boolean
   readonly passedGate: boolean
+  readonly decision: 'passed' | 'needs-review' | 'rejected'
+  readonly policyVersion: string
+  readonly artifactId?: string
+  readonly baseContentHash: string
+  readonly candidateContentHash: string
+  readonly caseIds: readonly string[]
+  readonly createdAt: string
 }
 
-export type DecisionAction = 'accepted' | 'rejected' | 'deferred' | 'promoted' | 'rollback' | 'reverted' | 'dormant' | 'retired' | 'restored'
+/** Persisted evaluation evidence that promotion is allowed to consume. */
+export interface EvaluationArtifact {
+  readonly id: string
+  readonly proposalId: string
+  readonly candidateId: string
+  readonly baseVersion: string
+  readonly baseContentHash: string
+  readonly candidateContentHash: string
+  readonly caseIds: readonly string[]
+  readonly policyVersion: string
+  readonly passedGate: boolean
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly result: SkillEvalResult
+}
+
+export interface EvaluationPolicy {
+  readonly version: string
+  readonly maxRegressionCount: number
+  readonly maxSecurityViolations: number
+  readonly maxTokenIncreaseRatio?: number
+  readonly maxContextIncreaseRatio?: number
+  readonly requireNoNewSideEffects: boolean
+  readonly requirePositiveFeedback?: boolean
+  readonly requireOriginalFailureImprovement: boolean
+}
+
+export interface ProposalComparison {
+  readonly proposalId: string
+  readonly caseId: string
+  readonly exposure: 'base' | 'candidate'
+  readonly observedOutcome: 'improved' | 'regressed' | 'unchanged' | 'unknown'
+  readonly evidence: readonly string[]
+  readonly confidence: 'low' | 'medium' | 'high'
+  readonly toolCalls: number
+  readonly tokenCost?: number
+  readonly sideEffects: readonly string[]
+  readonly securityViolations: readonly string[]
+  readonly timedOut: boolean
+}
+
+export type DecisionAction = 'proposed' | 'evaluating' | 'evaluated' | 'accepted' | 'rejected' | 'deferred' | 'promoted' | 'rollback' | 'reverted' | 'dormant' | 'retired' | 'restored'
 
 export interface DecisionRecord {
   readonly id: string
@@ -217,6 +265,12 @@ export interface DecisionRecord {
   readonly action: DecisionAction
   readonly reason: string
   readonly evidenceIds: readonly string[]
+  readonly actor?: string
+  readonly fromStatus?: ProposalStatus
+  readonly toStatus?: ProposalStatus
+  readonly baseContentHash?: string
+  readonly candidateContentHash?: string
+  readonly policyVersion?: string
   readonly createdAt: string
 }
 
@@ -242,6 +296,26 @@ export interface PortfolioEntry {
   readonly usageCount: number
   readonly contextCost: number
   readonly updatedAt: string
+}
+
+export type FeedbackKind = 'incorrect' | 'constraint' | 'retry' | 'dissatisfied' | 'satisfied' | 'goal-changed' | 'other'
+
+export interface FeedbackRecord {
+  readonly id: string
+  readonly sessionId: string
+  readonly skillName?: string
+  readonly skillVersion?: string
+  readonly correlationIds: readonly string[]
+  readonly stepId?: string
+  readonly toolCallId?: string
+  readonly kind: FeedbackKind
+  readonly attribution?: Attribution
+  readonly attributionStatus: 'pending' | 'accepted' | 'rejected' | 'unknown'
+  readonly attributedBy: 'rule' | 'human' | 'evaluator' | 'model'
+  readonly confidence?: number
+  readonly note: string
+  readonly createdAt: string
+  readonly source: 'user' | 'maintainer'
 }
 
 export class StaleAdoptionBaseError extends Error {

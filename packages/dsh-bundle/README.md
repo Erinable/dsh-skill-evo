@@ -37,3 +37,25 @@ and also fall back to the generic observation.
 
 The bundle does not infer Skill impact, generate proposals, modify Skill files,
 or publish versions.
+
+For in-session maintenance, the bundle contributes the human slash command
+`/skill-evolution observe`, `/skill-evolution failures`, `/skill-evolution metrics`,
+`/skill-evolution health`, `/skill-evolution repair`, and
+`/skill-evolution feedback --kind incorrect --note "..."`. These handlers use
+the current session workspace as the evolution root and remain outside the
+model tool catalog. Full proposal, evaluation, promotion, and rollback flows
+are available through the `dsh-skill-evolution` executable shipped by the core
+package:
+
+```bash
+dsh-skill-evolution observe --root /path/to/project
+dsh-skill-evolution failures --root /path/to/project --format markdown
+dsh-skill-evolution feedback --root /path/to/project --session SESSION --kind incorrect --skill api-debugging --note "遗漏代理超时配置"
+dsh-skill-evolution propose --root /path/to/project --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
+dsh-skill-evolution evaluate --root /path/to/project --proposal proposal-id --cases cases.json --output evaluation.json
+dsh-skill-evolution accept --root /path/to/project --proposal proposal-id --reason "Reviewed evaluation"
+dsh-skill-evolution promote --root /path/to/project --proposal proposal-id --evaluation evaluation.json --scope project
+dsh-skill-evolution rollback --root /path/to/project --skill api-debugging --version 1.0.0
+dsh-skill-evolution repair --root /path/to/project
+dsh-skill-evolution rotate --root /path/to/project --max-bytes 10485760 --retention-days 30
+```

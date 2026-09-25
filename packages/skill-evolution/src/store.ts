@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseObservation, serializeObservation } from './events.js'
+import { withFileLock } from './locking.js'
 import type { RuntimeObservation } from './types.js'
 
 export interface ObservationQuery {
@@ -22,13 +23,14 @@ export class JsonlEventStore {
 
   /** Append an observation once; duplicate event IDs are idempotent. */
   async append(event: RuntimeObservation): Promise<boolean> {
-    await this.ensureInitialized()
-    return this.enqueue(async () => {
+    return this.enqueue(() => withFileLock(`${this.filePath}.lock`, async () => {
+      await this.ensureInitialized()
+      await this.refreshKnownIds()
       if (this.knownIds.has(event.id)) return false
       await appendFile(this.filePath, serializeObservation(event), 'utf8')
       this.knownIds.add(event.id)
       return true
-    })
+    }))
   }
 
   /** Append observations in order and return the number of new records. */
@@ -40,9 +42,11 @@ export class JsonlEventStore {
 
   /** Read all valid observations in file order. */
   async readAll(): Promise<RuntimeObservation[]> {
-    await this.ensureInitialized()
-    const text = await readFile(this.filePath, 'utf8')
-    return text.split('\n').filter(Boolean).map(parseObservation)
+    return withFileLock(`${this.filePath}.lock`, async () => {
+      await this.ensureInitialized()
+      const text = await readFile(this.filePath, 'utf8')
+      return parseLines(text, parseObservation)
+    })
   }
 
   /** Query observations without changing their stored order. */
@@ -67,11 +71,17 @@ export class JsonlEventStore {
     await mkdir(dirname(this.filePath), { recursive: true })
     try {
       const text = await readFile(this.filePath, 'utf8')
-      for (const line of text.split('\n').filter(Boolean)) this.knownIds.add(parseObservation(line).id)
+      for (const event of parseLines(text, parseObservation)) this.knownIds.add(event.id)
     } catch (error) {
       if (!isMissingFile(error)) throw error
       await appendFile(this.filePath, '', 'utf8')
     }
+  }
+
+  private async refreshKnownIds(): Promise<void> {
+    const text = await readFile(this.filePath, 'utf8')
+    this.knownIds.clear()
+    for (const event of parseLines(text, parseObservation)) this.knownIds.add(event.id)
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -79,6 +89,13 @@ export class JsonlEventStore {
     this.writeQueue = result.then(() => undefined, () => undefined)
     return result
   }
+}
+
+function parseLines<T>(text: string, parser: (line: string) => T): T[] {
+  const lines = text.split('\n')
+  const trailing = lines.at(-1)
+  if (trailing !== undefined && trailing.length > 0) lines.pop()
+  return lines.filter(Boolean).map(parser)
 }
 
 function isMissingFile(error: unknown): boolean {

@@ -28,3 +28,24 @@ await adapter.record({
 ```
 
 The caller must provide stable event IDs. Retrying the same DSH callback with the same ID is idempotent in the core store. Catalog snapshots expand to one event per Skill; an empty catalog is retained as a replacement snapshot. The adapter only translates facts; Experience projection, proposals, evaluation, and version publication belong to the core evolution service.
+
+`runDshComparison()` is the DSH evaluation boundary. It runs base and
+candidate Skill contents in separate temporary workspaces, aborts timed-out
+cases, and preserves tool-call count, token cost, side effects, security
+violations, user feedback, and evidence returned by the injected DSH executor.
+The executor is intentionally injected so a deployment can bind it to its
+isolated agent-loop runner without making the adapter depend on one DSH
+profile composition.
+
+The package also exports `createReferenceExecutor()` for deterministic local
+checks, `createFakeDshExecutor()` for fast tests, and
+`createReferenceDshExecutor()` for a real `dsh --profile headless` process.
+The process adapter passes the isolated workspace and Skill content through to
+DSH, captures stdout/stderr and tool-call markers, and terminates on abort.
+`createDshEvaluationRunner()` adapts the comparison protocol to the core
+evaluator gate. The process adapter does not infer task success from exit code
+or output text: production runs need a deployment-provided `judge` that returns
+measured evidence, cost, feedback, and effects. Temporary workspaces are removed
+after settlement; abandoned directories older than 24 hours are reclaimed on
+the next comparison call. Network or global system side effects still require
+the deployment runner's OS-level sandbox.

@@ -55,10 +55,15 @@ export function createProposal(input: ProposalInput): SkillProposal {
 export function transitionProposal(proposal: SkillProposal, status: ProposalStatus, now = new Date().toISOString()): SkillProposal {
   if (proposal.status === status) return proposal
   const allowed: Record<ProposalStatus, readonly ProposalStatus[]> = {
-    draft: ['replayed', 'observed', 'rejected', 'deferred'],
-    replayed: ['observed', 'accepted', 'rejected', 'deferred'],
-    observed: ['accepted', 'rejected', 'deferred'],
-    accepted: ['reverted'],
+    draft: ['proposed', 'replayed', 'observed', 'rejected', 'deferred'],
+    proposed: ['evaluating', 'rejected', 'deferred'],
+    evaluating: ['evaluated', 'rejected', 'deferred'],
+    evaluated: ['accepted', 'rejected', 'deferred'],
+    replayed: ['observed', 'evaluated', 'accepted', 'rejected', 'deferred'],
+    observed: ['evaluated', 'accepted', 'rejected', 'deferred'],
+    accepted: ['promoted', 'rejected'],
+    promoted: ['rolled-back'],
+    'rolled-back': [],
     rejected: ['observed'],
     deferred: ['observed', 'rejected'],
     reverted: [],

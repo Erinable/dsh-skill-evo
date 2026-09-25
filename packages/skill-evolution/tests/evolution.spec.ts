@@ -15,7 +15,10 @@ import {
   createProposal,
   evaluateCandidate,
   mergePortfolioEntries,
+  aggregateMetrics,
   portfolioDecision,
+  renderFailuresMarkdown,
+  renderProposalMarkdown,
   splitPortfolioEntry,
   transitionPortfolio,
   transitionProposal,
@@ -138,6 +141,31 @@ describe('phase 3 proposal and evaluation', () => {
     expect(result.passedGate).toBe(false)
     expect(result.gateReasons).toContain('invocation policy changed')
   })
+
+  it('applies configurable safety and cost gates', async () => {
+    const result = await evaluateCandidate({
+      candidateId: 'policy-1',
+      baseContent: base,
+      candidateContent: candidate,
+      cases: [{ id: 'trigger', category: 'original-failure', task: 'debug' }],
+      policy: { version: 'team-7', maxRegressionCount: 0, maxSecurityViolations: 0, maxTokenIncreaseRatio: 0.1, requireNoNewSideEffects: true, requireOriginalFailureImprovement: false },
+      runner: async (content) => ({ passed: content === candidate, tokenCost: content === candidate ? 20 : 10, securityViolations: content === candidate ? ['unsafe'] : [], sideEffects: content === candidate ? ['write'] : [] }),
+    })
+    expect(result.policyVersion).toBe('team-7')
+    expect(result.passedGate).toBe(false)
+    expect(result.gateReasons).toEqual(expect.arrayContaining(['security violation limit exceeded', 'new side effects detected', 'token cost increase exceeded policy']))
+  })
+
+  it('rejects candidate content that changes Skill identity or adds scripts', async () => {
+    const result = await evaluateCandidate({
+      candidateId: 'policy-2',
+      baseContent: base,
+      candidateContent: candidate.replace('name: api-debugging', 'name: other').replace('Use curl.', '<script>alert(1)</script>'),
+      expectedSkillName: 'api-debugging',
+      cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check'] } }],
+    })
+    expect(result.gateReasons.some(reason => reason.startsWith('candidate:'))).toBe(true)
+  })
 })
 
 describe('phase 4 publication and phase 5 portfolio maintenance', () => {
@@ -165,12 +193,29 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
       id: 'next', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: initial.candidateContent, proposedVersion: '1.1.0', candidateContent: initial.candidateContent.replace('Base.', 'Improved.'), intent: 'Improve',
     })
     await store.promote(next, { scope: 'project' })
+    const overwrite = createProposal({
+      id: 'overwrite', skillName: 'api-debugging', baseVersion: '1.1.0', baseContent: next.candidateContent, proposedVersion: '1.1.0', candidateContent: next.candidateContent.replace('Improved.', 'Tampered.'), intent: 'Overwrite',
+    })
+    await expect(store.promote(overwrite, { scope: 'project' })).rejects.toThrow('published Skill version already exists')
     await expect(store.promote(stale, { scope: 'project' })).rejects.toThrow('stale Skill base')
     expect(invalidations).toEqual(['api-debugging:project', 'api-debugging:project'])
     expect(await store.listVersions('api-debugging')).toEqual(['1.0.0', '1.1.0'])
     const rolledBack = await store.rollback('api-debugging', first.manifest.version, { scope: 'project' })
     expect(rolledBack.manifest.version).toBe('1.0.0')
     expect((await store.readCurrent('api-debugging'))?.content).toContain('Base.')
+  })
+
+  it('serializes publication mutations and refuses a pre-existing cross-process lock', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lock-'))
+    dirs.push(dir)
+    const root = join(dir, 'api-debugging')
+    await import('node:fs/promises').then(fs => fs.mkdir(root, { recursive: true }))
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    await import('node:fs/promises').then(fs => fs.writeFile(join(root, 'SKILL.md'), base))
+    const proposal = createProposal({ id: 'locked', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: base.replace('Base.', 'Next.'), intent: 'Next' })
+    await import('node:fs/promises').then(fs => fs.mkdir(join(dir, '.skill-evolution', 'locks'), { recursive: true }))
+    await import('node:fs/promises').then(fs => fs.writeFile(join(dir, '.skill-evolution', 'locks', 'api-debugging.lock'), 'held'))
+    await expect(new SkillVersionStore(dir).promote(proposal, { scope: 'project' })).rejects.toThrow('already in progress')
   })
 
   it('analyzes overlap and keeps curator decisions append-only', () => {
@@ -228,6 +273,17 @@ describe('phase workflow orchestration', () => {
     expect(await service.failures.readAll()).toHaveLength(1)
   })
 
+  it('serializes projection refreshes from independent services', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-parallel-projection-'))
+    dirs.push(dir)
+    const first = new EvolutionService({ root: dir })
+    const second = new EvolutionService({ root: dir })
+    await first.recordObservation(event({ id: 'parallel-failure', kind: 'skill-load-failed', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { error: 'load failed' } }))
+    await Promise.all([first.refreshDerived(), second.refreshDerived()])
+    expect(await first.failures.readAll()).toHaveLength(1)
+    expect(await second.failures.readAll()).toHaveLength(1)
+  })
+
   it('records an adoption observation when the service promotes a passing proposal', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-service-promote-'))
     dirs.push(dir)
@@ -237,9 +293,53 @@ describe('phase workflow orchestration', () => {
     await import('node:fs/promises').then(fs => fs.mkdir(skillDir, { recursive: true }))
     await import('node:fs/promises').then(fs => fs.writeFile(join(skillDir, 'SKILL.md'), base))
     const service = new EvolutionService({ root: dir })
-    const proposal = createProposal({ id: 'service-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' })
+    const proposal = transitionProposal(createProposal({ id: 'service-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' }), 'proposed')
     const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
-    await service.promote(proposal, evaluation, 'project')
+    const evaluated = (await service.proposals.readAll()).find(item => item.id === 'service-proposal:evaluated')!
+    await service.acceptProposal(evaluated, 'Reviewed passing evaluation')
+    const accepted = (await service.proposals.readAll()).find(item => item.id === 'service-proposal:accepted')!
+    await service.promote(accepted, evaluation, 'project')
     expect((await service.observations.query({ kind: 'adoption-applied' }))[0]?.payload).toMatchObject({ proposalId: 'service-proposal', effectiveAt: 'next-load' })
+  })
+
+  it('rejects an evaluation artifact that is missing or bound to another candidate', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-artifact-'))
+    dirs.push(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const candidate = base.replace('Base.', 'Improved.')
+    const skillDir = join(dir, 'api-debugging')
+    await import('node:fs/promises').then(fs => fs.mkdir(skillDir, { recursive: true }))
+    await import('node:fs/promises').then(fs => fs.writeFile(join(skillDir, 'SKILL.md'), base))
+    const service = new EvolutionService({ root: dir })
+    const proposal = transitionProposal(createProposal({ id: 'artifact-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' }), 'proposed')
+    const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
+    const evaluated = (await service.proposals.readAll()).find(item => item.id === 'artifact-proposal:evaluated')!
+    const accepted = await service.acceptProposal(evaluated, 'reviewed')
+    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toThrow('persisted evaluation artifact')
+    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toThrow('supplied evaluation')
+  })
+
+  it('turns explicit maintainer feedback into durable evidence and Markdown review output', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-feedback-'))
+    dirs.push(dir)
+    const service = new EvolutionService({ root: dir })
+    const record = await service.recordFeedback({ sessionId: 'session-1', skillName: 'api-debugging', kind: 'incorrect', note: '遗漏代理超时配置' })
+    expect(record.kind).toBe('incorrect')
+    expect((await service.observations.query({ kind: 'user-follow-up' }))[0]?.payload).toMatchObject({ feedbackKind: 'incorrect', explicit: true })
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const candidate = base.replace('Base.', 'Improved.')
+    const proposal = createProposal({ id: 'markdown-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Add timeout diagnosis' })
+    expect(renderProposalMarkdown({ proposal })).toContain('## Proposed changes')
+    expect(renderFailuresMarkdown([{ id: 'failure-1', skillName: 'api-debugging', task: 'debug', failure: 'timeout omitted', evidenceEventIds: [record.id], severity: 'medium', createdAt: record.createdAt, status: 'open' }])).toContain('failure-1')
+  })
+
+  it('exports operational usage metrics without claiming causality', () => {
+    const events = [
+      event({ id: 'catalog', kind: 'catalog-visible', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'request', kind: 'skill-load-requested', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'follow', kind: 'user-follow-up', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+    ]
+    expect(aggregateMetrics(events).skills[0]).toMatchObject({ skillName: 'api-debugging', exposed: 1, loadSucceeded: 1, followUps: 1, exposureToLoadRate: 1 })
   })
 })

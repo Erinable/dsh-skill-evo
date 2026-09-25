@@ -1,10 +1,24 @@
-import type { CaseEvaluation, EvaluationCategory, SkillEvalResult, SkillEvaluationCase } from './types.js'
+import type { CaseEvaluation, EvaluationCategory, EvaluationPolicy, SkillEvalResult, SkillEvaluationCase } from './types.js'
+import { createContentHash } from './events.js'
+
+export const DEFAULT_EVALUATION_POLICY: EvaluationPolicy = {
+  version: '1',
+  maxRegressionCount: 0,
+  maxSecurityViolations: 0,
+  requireNoNewSideEffects: true,
+  requireOriginalFailureImprovement: true,
+}
 
 export interface CaseRunResult {
   readonly passed: boolean
   readonly status?: 'passed' | 'failed' | 'unknown'
   readonly reason?: string
   readonly evidence?: readonly string[]
+  readonly tokenCost?: number
+  readonly contextCost?: number
+  readonly sideEffects?: readonly string[]
+  readonly securityViolations?: readonly string[]
+  readonly positiveFeedback?: boolean
 }
 
 export type EvaluationRunner = (
@@ -20,19 +34,32 @@ export interface EvaluateCandidateInput {
   readonly runner?: EvaluationRunner
   readonly expectedSkillName?: string
   readonly now?: () => number
+  readonly policy?: EvaluationPolicy
 }
 
 /** Evaluate a candidate against original, historical, and boundary evidence. */
 export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<SkillEvalResult> {
+  validateEvaluationInput(input.cases)
   const started = input.now?.() ?? Date.now()
   const validation = validateSkillDocument(input.candidateContent, input.expectedSkillName)
   const baseValidation = validateSkillDocument(input.baseContent, input.expectedSkillName)
+  const changeValidation = validateSkillCandidate(input.baseContent, input.candidateContent, input.expectedSkillName)
   const invocationPolicyUnchanged = sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
   const runner = input.runner ?? runContentChecks
+  const policy = input.policy ?? DEFAULT_EVALUATION_POLICY
+  const createdAt = new Date().toISOString()
   const baseline = emptyCategoryCounts()
   const categories = emptyCategoryCounts()
   const results: CaseEvaluation[] = []
   const regressions: string[] = []
+  let securityViolations = 0
+  let candidateSideEffects = 0
+  let baselineSideEffects = 0
+  let candidateTokenCost = 0
+  let baselineTokenCost = 0
+  let candidateContextCost = 0
+  let baselineContextCost = 0
+  let positiveFeedback = false
 
   for (const evaluationCase of input.cases) {
     const baselineRun = baseValidation.valid
@@ -45,6 +72,14 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
     const durationMs = Math.max(0, (input.now?.() ?? Date.now()) - candidateStarted)
     addCategory(baseline, evaluationCase.category, baselineRun.passed === true)
     addCategory(categories, evaluationCase.category, candidateRun.passed === true)
+    securityViolations += candidateRun.securityViolations?.length ?? 0
+    candidateSideEffects += candidateRun.sideEffects?.length ?? 0
+    baselineSideEffects += baselineRun.sideEffects?.length ?? 0
+    candidateTokenCost += candidateRun.tokenCost ?? 0
+    baselineTokenCost += baselineRun.tokenCost ?? 0
+    candidateContextCost += candidateRun.contextCost ?? 0
+    baselineContextCost += baselineRun.contextCost ?? 0
+    positiveFeedback ||= candidateRun.positiveFeedback === true
     if (baselineRun.passed && !candidateRun.passed && evaluationCase.category !== 'original-failure') {
       regressions.push(evaluationCase.id)
     }
@@ -61,12 +96,19 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
 
   const gateReasons: string[] = []
   if (!validation.valid) gateReasons.push(...validation.errors.map(error => `schema: ${error}`))
+  gateReasons.push(...changeValidation.errors.map(error => `candidate: ${error}`))
   if (!invocationPolicyUnchanged) gateReasons.push('invocation policy changed')
+  if (securityViolations > policy.maxSecurityViolations) gateReasons.push('security violation limit exceeded')
+  if (policy.requireNoNewSideEffects && candidateSideEffects > baselineSideEffects) gateReasons.push('new side effects detected')
+  if (regressions.length > policy.maxRegressionCount) gateReasons.push('regression limit exceeded')
+  if (policy.maxTokenIncreaseRatio !== undefined && baselineTokenCost > 0 && candidateTokenCost / baselineTokenCost - 1 > policy.maxTokenIncreaseRatio) gateReasons.push('token cost increase exceeded policy')
+  if (policy.maxContextIncreaseRatio !== undefined && baselineContextCost > 0 && candidateContextCost / baselineContextCost - 1 > policy.maxContextIncreaseRatio) gateReasons.push('context cost increase exceeded policy')
+  if (policy.requirePositiveFeedback && !positiveFeedback) gateReasons.push('positive feedback required')
   const originalBaseline = baseline['original-failure']
   const originalCandidate = categories['original-failure']
   if (originalCandidate.total === 0) {
     gateReasons.push('no original-failure cases')
-  } else if (originalCandidate.passed <= originalBaseline.passed) {
+  } else if (policy.requireOriginalFailureImprovement && originalCandidate.passed <= originalBaseline.passed) {
     gateReasons.push('original-failure pass count did not improve')
   }
   const historicalBaseline = baseline['historical-success']
@@ -98,6 +140,22 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
     schemaValid: validation.valid,
     invocationPolicyUnchanged,
     passedGate: gateReasons.length === 0,
+    decision: gateReasons.length === 0 ? 'passed' : (securityViolations > policy.maxSecurityViolations || regressions.length > policy.maxRegressionCount ? 'rejected' : 'needs-review'),
+    policyVersion: policy.version,
+    baseContentHash: createContentHash(input.baseContent),
+    candidateContentHash: createContentHash(input.candidateContent),
+    caseIds: input.cases.map(item => item.id),
+    createdAt,
+  }
+}
+
+function validateEvaluationInput(cases: readonly SkillEvaluationCase[]): void {
+  if (cases.length === 0) throw new Error('evaluation requires at least one case')
+  const ids = new Set<string>()
+  for (const item of cases) {
+    if (item.id.length === 0 || ids.has(item.id)) throw new Error(`evaluation case IDs must be unique and non-empty: ${item.id}`)
+    ids.add(item.id)
+    if (!['original-failure', 'historical-success', 'boundary'].includes(item.category)) throw new Error(`invalid evaluation category for ${item.id}`)
   }
 }
 
@@ -108,18 +166,37 @@ export interface SkillDocumentValidation {
   readonly invocationPolicy: Readonly<Record<string, string>>
 }
 
+export interface SkillCandidateValidation {
+  readonly valid: boolean
+  readonly errors: readonly string[]
+}
+
+/** Enforce the file and frontmatter boundary before a candidate can be published. */
+export function validateSkillCandidate(baseContent: string, candidateContent: string, expectedName?: string): SkillCandidateValidation {
+  const errors: string[] = []
+  if (Buffer.byteLength(candidateContent, 'utf8') > 256 * 1024) errors.push('candidate exceeds 256 KiB')
+  if (/<\/?script\b/i.test(candidateContent)) errors.push('script tags are not allowed')
+  if (baseContent.length === 0) return { valid: errors.length === 0, errors }
+  const baseFrontmatter = frontmatterBlock(baseContent)
+  const candidateFrontmatter = frontmatterBlock(candidateContent)
+  if (baseFrontmatter === undefined || candidateFrontmatter === undefined) errors.push('frontmatter boundary is invalid')
+  else {
+    const baseValues = parseFrontmatter(baseFrontmatter)
+    const candidateValues = parseFrontmatter(candidateFrontmatter)
+    if (candidateValues.name !== baseValues.name) errors.push('frontmatter name cannot change')
+    if (expectedName !== undefined && candidateValues.name !== expectedName) errors.push(`frontmatter name must be ${expectedName}`)
+    for (const key of ['disable-model-invocation', 'user-invocable', 'model-invocable']) {
+      if (candidateValues[key] !== baseValues[key]) errors.push(`invocation policy field ${key} cannot change`)
+    }
+  }
+  return { valid: errors.length === 0, errors }
+}
+
 /** Validate the small frontmatter contract without depending on a YAML runtime. */
 export function validateSkillDocument(content: string, expectedName?: string): SkillDocumentValidation {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---(?:\n|$)/)
   if (match === null) return { valid: false, errors: ['missing YAML frontmatter'], invocationPolicy: {} }
-  const values: Record<string, string> = {}
-  for (const line of match[1]!.split('\n')) {
-    const separator = line.indexOf(':')
-    if (separator <= 0) continue
-    const key = line.slice(0, separator).trim()
-    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
-    values[key] = value
-  }
+  const values = parseFrontmatter(match[1]!)
   const errors: string[] = []
   if (typeof values.name !== 'string' || values.name.length === 0) errors.push('frontmatter name is required')
   if (typeof values.description !== 'string' || values.description.length === 0) errors.push('frontmatter description is required')
@@ -130,6 +207,22 @@ export function validateSkillDocument(content: string, expectedName?: string): S
       .map(key => [key, values[key]!]),
   )
   return { valid: errors.length === 0, errors, name: values.name, invocationPolicy }
+}
+
+function frontmatterBlock(content: string): string | undefined {
+  return content.match(/^---\s*\n([\s\S]*?)\n---(?:\n|$)/)?.[1]
+}
+
+function parseFrontmatter(content: string): Record<string, string> {
+  const values: Record<string, string> = {}
+  for (const line of content.split('\n')) {
+    const separator = line.indexOf(':')
+    if (separator <= 0) continue
+    const key = line.slice(0, separator).trim()
+    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
+    values[key] = value
+  }
+  return values
 }
 
 async function boundaryHighFailures(
