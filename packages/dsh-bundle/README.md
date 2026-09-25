@@ -3,6 +3,20 @@
 Installable DSH observer bundle. It records committed `session/event` facts to
 `$DSH_HOME/skill-evolution/events.jsonl`.
 
+## Local development
+
+Install the bundle as a symlink so source changes are visible to the profile:
+
+```bash
+dsh plugin --profile web add \
+  '@dsh-skill-evo/dsh-bundle@link:/absolute/path/to/packages/dsh-bundle'
+```
+
+After editing the bundle, restart DSH to reload the module. Reinstall only when
+the package manifest or dependency graph changes. The `file:` protocol installs
+a copied package and is intended for isolated verification or release-like
+checks.
+
 By default, events are recorded as `agent-step`. Integrations that have access
 to concrete Skill catalog or loader callbacks may pass a synchronous
 `mapEvent(session, event, { id })` function in the bundle config. The mapper
