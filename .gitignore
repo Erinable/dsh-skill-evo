@@ -9,6 +9,8 @@
 artifacts/
 runs/
 
-# 编辑器
+# Node dependencies and test cache
+node_modules/
+
 .vscode/
 .idea/
