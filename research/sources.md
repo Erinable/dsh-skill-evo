@@ -68,7 +68,7 @@
 | SkillsBench | 2026 | 比较无 Skill、人工整理 Skill 和自生成 Skill 的任务效果 | https://arxiv.org/abs/2602.12670v1 |
 | SkillHone: A Harness for Continual Agent Skill Evolution Through Persistent Decision History | 2026 | 持久化诊断、候选修改、评测证据和决策历史 | https://arxiv.org/abs/2606.08671 |
 | SkillEvo: Self-Renewing Evolution Gradients from Multi-Turn Interaction Feedback | 2026 预印本 | 用多轮交互反馈持续暴露问题并约束 Skill 演化 | https://arxiv.org/html/2608.13120 |
-| MASkills: Continual Skills Optimization for Multi-Agent LLM Systems | 2026 | Skill 条件归因、精炼、归纳、合并和剪枝 | https://arxiv.org/abs/2609.02094 |
+| OpenSkill: Open-World Self-Evolution for LLM Agents | 2026 | 在缺少目标监督时，从外部知识和自建验证锚点引导 Skill 自演化 | https://arxiv.org/abs/2606.06741 |
 
 - “Skill evolution”在不同工作中可能指：技能发现、技能文本/程序合成、从失败轨迹修订技能、长期记忆积累，或模型参数层面的持续学习。本项目优先研究可版本化的外部程序性知识。
 - 官方产品文档适合说明运行时架构和工程约束，论文与 benchmark 适合支撑算法和评测结论；两类证据不能互相替代。
