@@ -8,7 +8,9 @@
 
 - 已建立 Git 仓库。
 - 已有一份 MVP 设计基线：[skill-进化设计-MVP.md](./skill-进化设计-MVP.md)。
-- 正在进行第一轮研究现状调研，结果见 [docs/research-landscape-zh.md](./docs/research-landscape-zh.md)。
+- 已有一份面向真实开放任务的机制设计：[docs/skill-evolution-mechanism-zh.md](./docs/skill-evolution-mechanism-zh.md)。
+- 已形成 DSH 落地架构：[docs/architecture-design-zh.md](./docs/architecture-design-zh.md)。
+- 研究现状调研结果见 [docs/research-landscape-zh.md](./docs/research-landscape-zh.md)。
 - 研究来源索引见 [research/sources.md](./research/sources.md)。
 
 ## 研究问题
@@ -21,12 +23,13 @@
 ## 目录
 
 - `skill-进化设计-MVP.md`：现有设计基线。
-- `docs/research-landscape-zh.md`：研究现状与 DSH 对照分析。
-- `research/sources.md`：论文、官方文档和开源项目来源。
+- `docs/skill-evolution-mechanism-zh.md`：面向真实开放任务的 Skill evolution 机制设计。
+- `docs/architecture-design-zh.md`：DSH 插件、事件、存储、版本和实施阶段的落地架构。
 
 ## 研究原则
 
-- 生成和发布分离，候选 Skill 必须经过独立评测。
-- 每次变化都保留来源、案例、评测结果和版本关系。
-- 评测同时覆盖原失败案例、历史成功案例和边界案例。
-- 把 Skill 正文、评测数据、轨迹和运行时权限分开管理。
+- 观察、归因、候选生成和采用分离，运行时观察不阻塞当前任务。
+- 每次变化都保留来源、事件、决策和版本关系；拒绝和暂缓也保留。
+- 固定 benchmark 只作为离线参考，不把它当作 DSH 在线质量真相。
+- 可重放案例是可选证据；不可重放的真实反馈也必须保留其不确定性。
+- 把 Skill 正文、经验、决策历史和运行时加载事实分开管理。
