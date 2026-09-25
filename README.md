@@ -10,8 +10,9 @@
 - 已有一份 MVP 设计基线：[skill-进化设计-MVP.md](./skill-进化设计-MVP.md)。
 - 已有一份面向真实开放任务的机制设计：[docs/skill-evolution-mechanism-zh.md](./docs/skill-evolution-mechanism-zh.md)。
 - 已形成 DSH 落地架构：[docs/architecture-design-zh.md](./docs/architecture-design-zh.md)。
-- 已实现独立 Phase 1 核心包：[packages/skill-evolution/README.md](./packages/skill-evolution/README.md)。
+- 已实现完整演化核心包（观察、Experience、候选、评测、发布、回滚和 portfolio 维护）：[packages/skill-evolution/README.md](./packages/skill-evolution/README.md)。
 - 已实现 DSH 运行时事实适配器：[packages/dsh-adapter/README.md](./packages/dsh-adapter/README.md)。
+- 已实现 DSH session 事件到 catalog、Skill load、工具结果和用户 follow-up 观察的默认映射：[packages/dsh-bundle/README.md](./packages/dsh-bundle/README.md)。
 - 研究现状调研结果见 [docs/research-landscape-zh.md](./docs/research-landscape-zh.md)。
 - 研究来源索引见 [research/sources.md](./research/sources.md)。
 

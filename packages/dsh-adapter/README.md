@@ -27,4 +27,4 @@ await adapter.record({
 })
 ```
 
-The caller must provide stable event IDs. Retrying the same DSH callback with the same ID is idempotent in the core store. The adapter only translates facts; it does not infer Skill impact, generate proposals, modify files, or publish versions.
+The caller must provide stable event IDs. Retrying the same DSH callback with the same ID is idempotent in the core store. Catalog snapshots expand to one event per Skill; an empty catalog is retained as a replacement snapshot. The adapter only translates facts; Experience projection, proposals, evaluation, and version publication belong to the core evolution service.

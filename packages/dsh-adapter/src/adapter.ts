@@ -28,6 +28,19 @@ export class DshEvolutionAdapter {
     readonly skills: readonly DshSkillRef[]
     readonly catalogRevision?: string
   }): Promise<number> {
+    if (input.skills.length === 0) {
+      const event = toObservation({
+        ...input,
+        skills: undefined,
+        payload: {
+          ...input.payload ?? {},
+          ...(input.catalogRevision === undefined ? {} : { catalogRevision: input.catalogRevision }),
+          catalogSize: 0,
+        },
+      })
+      return (await this.writer.append(event)) ? 1 : 0
+    }
+
     let count = 0
     for (const [index, skill] of input.skills.entries()) {
       const event = toObservation({
@@ -36,6 +49,7 @@ export class DshEvolutionAdapter {
         skill,
         skills: undefined,
         payload: {
+          ...input.payload ?? {},
           ...(input.catalogRevision === undefined ? {} : { catalogRevision: input.catalogRevision }),
           catalogSize: input.skills.length,
         },

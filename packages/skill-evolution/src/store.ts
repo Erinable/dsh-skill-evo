@@ -8,22 +8,27 @@ export interface ObservationQuery {
   readonly taskId?: string
   readonly skillName?: string
   readonly kind?: RuntimeObservation['kind']
+  readonly since?: string
+  readonly until?: string
 }
 
 /** Append-only JSONL store for runtime observations. */
 export class JsonlEventStore {
   private readonly knownIds = new Set<string>()
   private initialized: Promise<void> | undefined
+  private writeQueue: Promise<void> = Promise.resolve()
 
   constructor(readonly filePath: string) {}
 
   /** Append an observation once; duplicate event IDs are idempotent. */
   async append(event: RuntimeObservation): Promise<boolean> {
     await this.ensureInitialized()
-    if (this.knownIds.has(event.id)) return false
-    await appendFile(this.filePath, serializeObservation(event), 'utf8')
-    this.knownIds.add(event.id)
-    return true
+    return this.enqueue(async () => {
+      if (this.knownIds.has(event.id)) return false
+      await appendFile(this.filePath, serializeObservation(event), 'utf8')
+      this.knownIds.add(event.id)
+      return true
+    })
   }
 
   /** Append observations in order and return the number of new records. */
@@ -48,6 +53,8 @@ export class JsonlEventStore {
       && (query.taskId === undefined || event.taskId === query.taskId)
       && (query.skillName === undefined || event.skill?.name === query.skillName)
       && (query.kind === undefined || event.kind === query.kind)
+      && (query.since === undefined || event.occurredAt >= query.since)
+      && (query.until === undefined || event.occurredAt <= query.until)
     ))
   }
 
@@ -65,6 +72,12 @@ export class JsonlEventStore {
       if (!isMissingFile(error)) throw error
       await appendFile(this.filePath, '', 'utf8')
     }
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(operation, operation)
+    this.writeQueue = result.then(() => undefined, () => undefined)
+    return result
   }
 }
 

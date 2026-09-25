@@ -70,6 +70,32 @@ describe('JsonlEventStore', () => {
     const reopened = new JsonlEventStore(path)
     expect((await reopened.query({ skillName: 'api-debugging', kind: 'skill-loaded' })).map(item => item.id)).toEqual(['event-2'])
   })
+
+  it('queries observations by inclusive ISO time bounds', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-'))
+    dirs.push(dir)
+    const store = new JsonlEventStore(join(dir, 'events.jsonl'))
+    await store.appendMany([
+      observation('early', 'agent-step'),
+      createObservation({
+        ...observation('late', 'task-finished'),
+        occurredAt: '2026-09-25T00:00:01.000Z',
+      }),
+    ])
+    expect((await store.query({ since: '2026-09-25T00:00:01.000Z' })).map(item => item.id)).toEqual(['late'])
+  })
+
+  it('serializes concurrent appends in invocation order', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-'))
+    dirs.push(dir)
+    const store = new JsonlEventStore(join(dir, 'events.jsonl'))
+    await Promise.all([
+      store.append(observation('ordered-1', 'agent-step')),
+      store.append(observation('ordered-2', 'agent-step')),
+      store.append(observation('ordered-3', 'agent-step')),
+    ])
+    expect((await store.readAll()).map(item => item.id)).toEqual(['ordered-1', 'ordered-2', 'ordered-3'])
+  })
 })
 
 describe('buildExposureView', () => {
@@ -101,6 +127,23 @@ describe('buildExposureView', () => {
     ])
 
     expect(views.map(view => view.skill.contentHash)).toEqual([first.contentHash, second.contentHash])
+  })
+
+  it('merges an incomplete catalog identity into a later loaded snapshot', () => {
+    const loaded = skill(createContentHash('loaded'))
+    const views = buildExposureView([
+      observation('catalog', 'catalog-visible', { name: loaded.name, provider: 'unknown', source: 'unknown' }),
+      observation('request', 'skill-load-requested', { name: loaded.name, provider: 'unknown', source: 'unknown' }),
+      observation('loaded', 'skill-loaded', loaded),
+    ])
+
+    expect(views).toHaveLength(1)
+    expect(views[0]).toMatchObject({
+      skill: loaded,
+      catalogVisible: true,
+      loadRequested: true,
+      loadSucceeded: true,
+    })
   })
 })
 

@@ -2,30 +2,37 @@ import type { ExposureView, RuntimeObservation, SkillRef } from './types.js'
 
 /** Project catalog and load observations into a conservative exposure view. */
 export function buildExposureView(events: readonly RuntimeObservation[]): ExposureView[] {
-  const byKey = new Map<string, ExposureViewBuilder>()
+  const builders: ExposureViewBuilder[] = []
   for (const event of events) {
-    if (event.skill === undefined) continue
-    const key = skillKey(event.skill)
-    const current = byKey.get(key) ?? new ExposureViewBuilder(event.skill)
-    current.observationIds.push(event.id)
-    switch (event.kind) {
-      case 'catalog-visible': current.catalogVisible = true; break
-      case 'skill-load-requested': current.loadRequested = true; break
-      case 'skill-loaded': current.loadSucceeded = true; break
-      case 'skill-load-failed': current.loadFailed = true; break
-      case 'user-follow-up': current.followUpObservationIds.push(event.id); break
-      default: break
+    const skill = event.skill
+    if (skill === undefined) continue
+    const current = builders.find(builder => canMerge(builder.skill, skill))
+    if (current === undefined) {
+      builders.push(new ExposureViewBuilder({ ...event, skill }))
+    } else {
+      current.add(event)
     }
-    byKey.set(key, current)
   }
-  return [...byKey.values()].map(value => value.toView())
+  return builders.map(value => value.toView())
 }
 
-function skillKey(skill: SkillRef): string {
-  return [skill.name, skill.provider, skill.source, skill.version ?? '', skill.contentHash ?? ''].join('\u0000')
+/** Merge an incomplete runtime identity into its later concrete observation. */
+function canMerge(left: SkillRef, right: SkillRef): boolean {
+  return left.name === right.name
+    && compatible(left.provider, right.provider)
+    && compatible(left.source, right.source)
+    && compatible(left.version, right.version)
+    && (left.contentHash === undefined
+      || right.contentHash === undefined
+      || left.contentHash === right.contentHash)
+}
+
+function compatible(left: string | undefined, right: string | undefined): boolean {
+  return left === right || left === undefined || right === undefined || left === 'unknown' || right === 'unknown'
 }
 
 class ExposureViewBuilder {
+  skill: SkillRef
   catalogVisible = false
   loadRequested = false
   loadSucceeded = false
@@ -33,7 +40,25 @@ class ExposureViewBuilder {
   readonly followUpObservationIds: string[] = []
   readonly observationIds: string[] = []
 
-  constructor(readonly skill: SkillRef) {}
+  constructor(event: RuntimeObservation) {
+    this.skill = { ...event.skill! }
+    this.add(event)
+  }
+
+  add(event: RuntimeObservation): void {
+    if (this.skill.contentHash === undefined && event.skill?.contentHash !== undefined) {
+      this.skill = { ...event.skill }
+    }
+    this.observationIds.push(event.id)
+    switch (event.kind) {
+      case 'catalog-visible': this.catalogVisible = true; break
+      case 'skill-load-requested': this.loadRequested = true; break
+      case 'skill-loaded': this.loadSucceeded = true; break
+      case 'skill-load-failed': this.loadFailed = true; break
+      case 'user-follow-up': this.followUpObservationIds.push(event.id); break
+      default: break
+    }
+  }
 
   toView(): ExposureView {
     return {

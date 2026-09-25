@@ -46,6 +46,30 @@ describe('DshEvolutionAdapter', () => {
     })
   })
 
+  it('keeps an empty catalog replacement as an observable snapshot', async () => {
+    const events: RuntimeObservationRecord[] = []
+    const adapter = new DshEvolutionAdapter({
+      async append(event) {
+        events.push(event)
+        return true
+      },
+    })
+
+    expect(await adapter.record({
+      id: 'catalog-empty',
+      kind: 'catalog-visible',
+      occurredAt: '2026-09-25T00:00:00.000Z',
+      sessionId: 'session-1',
+      skills: [],
+      payload: { catalogUpdate: true },
+    })).toBe(1)
+    expect(events[0]).toMatchObject({
+      id: 'catalog-empty',
+      kind: 'catalog-visible',
+      payload: { catalogUpdate: true, catalogSize: 0 },
+    })
+  })
+
   it('preserves source defaults and caller correlation data', async () => {
     const events: RuntimeObservationRecord[] = []
     const adapter = new DshEvolutionAdapter({
