@@ -9,8 +9,10 @@
 artifacts/
 runs/
 
-# Node dependencies and test cache
+# Node dependencies and generated package artifacts
 node_modules/
+packages/*/lib/
 
+# 编辑器
 .vscode/
 .idea/

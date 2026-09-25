@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-skill-evo-observer
+      name: '@dsh-skill-evo/dsh-bundle'
