@@ -249,6 +249,29 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
 })
 
 describe('phase workflow orchestration', () => {
+  it('uses the ledger transition table for review guards', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-service-guards-'))
+    dirs.push(dir)
+    const service = new EvolutionService({ root: dir })
+    const base = createProposal({ id: 'guard-draft', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: 'base', proposedVersion: '1.1.0', candidateContent: 'candidate', intent: 'Improve' })
+
+    expect((await service.rejectProposal(base, 'unsafe')).status).toBe('rejected')
+
+    const deferredDraft = createProposal({ id: 'guard-deferred', skillName: base.skillName, baseVersion: base.baseVersion, baseContent: 'base', proposedVersion: base.proposedVersion, candidateContent: 'candidate', intent: base.intent })
+    expect((await service.deferProposal(deferredDraft, 'later')).status).toBe('deferred')
+
+    const accepted = transitionProposal(
+      transitionProposal(
+        transitionProposal(createProposal({ id: 'guard-accepted', skillName: base.skillName, baseVersion: base.baseVersion, baseContent: 'base', proposedVersion: base.proposedVersion, candidateContent: 'candidate', intent: base.intent }), 'proposed'),
+        'evaluating',
+      ),
+      'evaluated',
+    )
+    const acceptedRecord = transitionProposal(accepted, 'accepted')
+    expect((await service.rejectProposal(acceptedRecord, 'new evidence')).status).toBe('rejected')
+    expect(() => transitionProposal(acceptedRecord, 'deferred')).toThrowError(expect.objectContaining({ code: 'invalid-transition' }))
+  })
+
   it('requires repeated or high-severity evidence before invoking a Designer', async () => {
     const workflow = new EvolutionWorkflow()
     workflow.add([
