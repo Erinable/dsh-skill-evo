@@ -49,13 +49,15 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 ## 提问（需要成员拍板时）
 
 1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案，成员可以只回「默认」。然后把 issue 置为 `blocked`。
-2. **注册 wakeup**，成员一评论就唤醒你：
-   ```bash
-   multica issue wakeup create <issue> --kind event --event comment.created --filter-actor-type member --filter-actor-id cb288268-0840-47ad-837b-f1c63c65b0e6
-   ```
+2. **看负责人，决定要不要注册 wakeup**：读提问所在 issue 的 `assignee_id`（`multica issue get <issue> --output json`）。
+   - **负责人就是自己**：**不注册 wakeup**。成员在负责人的 issue 上评论，本身就会唤醒负责人；再挂一条等成员评论的 wakeup，同一条评论会起两个 run（SKIL-15 已验证：成员 02:48:02 的一条评论起了 `direct_human comment` 和 `trigger_owner issue_wakeup` 两个 run，相隔 29 秒，两个 run 有重叠；SKIL-21 里成员评论也直接唤醒了负责人）。
+   - **没有负责人，或负责人不是自己**：成员评论不会唤醒你，只有 wakeup 能把你带回来（SKIL-24 已验证，run_only autopilot 注册的也一样）。注册一条只触发一次、只认成员的 wakeup：
+     ```bash
+     multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id cb288268-0840-47ad-837b-f1c63c65b0e6
+     ```
 3. **结束本次 run**：问题留给成员回答，下一次 run 从成员的回复继续往下做。
 
-完成判据：问题评论已发出、`multica issue wakeup list <issue>` 里能看到这条 wakeup、issue 为 `blocked`。
+完成判据：问题评论已发出、issue 为 `blocked`；负责人不是自己（或没有负责人）时，`multica issue wakeup list <issue>` 里还要能看到这条 wakeup。负责人是自己时不检查 `wakeup list`，那里本来就不该有。
 
 ## 交接：必须显式 @
 
