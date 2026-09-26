@@ -27,7 +27,7 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 5. **状态**：先 `multica issue status <issue> in_review`，再发交接评论。顺序不能反：@Reviewer 会立刻起 Reviewer 的 run，状态还没改就可能被读到旧状态。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
    完成判据：`multica issue get <issue> --output json` 的 `status` 为 `in_review` 或 `blocked`。
 6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
-   完成判据：评论已发出，正文里有 `mention://agent/<Reviewer 的 id>`。
+   完成判据：评论已发出；发出前对正文文件执行 `grep -cE 'mention://(agent|squad)/' <正文文件>` 输出 `1`，这一个就是给 Reviewer 的 `mention://agent/<Reviewer 的 id>`（见「贴原始输出前清理 mention」）。
 
 修改意见的唯一来源是 Multica issue 上的评论；GitHub 上的评论不会触发任何 agent，所以 PR 末尾那句提示是必需的。
 
@@ -61,13 +61,27 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 
 ## 交接：必须显式 @
 
-agent 在已指派的 issue 上评论，**不会**唤醒该 issue 的负责人或其他 agent（SKIL-16/17 已验证）。所以每次把工作交给另一个 agent，都要在评论里写 mention 链接：
+显式 @ 是唯一已证实会给对方起 run 的交接方式（SKIL-18/21/26 的每一次交接都靠它）。不带 @ 的 agent 评论能不能唤醒 issue 负责人，没有验证过，不要依赖。所以每次把工作交给另一个 agent，都要在评论里写 mention 链接：
 
 ```markdown
 [@Reviewer](mention://agent/<Reviewer 的 id>)
 ```
 
 id 现查，不要记：`multica agent list --output json`，按 `name` 取 `id`。mention 会给对方起一个新 run，只在真的交出工作时用；致谢和告知写纯文本。
+
+## 贴原始输出前清理 mention
+
+任何贴进 issue 评论、PR 描述、PR 评论的原始输出——`multica` 命令的 JSON（`issue runs` 的 `trigger_summary`、`issue get`、`comment list` 都可能带）、别的评论的正文、日志——发出前都要去掉 agent 和 squad 的 mention 链接。**代码块里的也要去掉**：代码块不会让 mention 失效，照样起 run（SKIL-27：一条评论贴了 `issue runs` 的原始 JSON，里面的 agent mention 多起了一个 run）。`mention://issue/`、`mention://member/` 不起 run，可以保留。
+
+写好正文文件后、加上有意的交接 mention 之前，执行：
+
+```bash
+perl -pi -e 's#\[@?([^\]]*)\]\(mention://(agent|squad)/[^)]*\)#\@$1#g; s#mention://(agent|squad)/#mention:‹$1›/#g' <正文文件>
+```
+
+第一段把 `[@名字](mention://agent/<id>)`、`[@名字](mention://squad/<id>)` 换成纯文本 `@名字`；第二段把剩下裸露的 `mention://agent/`、`mention://squad/` 前缀改成 `mention:‹agent›/`、`mention:‹squad›/`，不再被解析。这条命令对交接 mention 一视同仁，所以交接用的那一行放在清理之后再追加。
+
+完成判据：发出前执行 `grep -cE 'mention://(agent|squad)/' <正文文件>`，输出等于这条评论**有意**交接的次数：交接评论是 `1`，其余是 `0`。`grep -c` 数的是行，交接 mention 单独占一行。
 
 ## spec 有问题时
 
