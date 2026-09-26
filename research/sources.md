@@ -70,5 +70,30 @@
 | SkillEvo: Self-Renewing Evolution Gradients from Multi-Turn Interaction Feedback | 2026 预印本 | 用多轮交互反馈持续暴露问题并约束 Skill 演化 | https://arxiv.org/html/2608.13120 |
 | OpenSkill: Open-World Self-Evolution for LLM Agents | 2026 | 在缺少目标监督时，从外部知识和自建验证锚点引导 Skill 自演化 | https://arxiv.org/abs/2606.06741 |
 
+## SDD 与多 Agent 协作
+
+> 本组来源支撑 [docs/sdd-practice-zh.md](../docs/sdd-practice-zh.md)。注意「性质」一栏：只有 Spec Kit Agents 做了实证评估，其余多 Agent 花名册均来自未验证的框架项目，不构成业界最佳实践。
+
+| 来源 | 年份 | 关注点 | 性质 | 链接 |
+|---|---:|---|---|---|
+| Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl（Böckeler, Thoughtworks） | 2025-10 | SDD 定义流变，spec-first / spec-anchored / spec-as-source 三层，spec 与 memory bank 的区分 | 实践观察，作者自称快照、工具可能已变 | https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html |
+| Kiro Specs 官方文档 | 2026 | `requirements.md` / `design.md` / `tasks.md` 三件套，EARS 语法，Requirements-First 与 Design-First，依赖图生成 wave，Bugfix spec 的 `SHALL CONTINUE TO` | 官方文档 | https://kiro.dev/docs/specs.md |
+| Kiro Feature Specs | 2026 | 两种工作流变体的选择条件，EARS 的四项收益，Analyze Requirements | 官方文档 | https://kiro.dev/docs/specs/feature-specs.md |
+| Kiro Specs Best Practices | 2026 | 并行 wave、Sync Files、Quick Spec 与标准流程的取舍、防回归写法 | 官方文档 | https://kiro.dev/docs/specs/best-practices.md |
+| GitHub Spec Kit Quickstart | 2026 | Constitution → Specify → Clarify → Plan → Checklist → Tasks → Analyze → Implement → Converge；活跃 feature 由 `.specify/feature.json` 决定而非 Git 分支 | 官方文档 | https://github.github.io/spec-kit/quickstart.html |
+| Spec Kit Agents: Context-Grounded Agentic Workflows | 2026-04 | Orchestrator 状态机 + PM + Developer 三角色；只读 probing hooks 与 validation hooks；128 runs / 32 features / 5 repos；judged quality +0.15（满分 +3.0%，Wilcoxon p<0.05）；repo 级测试兼容 99.7–100%；SWE-bench Lite 58.2% Pass@1（+1.7%） | **唯一有实证评估的多 Agent SDD 配置** | https://arxiv.org/abs/2604.05278 |
+| Spec-Driven Development for Agentic Software Engineering: Harnessing Human-Agent Teamwork | 2026-08 | 生产力悖论；spec 作为人机契约基底；technical harness 与 methodological harness 区分；五种人机交互模式；accountability / verifiability / transferability | 概念分析，主要基于灰色文献；作者自述为迈向共识的第一步而非已验证理论 | https://arxiv.org/abs/2609.00252 |
+| q3ok/coordinated-agent-team | 2026 | 12 个编号角色槽位（00–11，README 自述 11 agents）：Orchestrator, SpecAgent, Architect, Planner, Coder, Reviewer, QA, Security, Integrator, Docs, Designer, Researcher；artifact 契约与状态机 | 框架项目，未验证 | https://github.com/q3ok/coordinated-agent-team |
+| antonioreuter/dev-squad | 2026 | PM, Solution Architect, Product Owner, Lead Dev, QA, Security, AWS Specialist；HR Manager 做动态招聘/解聘与 talent pool | 框架项目，未验证 | https://github.com/antonioreuter/dev-squad |
+| dariopalladino/claude-agentic-specs | 2026 | Supervisor, Planner, Architect, Backend, Frontend, Data, DevOps, Security；`.spec/` 分层与 PROPOSED_CHANGES / HANDOFF 沙箱流程 | 框架项目，未验证 | https://github.com/dariopalladino/claude-agentic-specs |
+
+## DSH 技能运行时机制
+
+| 来源 | 关注点 | 性质 | 链接 |
+|---|---|---|---|
+| `@deepseek-ai/dsh-tool-skill` README | 面向模型的 catalog 与 `skill` 加载工具；catalog 为 digest 驱动的完整替换投射；`catalogDescriptionMaxLength` 默认 500；两条加载路径共用 `renderSkillContent`；三种确定错误文本；`disable-model-invocation` 只能由 `/name` 进入；token 与 KV cache 影响 | 官方包文档 | https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/skill/tool-skill/README.md |
+| DeepSeekDSH 社区插件指南（Skills） | `dsh-skill-filesystem` 负责发现、`dsh-tool-skill` 负责 catalog 与加载；Standard preset 已挂载两者；Cordis composition 配置示例 | 独立社区指南，核对于 2026-09-11、源版本 0.1.5-rc.2 | https://deepseekdsh.com/plugins/skills |
+| YTyangtao666/dsh-skills-bridge | 把 `~/.claude/skills` 与 `~/.agents/skills` 挂成一等 SkillProvider（`claude-bridge`）；frontmatter 映射表；冲突 rank（bridge 250，project-local 100/200 胜出，user-level 400/500 让位）；扁平 frontmatter 限制与 `fs.watch` 注意事项 | 第三方实现，可参考的最小 SkillProvider 范式 | https://github.com/YTyangtao666/dsh-skills-bridge |
+
 - “Skill evolution”在不同工作中可能指：技能发现、技能文本/程序合成、从失败轨迹修订技能、长期记忆积累，或模型参数层面的持续学习。本项目优先研究可版本化的外部程序性知识。
 - 官方产品文档适合说明运行时架构和工程约束，论文与 benchmark 适合支撑算法和评测结论；两类证据不能互相替代。
