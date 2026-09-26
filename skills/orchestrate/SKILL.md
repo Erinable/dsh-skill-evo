@@ -3,7 +3,9 @@ name: orchestrate
 description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 上被触发（新建、stage 完成唤醒、成员回复）、Triager 或 Architect @Mika 交接、跑每日巡检时使用。"
 ---
 
-Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口。执行 agent 怎么交付、Reviewer 怎么评审、怎么向成员提问，都以 `delivery-contract` skill 为准，本文只引用。
+Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
+
+向成员提问使用所选 tracker adapter 的 `Ask a person and wait` 一节。
 
 - **成员**：工作区唯一的成员 ack7，user id `cb288268-0840-47ad-837b-f1c63c65b0e6`。订阅、提问都用这个 id。
 - **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
@@ -38,7 +40,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
    - 已经是 Mika：本次 run 直接结束。
 
    同一张 issue 被多跑一次也不会建出第二套子 issue，也不会留下没有负责人的父 issue。
-1. 按路由表判断类型。判断不了时，按 `delivery-contract` 的「提问」一节问成员**一个**问题（带默认答案），本次 run 结束；成员回复后按回复路由，不再追问。
+1. 按路由表判断类型。判断不了时，按所选 tracker adapter 的 `Ask a person and wait` 一节问成员**一个**问题（带默认答案），传入父 issue、问题正文、触发线程（如有）及回复后路由的 next 指令；本次 run 结束。成员回复后按回复路由，不再追问。
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
 
@@ -57,7 +59,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 | skill 或文档修改 | S1 Scribe |
 | 只需要一个答案 | 不开票（见入口第 1 步） |
 
-「合并后按结论问成员是否追加后续 stage」「成员想继续做时」都通过 `delivery-contract` 的「提问」问成员，按回复追加 stage。
+「合并后按结论问成员是否追加后续 stage」「成员想继续做时」都通过所选 tracker adapter 的 `Ask a person and wait` 一节问成员**一个**问题（带默认答案），传入父 issue、问题正文、触发线程（如有）及按回复追加 stage 的 next 指令。
 
 ### stage 模板
 

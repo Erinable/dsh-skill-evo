@@ -34,6 +34,10 @@ Create a GitLab issue.
 
 Run `glab issue view <number> --comments`.
 
+## Ask a person and wait
+
+In an interactive session, ask the person and wait for the reply in-session. A one-shot run has no asynchronous recall mechanism (`n/a`); record the question for a later run.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
