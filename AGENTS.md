@@ -40,3 +40,17 @@ Add focused regression coverage beside the package being changed. Vitest is used
 ## Commit & Pull Request Guidelines
 
 Use short Conventional Commit subjects such as `feat:`, `test:`, or `docs:` followed by an imperative description. Keep commits focused. Pull requests should explain the behavior or research change, identify affected packages, link relevant design context or issues, and include the exact test/build commands run. Include screenshots only when documenting a visual or UI change.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in the Multica workspace via the `multica` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), plus `wayfinder:*` labels; resolve UUIDs by name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.

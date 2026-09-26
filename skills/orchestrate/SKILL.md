@@ -1,0 +1,127 @@
+---
+name: orchestrate
+description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 上被触发（新建、stage 完成唤醒、成员回复）、Triager 或 Architect @Mika 交接、跑每日巡检时使用。"
+---
+
+Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口。执行 agent 怎么交付、Reviewer 怎么评审、怎么向成员提问，都以 `delivery-contract` skill 为准，本文只引用。
+
+- **成员**：工作区唯一的成员 ack7，user id `cb288268-0840-47ad-837b-f1c63c65b0e6`。订阅、提问都用这个 id。
+- **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
+
+先判断本次 run 属于哪个入口，只执行对应一节：
+
+| 触发 | 去哪一节 |
+|---|---|
+| 聊天里成员提需求 | 入口 |
+| 父 issue 新建后的第一次 run | 路由并建 Stage 1 |
+| 父 issue 上收到「Stage N complete」 | 放行 |
+| 子 issue 上执行 agent 报 spec 有问题并 @Mika | 故障：spec 修订 |
+| Triager 或 Architect 在某 issue 上 @Mika | 交接入口 |
+| 每日巡检 autopilot | 读 `PATROL.md` |
+
+## 入口（聊天回合）
+
+1. 只需要一个答案的，直接在聊天里回答，不开票，到此结束。
+2. 其余需求只建父 issue，别的都留给父 issue 上的 run：
+   ```bash
+   multica issue create --title "<需求一句话>" --description-file ./parent.md --assignee Mika --status todo
+   multica issue subscriber add <parent-id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6
+   ```
+   `parent.md` 写成员原话和你理解的目标。
+
+完成判据：父 issue 存在，负责人 Mika，状态 `todo`，`multica issue subscriber list <parent-id>` 里有成员。
+
+## 路由并建 Stage 1
+
+1. 按路由表判断类型。判断不了时，按 `delivery-contract` 的「提问」一节问成员**一个**问题（带默认答案），本次 run 结束；成员回复后按回复路由，不再追问。
+2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
+3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
+
+完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派、成员已订阅。
+
+### 路由表
+
+| 需求特征 | 阶段安排 |
+|---|---|
+| 目标明确的功能 | S1 Spec Writer → S2 若干 Builder |
+| 涉及模块边界或接口设计 | S1 Architect（设计 PR）→ S2 Spec Writer → S3 若干 Builder |
+| bug | S1 Sleuth（先写复现测试，再修复并开 PR） |
+| 事实问题、选型 | S1 Scout（调研 PR）；成员想继续做时，追加后续 stage |
+| 看了才知道的设计问题 | S1 Prototyper（原型分支 + 结论评论）→ 结论写回父 issue，再决定后续 |
+| 大而模糊的方向 | S1 Cartographer（地图 + 决策票，决策票由 Cartographer 挂在地图 issue 下）→ 地图清楚后追加 Spec Writer 和 Builder 的 stage |
+| skill 或文档修改 | S1 Scribe |
+| 只需要一个答案 | 不开票（见入口第 1 步） |
+
+「再决定后续」「成员想继续做时」都通过 `delivery-contract` 的「提问」问成员，按回复追加 stage。
+
+### stage 模板
+
+每个 stage 只在放行时才建，建出来就是 `todo`，所以子 issue 一建立即开工：
+
+```bash
+multica issue create --parent <parent-id> --stage <N> --status todo \
+  --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
+multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6
+```
+
+| stage 内容 | 张数 | 指派 |
+|---|---|---|
+| spec / 设计 / 调研 / 原型 / 地图 / bug / 文档 | 1 张 | 路由表对应的 agent |
+| 实现 | `tasks.md` 每条 task 一张，同一 stage 并行 | Builder |
+
+`child.md` 写清目标、验收标准、上游产物的位置（已合并的 `specs/<slug>/` 路径或 PR 链接），末尾一行：「按 `delivery-contract` 交付」。
+
+## 放行
+
+被「Stage N complete」唤醒时，平台只尝试唤醒一次，所以每次都先核对再动：
+
+1. `multica issue children <parent-id> --output json`，确认 Stage N 每张子 issue 的 `status_category` 都是 `done` 或 `cancelled`。有未完成的，在父 issue 上说明是哪张，本次 run 结束。
+2. **下一 stage 已存在就不再建。** 同一份 `issue children` 输出里已有 Stage N+1 的子 issue 时（spec 修订票合并后 Stage N 会再次完成，就是这种情况）：找出 Stage N 里修订票描述中点名的原子 issue，其中仍是 `blocked` 的逐个 `multica issue status <child-id> todo`，本次 run 结束。不拆票、不建新票。
+3. 按路由计划建下一 stage。下一 stage 是实现时，按「拆票」来建。
+4. 已经没有下一 stage 时，去「收口」。
+
+完成判据：Stage N+1 的子 issue 只有一套（没有重复建票），且为 `todo` 或已开工；或已进入收口。
+
+### 拆票
+
+实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆：
+
+1. `git fetch origin` 后读 `origin/main` 上的 `specs/<slug>/tasks.md`。文件不在 `origin/main` 上说明 spec PR 还没合，在父 issue 上说明，本次 run 结束。
+2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。
+
+完成判据：子 issue 张数等于 `tasks.md` 的 task 条数。
+
+## 收口
+
+这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 都是成员合并 PR 后才变 `done` 的，合并就是验收，所以父 issue 由 Mika 直接关闭。不置 `in_review`，也不请成员确认后再关。
+
+1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
+2. 直接置 `done`：
+   ```bash
+   multica issue status <parent-id> done
+   ```
+
+完成判据：`multica issue get <parent-id> --output json` 的 `status` 为 `done`。停在 `in_review` 就是没收口。
+
+## 交接入口
+
+- **Triager @Mika**：分诊结论就是需求。按入口第 2 步建父 issue，`parent.md` 里写原 issue 的链接 `[<KEY>](mention://issue/<原 issue id>)` 和分诊结论；再在原 issue 上回复父 issue 的链接。所有派活都经这一个入口。
+- **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。
+
+## 故障
+
+| 情况 | 处理 |
+|---|---|
+| 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 在 spec 所在的 stage 追加一张 Spec Writer 修订票（`--stage <该 stage> --status todo`），描述里写原子 issue 的 KEY 和它报的问题。修订合并后该 stage 再次完成、唤醒你，按「放行」第 2 步把原子 issue 置回 `todo` |
+| Reviewer 第 3 次 BLOCK、run 失败、stage 唤醒丢失、PR 被关闭不合 | 由每日巡检发现、进摘要，见 `PATROL.md` |
+| 成员把修改意见留在 GitHub 上 | 没有 agent 会被触发，这是平台缺口；靠每个 PR 末尾「修改意见请评论在 <KEY> 上」的提示预防（见 `delivery-contract`） |
+
+## 自动任务
+
+三个 autopilot 与本 skill 的关系（创建与配置不在本 skill 内）：
+
+| 名称 | 触发 | 模式 | 执行者 | 与 Mika 的接口 |
+|---|---|---|---|---|
+| 每日巡检 | 每天 09:07 Asia/Shanghai | run_only | Mika | 读 `PATROL.md` |
+| 每日分诊 | 每天 09:37 Asia/Shanghai | run_only | Triager | 捞没有负责人也没有父 issue 的 issue，分诊后 @Mika，走「交接入口」 |
+| 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；成员回复编号后 Architect @Mika，走「交接入口」；成员不回复就什么都不发生 |
