@@ -178,10 +178,9 @@ export class EvolutionService {
     cases: readonly SkillEvaluationCase[],
     runner?: EvaluationRunner,
   ): Promise<SkillEvalResult> {
-    if (proposal.status !== 'proposed' && proposal.status !== 'replayed' && proposal.status !== 'observed') {
-      assertCanTransition(proposal.status, 'evaluating')
-    }
-    const evaluating = proposal.status === 'proposed' ? transitionProposal(proposal, 'evaluating') : proposal
+    const targetStatus = proposal.status === 'proposed' ? 'evaluating' : 'evaluated'
+    assertCanTransition(proposal.status, targetStatus)
+    const evaluating = targetStatus === 'evaluating' ? transitionProposal(proposal, 'evaluating') : proposal
     const proposalId = proposalRootId(proposal.id)
     if (evaluating !== proposal) {
       await this.proposals.append({ ...evaluating, id: ledgerRecordId(proposalId, 'evaluating') })
@@ -221,7 +220,7 @@ export class EvolutionService {
     })
     const evaluated = { ...transitionProposal(evaluating, 'evaluated'), comparisonCaseIds: [...result.caseIds] }
     await this.proposals.append({ ...evaluated, id: ledgerRecordId(proposalId, 'evaluated') })
-    await this.recordDecision(evaluated, 'evaluated', 'evaluating', 'evaluated', 'evaluation completed', result.policyVersion)
+    await this.recordDecision(evaluated, 'evaluated', evaluating.status, 'evaluated', 'evaluation completed', result.policyVersion, result.caseResults.map(item => item.caseId))
     return persistedResult
   }
 
@@ -230,7 +229,7 @@ export class EvolutionService {
     const accepted = transitionProposal(proposal, 'accepted')
     const proposalId = proposalRootId(proposal.id)
     await this.proposals.append({ ...accepted, id: ledgerRecordId(proposalId, 'accepted') })
-    await this.recordDecision(accepted, 'accepted', 'evaluated', 'accepted', reason, undefined, evidenceIds)
+    await this.recordDecision(accepted, 'accepted', proposal.status, 'accepted', reason, undefined, evidenceIds)
     return accepted
   }
 
