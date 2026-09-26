@@ -60,6 +60,10 @@ On waking: read the comments added since your last round, attribute each answer 
 
 When the frontier is empty, post the shared-understanding summary and register one more wakeup the same way: the member's confirmation is itself an answer, and it arrives in a later run.
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
+Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, docs), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Dispatch every such fact-finder for this round in one batch so they run concurrently, and **collect all of their reports before this run ends** — see the tracker doc's fan-out-and-converge rule. A sub-agent still reading when your turn exits is orphaned and its answer is lost, so the question it was settling comes back unsettled with nothing to show.
+
+Inside the round, a running sub-agent is an unsettled prerequisite: it does not stall the rest of the frontier. Ask every question that doesn't depend on it now, in this same round, and leave the questions downstream of that fact for a later round. What waits on the sub-agent is those downstream questions — never your own turn boundary.
+
+The _decisions_ are the user's: put each to them and wait.
 
 The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
