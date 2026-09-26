@@ -52,24 +52,27 @@ One round, one run. Each round ends with your run ending, and the member's reply
 Per round:
 
 1. Write the round to a file and post it as one issue comment (`--content-file`; see the tracker doc's rules on file-backed bodies). Reply in the thread you were triggered from by passing that thread's `--parent`.
-2. Register the wakeup that will bring you back, naming the member whose answers you need:
+2. Decide whether a wakeup is needed. Read the `assignee_id` of the issue you posted on (`multica issue get <issue-id> --output json`):
 
-   ```
-   multica issue wakeup create <issue-id> \
-     --event comment.created \
-     --filter-actor-type member --filter-actor-id <member-user-id> \
-     --mode once \
-     --parent <thread-comment-id> \
-     --instruction "Grilling round <N> is posted. Read the new reply, recompute the frontier, ask the next round."
-   ```
+   - **The assignee is you** → register nothing. A member's comment on an issue already wakes its assignee, so a wakeup waiting for that same comment starts a second run for it — observed as two overlapping runs 29 seconds apart (`direct_human comment` and `trigger_owner issue_wakeup`) from a single member comment. The member's reply brings you back on its own.
+   - **No assignee, or someone else** → a member's comment does not wake you; only a wakeup does. Register one, naming the member whose answers you need:
 
-   `--filter-actor-type member` is what makes this correct: without it, your own comment and every agent write on the issue can wake you into a round nobody has answered. Get the member's UUID from the triggering comment's author, or from the issue's `creator_id` / `assignee_id`. `--mode once` matches one round; a `continuous` subscription on `comment.created` is how two agents wake each other in a loop.
+     ```
+     multica issue wakeup create <issue-id> \
+       --event comment.created \
+       --filter-actor-type member --filter-actor-id <member-user-id> \
+       --mode once \
+       --parent <thread-comment-id> \
+       --instruction "Grilling round <N> is posted. Read the new reply, recompute the frontier, ask the next round."
+     ```
+
+     `--filter-actor-type member` is what makes this correct: without it, your own comment and every agent write on the issue can wake you into a round nobody has answered. Get the member's UUID from the triggering comment's author, or from the issue's `creator_id` / `assignee_id`. `--mode once` matches one round; a `continuous` subscription on `comment.created` is how two agents wake each other in a loop.
 
 3. End the run. Do not poll, sleep, or re-read the issue hoping the answer lands before the turn closes.
 
 On waking: read the comments added since your last round, attribute each answer to its question number, recompute the frontier, and post the next round. A question the member did not answer stays on the frontier — carry it into the next round as still-open, in their words or not at all. Answers are the member's to give, so every round you post is a round you leave for them; supplying the missing side yourself would settle the tree against a decision nobody made.
 
-When the frontier is empty, post the shared-understanding summary and register one more wakeup the same way: the member's confirmation is itself an answer, and it arrives in a later run.
+When the frontier is empty, post the shared-understanding summary and apply step 2 again — a wakeup only when the issue is not assigned to you: the member's confirmation is itself an answer, and it arrives in a later run.
 
 Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, docs), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Dispatch every such fact-finder for this round in one batch so they run concurrently, and **collect all of their reports before this run ends** — see the tracker doc's fan-out-and-converge rule. A sub-agent still reading when your turn exits is orphaned and its answer is lost, so the question it was settling comes back unsettled with nothing to show.
 
