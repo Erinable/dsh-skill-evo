@@ -16,6 +16,7 @@
 - 已提供维护入口：`dsh-skill-evolution` CLI、`/skill-evolution` DSH 命令、Markdown proposal 报告、显式反馈和运营 metrics。
 - CLI 还提供 `repair`、`rotate` 和 projection worker；proposal 发布要求 accepted 审阅，评测策略、反馈归因和 JSONL 长期运行边界均可配置或审计。
 - 研究现状调研结果见 [docs/research-landscape-zh.md](./docs/research-landscape-zh.md)。
+- SDD 管线、多 Agent 角色分工与 DSH 落地方式的调研见 [docs/sdd-practice-zh.md](./docs/sdd-practice-zh.md)。
 - 研究来源索引见 [research/sources.md](./research/sources.md)。
 
 ## 研究问题
@@ -30,6 +31,7 @@
 - `skill-进化设计-MVP.md`：现有设计基线。
 - `docs/skill-evolution-mechanism-zh.md`：面向真实开放任务的 Skill evolution 机制设计。
 - `docs/architecture-design-zh.md`：DSH 插件、事件、存储、版本和实施阶段的落地架构。
+- `docs/sdd-practice-zh.md`：SDD 管线、多 Agent 角色分工对照和落到 DSH 的方式。
 
 ## 研究原则
 
