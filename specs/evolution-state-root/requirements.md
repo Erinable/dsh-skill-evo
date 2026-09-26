@@ -12,7 +12,7 @@ WHEN 升级已有状态目录 THE SYSTEM SHALL 不移动文件、不改变 JSONL
 
 ### R-3 完整事实流
 
-WHEN `ObservationLog.readAll()` 或 `query()` 读取 observations THE SYSTEM SHALL 按匹配归档段的文件名字典序、随后当前文件的顺序，返回每个 event id 的首条有效记录；不属于当前 store basename 的归档文件 SHALL 被忽略，`query()` 的现有过滤条件和边界 SHALL 保持不变。
+WHEN `ObservationLog.readAll()` 或 `query()` 读取 observations THE SYSTEM SHALL 按匹配归档段的文件名字典序、随后当前文件的顺序，返回每个 event id 的首条记录；不属于当前 store basename 的归档文件 SHALL 被忽略，`query()` 的现有过滤条件和边界 SHALL 保持不变。
 
 ### R-4 幂等追加
 
@@ -20,11 +20,11 @@ WHEN `ObservationLog.append()` 收到已存在于任一匹配归档段或当前�
 
 ### R-5 追加热路径
 
-WHEN 同一 `ObservationLog` 实例连续追加、归档段未改变 THE SYSTEM SHALL 按段文件名缓存归档 id，后续 append 仅重新读取当前文件，不重新读取已缓存归档内容；WHEN 匹配归档段新增、被显式修复或被显式 retention 删除 THE SYSTEM SHALL 在下次判重前更新或失效受影响的缓存，而不使用过期 id。缓存只保证单实例复用，重启后 SHALL 从磁盘重建。
+WHEN 同一 `ObservationLog` 实例连续追加、归档段未改变 THE SYSTEM SHALL 按段文件名及至少 `ino + size + mtimeMs` 的文件签名缓存归档 id，后续 append 仅重新读取当前文件，不重新读取已缓存归档内容；WHEN 匹配归档段新增、经原子替换修复或被显式 retention 删除 THE SYSTEM SHALL 在下次判重前根据磁盘签名更新或失效受影响的缓存，而不使用过期 id。每个进程独立检查磁盘签名，重启后 SHALL 从磁盘重建。
 
 ### R-6 轮转语义
 
-WHEN 当前 observation 文件达到 `maxBytes` 并执行 `ObservationLog.rotate()` THE SYSTEM SHALL 在同一当前文件锁下将当前段归档并建立新的当前文件，归档后的 `readAll()` 与投影输入 SHALL 仍包含原有事实；低于阈值时 SHALL 不轮转。
+WHEN 当前 observation 文件达到 `maxBytes` 并执行 `ObservationLog.rotate()` THE SYSTEM SHALL 在同一当前文件锁下将最后一个 `\n` 之后的未换行尾部字节先原样保存到该文件旁的 `.invalid-*` 隔离文件，再只将完整行归档并建立空的当前文件；即使没有完整行也 SHALL 建立空归档段。返回的 `RetentionResult` SHALL 在隔离发生时给出 `invalidQuarantine` 路径；隔离写入失败时 SHALL 抛错且不改当前文件或生成归档。归档后的 `readAll()` 与投影输入 SHALL 包含轮转前全部完整事实，`append()` SHALL 可正常追加新事实；低于阈值时 SHALL 不轮转。
 
 ### R-7 保留期
 
@@ -44,7 +44,7 @@ WHEN `EvolutionService.health()` 或 `healthReport()` 检查状态 THE SYSTEM SH
 
 ### R-11 repair 覆盖归档
 
-WHEN `EvolutionService.repair()` 遇到匹配归档段中的坏行、残行或同段重复 id THE SYSTEM SHALL 在报告的 `jsonl` 中包含该段的 `JsonlRepairResult`，隔离无效原文后修复该段；其他 store 的归档和不匹配文件 SHALL 不受影响。成功修复后，新实例与既有实例的下一次读取 SHALL 使用修复后的内容。
+WHEN `EvolutionService.repair()` 遇到匹配归档段中的坏行、残行或同段重复 id THE SYSTEM SHALL 持有 `${observationsPath}.lock` 隔离无效原文并原子替换修复该段，在报告的 `jsonl` 中包含该段的 `JsonlRepairResult`，且不嵌套获取当前文件锁或段锁；其他 store 的归档和不匹配文件 SHALL 不受影响。成功修复后，本进程和其他进程中既有实例的下一次读取 SHALL 根据文件签名使用修复后的内容。
 
 ### R-12 cursor 单一语义
 
@@ -60,7 +60,7 @@ WHEN 独立调用公开的 `repairEvolutionRoot(root, options)` THE SYSTEM SHALL
 
 ### R-15 公开兼容接口
 
-WHEN 外部代码导入 `JsonlEventStore` 或 `rotateJsonl(path, options)` THE SYSTEM SHALL 保留两者的导出、签名及各自当前文件读写/通用 JSONL 轮转用途；文档 SHALL 将它们标为旧用法，指向归档感知的 `ObservationLog`，并说明 `JsonlEventStore` 不提供跨归档的逻辑事实流语义。`rotateJsonl` 与 `ObservationLog.rotate` SHALL 共用归档命名、锁及缺省 retention 规则。
+WHEN 外部代码导入 `JsonlEventStore` 或 `rotateJsonl(path, options)` THE SYSTEM SHALL 保留两者的导出、签名及各自当前文件读写/通用 JSONL 轮转用途；文档 SHALL 将它们标为旧用法，指向归档感知的 `ObservationLog`，并说明 `JsonlEventStore` 不提供跨归档的逻辑事实流语义。`rotateJsonl` 与 `ObservationLog.rotate` SHALL 共用归档命名、锁、尾部隔离行为及缺省 retention 规则；`RetentionResult` 仅增加可选 `invalidQuarantine` 字段。
 
 ### R-16 入口接线
 
