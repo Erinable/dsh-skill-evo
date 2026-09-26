@@ -44,15 +44,27 @@ WHEN any tracker adapter is consumed THE SYSTEM SHALL expose these `##` sections
 
 ### R-11 Consumers reference seams by section name
 
-WHEN a skill needs runtime, tracker, or instance behavior THE SYSTEM SHALL reference the corresponding document section by name, SHALL not repeat `MULTICA_TASK_ID` mode logic or tracker commands in consumer skills, and SHALL preserve the dependency direction `skill -> runtime -> tracker` plus `skill -> instance`; tracker and instance documents SHALL not name skill steps or agents.
+WHEN a skill needs runtime, tracker, or instance behavior THE SYSTEM SHALL reference the corresponding document section by name, SHALL not repeat `MULTICA_TASK_ID` mode logic or tracker commands in consumer skills, and SHALL preserve the dependency direction `skill -> runtime -> tracker` plus `skill -> instance`; tracker adapters SHALL not name skill steps or repository agents, while instance routing MAY name agents as repository facts but SHALL not make an adapter depend on skill step numbers.
 
 ### R-12 Setup installs the runtime seam
 
-WHEN setup scaffolds the repository THE SYSTEM SHALL copy `skills/setup-matt-pocock-skills/runtime.md` to `docs/agents/runtime.md` and include `runtime.md` in its file list; all setup-installed `docs/agents/*` files with templates SHALL remain identical except for repository-only `instance.md`.
+WHEN setup scaffolds the repository THE SYSTEM SHALL copy `skills/setup-matt-pocock-skills/runtime.md` to `docs/agents/runtime.md` and include `runtime.md` in its file list; the Multica tracker, runtime, and triage-label installed copies SHALL match their templates byte-for-byte, while `instance.md` has no template and `domain.md` is populated with repository layout.
 
-### R-13 Agent-instruction consumers are synchronized outside this repository
+### R-13 Mika's repository skill uses reachable ask-and-wait
 
-WHEN these repository changes are adopted THE SYSTEM SHALL also update the Triager agent instruction to point label lookup at the tracker adapter's `Triage state` section and update Mika's `orchestrate` instruction to point ask-and-wait at the tracker adapter's `Ask a person and wait` section; these instruction files are outside this repository and are coordination deliverables, not repository edits.
+WHEN `skills/orchestrate/SKILL.md` asks the member a routing or follow-up question THE SYSTEM SHALL keep its one-question-with-default caller policy and use the selected tracker adapter's `Ask a person and wait` section instead of the unavailable `delivery-contract` asking section.
+
+### R-14 Triager's asking instruction is synchronized at Task 1
+
+WHEN Task 1 is merged THE SYSTEM SHALL update the out-of-repository Triager agent instruction's asking reference from `delivery-contract` to the selected tracker adapter's `Ask a person and wait` section.
+
+### R-15 Triager's label instruction is synchronized at Task 2
+
+WHEN Task 2 removes the Multica label section from `docs/agents/triage-labels.md` THE SYSTEM SHALL update the out-of-repository Triager agent instruction's label-id reference to the tracker adapter's then-current `Labels` section in the same release step.
+
+### R-16 Triager's label instruction follows the renamed interface
+
+WHEN Task 3b renames the tracker label section THE SYSTEM SHALL update the out-of-repository Triager agent instruction's label-id reference from `Labels` to `Triage state` in the same release step.
 
 ### Scope boundary
 
