@@ -14,25 +14,27 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 
 1. **分支**：只在本次 run 起始的任务分支（`agent/<agent>/<key>`）上提交并推送，由 `multica repo checkout` 或 worktree 给出。分支名里带着 issue key，PR 靠它自动关联 issue。
    完成判据：`git branch --show-current` 输出的仍是起始分支名。
-2. **推送**：`git push -u origin <任务分支>`。
-   完成判据：`git status -sb` 显示与 `origin/<任务分支>` 同步。
-3. **开 draft PR**：
+2. **同步基点**：开工前 `git fetch origin`。任务分支落后于 `origin/main` 时，在任务分支上 `git merge origin/main`，不新建也不切换分支。
+   完成判据：`git merge-base --is-ancestor origin/main HEAD` 退出码为 0，`git branch --show-current` 仍是起始分支名。
+3. **推送**：`git push -u origin <任务分支>`。失败时重试，可带 `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=30` 防止挂住（`git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push -u origin <任务分支>`）。重试后仍失败，把 issue 置为 `blocked`，评论里写明失败的命令和实际输出。
+   完成判据：`git status -sb` 显示与 `origin/<任务分支>` 同步；或 issue 已为 `blocked` 且评论里有失败命令和输出。
+4. **开 draft PR**：
    ```bash
    gh pr create --draft --base main --title "<KEY>: <一句话>" --body-file ./pr-body.md
    ```
    `pr-body.md` 第一行是 `Closes <KEY>`，正文最后一行是 `修改意见请评论在 <KEY> 上`（有 attribution 行时放在它之前）。成员合并后，这个子 issue 会自动置为 `done`。
    完成判据：`gh pr view --json isDraft,title,body` 显示 `isDraft: true`，标题以 `<KEY>: ` 开头，首行是 `Closes <KEY>`，attribution 之前的最后一行是 `修改意见请评论在 <KEY> 上`。
-4. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
-   完成判据：评论已发出，正文里有 `mention://agent/<Reviewer 的 id>`。
-5. **状态**：`multica issue status <issue> in_review`。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
+5. **状态**：先 `multica issue status <issue> in_review`，再发交接评论。顺序不能反：@Reviewer 会立刻起 Reviewer 的 run，状态还没改就可能被读到旧状态。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
    完成判据：`multica issue get <issue> --output json` 的 `status` 为 `in_review` 或 `blocked`。
+6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
+   完成判据：评论已发出，正文里有 `mention://agent/<Reviewer 的 id>`。
 
 修改意见的唯一来源是 Multica issue 上的评论；GitHub 上的评论不会触发任何 agent，所以 PR 末尾那句提示是必需的。
 
 ## 被评审之后
 
 - **PASS**：Reviewer 已把 PR 转为正式 PR，issue 上会有「等待合并」的评论。你的工作到此为止，等成员合并。
-- **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 4、5 发交接评论并 @Reviewer。
+- **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
 
 ## 评审契约（Reviewer）
