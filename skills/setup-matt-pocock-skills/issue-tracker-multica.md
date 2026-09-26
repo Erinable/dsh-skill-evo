@@ -93,6 +93,24 @@ Whichever branch you take:
 
 Skills that produce a file for a reader — `handoff`, `improve-codebase-architecture`, `to-questionnaire`, `research` — point here rather than restating it.
 
+## Subagents: fan out, then converge inside the turn
+
+A skill written for an interactive session can dispatch a subagent and carry on, because the session outlives the dispatch. Under Multica the task reaches a terminal state the moment the top-level turn exits, and anything still running is orphaned — its result is not delayed, it is gone.
+
+The rule:
+
+> **Dispatch subagents in parallel; collect every report before the turn ends.** Never finish a turn waiting on one.
+
+The distinction that matters, because getting it backwards costs either correctness or speed:
+
+- **Fan out and converge (correct):** dispatch N subagents in one batch, block until all N report, then write up. Costs the wall-clock of one, not N.
+- **Background and yield (broken):** dispatch, stop waiting, end the turn. The report never arrives and you will have claimed work that does not exist.
+- **Serialize out of caution (wasteful):** one subagent at a time because parallelism sounds like backgrounding. It isn't. The constraint is *collect before you exit*, not *dispatch one at a time*.
+
+Work that genuinely cannot finish inside the turn is not a candidate for a subagent at all — it is either a follow-up issue or an `issue wakeup`, both of which persist. And do not poll or sleep waiting for something a turn cannot contain.
+
+Skills that dispatch subagents — `research`, `grilling`, `wayfinder` — point here rather than restating it.
+
 ## Mentions are side-effecting
 
 Inside an issue body or comment, these link forms **act**, they do not merely render:
