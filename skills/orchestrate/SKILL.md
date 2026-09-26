@@ -7,7 +7,6 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 
 向成员提问使用所选 tracker adapter 的 `Ask a person and wait` 一节。
 
-- **成员**：工作区唯一的成员 ack7，user id `cb288268-0840-47ad-837b-f1c63c65b0e6`。订阅、提问都用这个 id。
 - **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
 
 先判断本次 run 属于哪个入口，只执行对应一节：
@@ -27,13 +26,18 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 2. 其余需求只建父 issue，别的都留给父 issue 上的 run：
    ```bash
    multica issue create --title "<需求一句话>" --description-file ./parent.md --assignee Mika --status todo
-   multica issue subscriber add <parent-id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6
    ```
    `parent.md` 写成员原话和你理解的目标。
 
-完成判据：父 issue 存在，负责人 Mika，状态 `todo`，`multica issue subscriber list <parent-id>` 里有成员。
+完成判据：父 issue 存在，负责人 Mika，状态 `todo`。成员订阅在首次仓库路由 run 中完成。
 
 ## 路由并建 Stage 1
+
+开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的 `Subscribers` 补齐父 issue 订阅，再检查子 issue；此前在聊天入口不订阅。
+
+```bash
+multica issue subscriber add <parent-id> --user-id <instance.md Subscribers 中的 user id>
+```
 
 0. 先查 `multica issue children <parent-id> --output json`。已经有子 issue 的，不再路由、不再建票，再看 `multica issue get <parent-id> --output json` 的 `assignee_id`：
    - 不是 Mika（Triager 交接时上次 run 建完子 issue、没走到最后一步指派就中断了）：`multica issue assign <parent-id> --to-id <Mika 的 id>`，再 `multica issue status <parent-id> in_progress`，本次 run 结束。
@@ -44,7 +48,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
 
-完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派、成员已订阅。
+完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；父 issue 和 Stage 1 子 issue 已订阅 `docs/agents/instance.md` 的 `Subscribers`。
 
 ### 路由表
 
@@ -68,7 +72,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 ```bash
 multica issue create --parent <parent-id> --stage <N> --status todo \
   --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
-multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6
+  multica issue subscriber add <child-id> --user-id <instance.md Subscribers 中的 user id>
 ```
 
 | stage 内容 | 张数 | 指派 |
@@ -112,8 +116,8 @@ multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c
 
 ## 交接入口
 
-- **Triager @Mika**：原 issue 就是父 issue，不另建。本次 run 按顺序做完（SKIL-27 已验证：Mika 在这次 run 里把 issue 指派给自己，不会取消当前 run，也不会另起新 run，所以接手不能留给指派去触发）：
-  1. `multica issue subscriber add <原 issue id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6`；
+- **Triager @Mika**：原 issue 就是父 issue，不另建。本次 run 按顺序做完（Mika 在这次 run 里把 issue 指派给自己，不会取消当前 run，也不会另起新 run，所以接手不能留给指派去触发）：
+  1. 按 `docs/agents/instance.md` 的 `Subscribers` 订阅原 issue；
   2. 按「路由并建 Stage 1」路由（Triager 的 brief 在评论里）：发路由评论，建 Stage 1 子 issue；
   3. **最后一步**：`multica issue assign <原 issue id> --to-id <Mika 的 id>`，再 `multica issue status <原 issue id> in_progress`。
 

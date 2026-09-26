@@ -1,8 +1,8 @@
 # Issue tracker: Multica
 
-Issues and specs for this repo live as Multica issues. Use the `multica` CLI for all operations. Never reach for `curl`/`wget` against the Multica API — the CLI holds the credentials.
+Issues live in Multica. Use the `multica` CLI for all operations. Never reach for `curl`/`wget` against the Multica API — the CLI holds the credentials.
 
-Issues are addressed by UUID (`01a0da17-0747-72e1-a7f6-c700d948fca8`) and carry a human identifier (`SKIL-10`). Commands take the UUID; prose and links should quote the identifier. When running inside a Multica agent task, `MULTICA_TASK_ID` holds the current issue's UUID.
+Issues are addressed by UUID (`<issue-uuid>`) and carry a human identifier (`ABC-10`). Commands take the UUID; prose and links should quote the identifier.
 
 ## Conventions
 
@@ -39,13 +39,13 @@ multica issue label remove <issue-id> <label-id>
 multica issue label list <issue-id> --output json
 ```
 
-Create each label once per workspace and reuse its id. On a fresh workspace `multica label list` returns `[]`, so a skill that applies triage labels must create them on first use rather than assuming they exist.
+Create each label once per workspace and reuse its id. On a fresh workspace `multica label list` returns `[]`, so a skill that applies labels must create them on first use rather than assuming they exist.
 
 ## Status vs. label: two orthogonal axes
 
-Multica's `status` is a lifecycle enum owned by the board: `todo`, `in_progress`, `in_review`, `done`, `blocked`, `backlog`, `cancelled`. The `triage` skill's five state roles describe *why* an issue is parked, which the lifecycle enum cannot express — `needs-info` and `ready-for-agent` are both "not started" to the board but opposite instructions to a reader.
+Multica's `status` is a lifecycle enum owned by the board: `todo`, `in_progress`, `in_review`, `done`, `blocked`, `backlog`, `cancelled`. The five canonical triage roles describe *why* an issue is parked, which the lifecycle enum cannot express — `needs-info` and `ready-for-agent` are both "not started" to the board but opposite instructions to a reader.
 
-So: **labels carry the triage role, status carries the lifecycle.** Apply both. This mapping is fixed for this repo:
+So: **labels carry the triage role, status carries the lifecycle.** Apply both. Map each role to the corresponding label name:
 
 | triage role       | Multica status | label             |
 | ----------------- | -------------- | ----------------- |
@@ -91,7 +91,7 @@ Whichever branch you take:
 - Do not try to open the artifact for the user. There is no browser, no display, and no one watching this machine: `open` / `xdg-open` / `start` either fail or succeed invisibly.
 - If a surface has no attachment mechanism, say so in words and inline what you can. Never link the path as a substitute.
 
-Skills that produce a file for a reader — `handoff`, `improve-codebase-architecture`, `to-questionnaire`, `research` — point here rather than restating it.
+Skills that produce a file for a reader should point here rather than restating these delivery rules.
 
 ## Subagents: fan out, then converge inside the turn
 
@@ -109,13 +109,13 @@ The distinction that matters, because getting it backwards costs either correctn
 
 Work that genuinely cannot finish inside the turn is not a candidate for a subagent at all — it is either a follow-up issue or an `issue wakeup`, both of which persist. And do not poll or sleep waiting for something a turn cannot contain.
 
-Skills that dispatch subagents — `research`, `grilling`, `wayfinder` — point here rather than restating it.
+Skills that dispatch subagents should point here rather than restating these convergence rules.
 
 ## Mentions are side-effecting
 
 Inside an issue body or comment, these link forms **act**, they do not merely render:
 
-- `[SKIL-10](mention://issue/<issue-id>)` — link, no side effect
+- `[ABC-10](mention://issue/<issue-id>)` — link, no side effect
 - `[Project](mention://project/<project-id>)` — link, no side effect
 - `[@Name](mention://member/<user-id>)` — notifies a human
 - `[@Name](mention://agent/<agent-id>)` — enqueues a new run for that agent
@@ -137,7 +137,7 @@ What follows from it:
 - **Leave the parent's lifecycle to its own owner.** A child run never sets the parent's status, including to `done` — stage barriers already wake the parent's assignee when a stage completes. Report upward by commenting on the parent.
 - **Terminal status on your own issue only.** An agent finishing its claimed issue sets `in_review`; `done` stays a human decision.
 
-Skills that need this — `to-tickets`, `triage`, `wayfinder` — point here rather than restating it.
+Skills that write issues should point here rather than restating these rules.
 
 ## Ask a person and wait
 
@@ -145,24 +145,24 @@ Use this operation when a skill must ask a person a question and resume from the
 
 1. Write the question body to a file inside the working directory. Publish it with `multica issue comment add <issue> --content-file <body-file>`. If `thread` is supplied, also pass `--parent <thread>`.
 2. Read the issue assignee. If the issue is assigned to the current agent, register no wakeup: a member comment already wakes that assignee.
-3. Otherwise use the triggering comment's `author_id` when `author_type == member`; otherwise run `multica workspace member list --output json` and use the `user_id` of the member whose role is `owner`. Use a member `user_id`, never a membership `id`, issue `creator_id`, or issue `assignee_id`.
+3. Otherwise use the triggering comment's `author_id` when `author_type == member`. If there is no member author, consult `docs/agents/instance.md`'s `Decision maker` section, run `multica workspace member list --output json`, and use the matching member's `user_id`. Use a member `user_id`, never a membership `id`, issue `creator_id`, or issue `assignee_id`.
 4. Register exactly one one-shot event wakeup: `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <member-user-id>`. When supplied, pass `thread` as `--parent <thread>` and `next` as `--instruction <next>`.
 5. End the run after registering the wakeup. Do not poll or sleep.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: one issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. Create the label once (`multica label create --name wayfinder:map --color '#8b5cf6'`), then `multica issue label add <map-id> <label-id>`. Keep the map's own status at `in_progress` while the effort is live.
-- **Child ticket**: `multica issue create --parent <map-id> --title "..." --description-file <path> --stage N`. The ticket type goes on as a label — `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:task` — created once per workspace like any other label. Once claimed, assign the ticket to the driving dev.
-- **Blocking**: Multica has no dependency edge. Express a blocker with the `--stage N` barrier — every ticket in stage N runs only after stage N-1 finishes, and the parent's assignee is woken when a stage completes. Create a blocked ticket with `--status backlog` so it does not start early; the map owner promotes it to `todo` when its stage opens. For a dependency that cuts across stages, add a `Blocked by: SKIL-<n>` line at the top of the child body and treat it as satisfied when that issue reaches `done` or `cancelled`.
+- **Map**: one issue labelled `map`, holding its notes, decisions, and open questions. Resolve the label by name with `multica label list --output json`; if absent, create it with `multica label create --name map --color <color>`, then `multica issue label add <map-id> <label-id>`. Keep the map's own status at `in_progress` while the effort is live.
+- **Child ticket**: `multica issue create --parent <map-id> --title "..." --description-file <path> --stage N`. An optional ticket-type label can describe the work. Once claimed, assign the ticket to the responsible agent.
+- **Blocking**: Multica has no dependency edge. Express a blocker with the `--stage N` barrier — every ticket in stage N runs only after stage N-1 finishes, and the parent's assignee is woken when a stage completes. Create a blocked ticket with `--status backlog` so it does not start early; the map owner promotes it to `todo` when its stage opens. For a dependency that cuts across stages, add a `Blocked by: ABC-<n>` line at the top of the child body and treat it as satisfied when that issue reaches `done` or `cancelled`.
 - **Frontier query**: `multica issue children <map-id> --output json` returns children grouped by stage. Read the lowest stage that still has unfinished work, drop anything in `backlog` (not yet promoted), `blocked`, or already assigned, and drop any ticket whose `Blocked by:` issues are not terminal. First in stage order, then in board order, wins.
 - **Claim**: `multica issue assign <id> --to <dev>` followed by `multica issue status <id> in_progress` — the session's first writes.
-- **Research tickets**: assign each `wayfinder:research` ticket to the research agent, which delivers it as a PR. The map owner does not spin up its own research subagent for these tickets, so skip `wayfinder`'s "Fire the research subagents" step — running both resolves the same ticket twice.
+- **Avoid duplicate work**: when a child ticket already covers a delegated task, do not dispatch a second agent to do the same work.
 - **Resolve**: how a ticket reaches `done` depends on its type, and it must reach a terminal status — a ticket parked at `in_review` never closes its stage, so the tickets behind it never unlock.
-  - `wayfinder:research` and `wayfinder:prototype` are delivered as a PR by the assigned agent (`Closes <KEY>`); merging it completes the ticket.
-  - `wayfinder:grilling`: the member's reply is the acceptance. The map owner posts the resolution comment and sets `multica issue status <id> done` itself.
-  - `wayfinder:task`: whoever did the work sets `done`.
+  - Code and documentation tickets are delivered as a PR by the assigned agent (`Closes <KEY>`); merging it completes the ticket.
+  - Decision tickets are accepted by the member's reply. The map owner posts the resolution comment and sets `multica issue status <id> done` itself.
+  - A manually completed ticket is set to `done` by whoever did the work.
 
   Then append a context pointer to the map's Decisions-so-far by rewriting the map body via `multica issue update <map-id> --description-file <path>`.
 

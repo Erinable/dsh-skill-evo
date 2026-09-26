@@ -51,6 +51,10 @@ Issues are tracked in the Multica workspace via the `multica` CLI. See `docs/age
 
 Default five triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), plus `wayfinder:*` labels; resolve UUIDs by name. See `docs/agents/triage-labels.md`.
 
+### Workspace instance
+
+Workspace-specific decision maker, subscribers, label snapshot, and agent routing. See `docs/agents/instance.md`.
+
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
