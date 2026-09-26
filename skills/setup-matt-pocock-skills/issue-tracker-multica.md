@@ -148,6 +148,12 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Blocking**: Multica has no dependency edge. Express a blocker with the `--stage N` barrier — every ticket in stage N runs only after stage N-1 finishes, and the parent's assignee is woken when a stage completes. Create a blocked ticket with `--status backlog` so it does not start early; the map owner promotes it to `todo` when its stage opens. For a dependency that cuts across stages, add a `Blocked by: SKIL-<n>` line at the top of the child body and treat it as satisfied when that issue reaches `done` or `cancelled`.
 - **Frontier query**: `multica issue children <map-id> --output json` returns children grouped by stage. Read the lowest stage that still has unfinished work, drop anything in `backlog` (not yet promoted), `blocked`, or already assigned, and drop any ticket whose `Blocked by:` issues are not terminal. First in stage order, then in board order, wins.
 - **Claim**: `multica issue assign <id> --to <dev>` followed by `multica issue status <id> in_progress` — the session's first writes.
-- **Resolve**: post the answer with `multica issue comment add <id> --content-file <path>`, set `multica issue status <id> in_review` (an agent) or `done` (a human accepting it), then append a context pointer to the map's Decisions-so-far by rewriting the map body via `multica issue update <map-id> --description-file <path>`.
+- **Research tickets**: assign each `wayfinder:research` ticket to the research agent, which delivers it as a PR. The map owner does not spin up its own research subagent for these tickets, so skip `wayfinder`'s "Fire the research subagents" step — running both resolves the same ticket twice.
+- **Resolve**: how a ticket reaches `done` depends on its type, and it must reach a terminal status — a ticket parked at `in_review` never closes its stage, so the tickets behind it never unlock.
+  - `wayfinder:research` and `wayfinder:prototype` are delivered as a PR by the assigned agent (`Closes <KEY>`); merging it completes the ticket.
+  - `wayfinder:grilling`: the member's reply is the acceptance. The map owner posts the resolution comment and sets `multica issue status <id> done` itself.
+  - `wayfinder:task`: whoever did the work sets `done`.
+
+  Then append a context pointer to the map's Decisions-so-far by rewriting the map body via `multica issue update <map-id> --description-file <path>`.
 
 `multica issue update` replaces the description wholesale — read the current body with `multica issue get` first, append to it, and write the whole thing back, or you will drop the rest of the map.

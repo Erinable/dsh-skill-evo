@@ -33,6 +33,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 
 ## 路由并建 Stage 1
 
+0. 先查 `multica issue children <parent-id> --output json`：已经有子 issue 的，不再路由、不再建票，本次 run 直接结束。同一张 issue 被多跑一次也不会建出第二套子 issue。
 1. 按路由表判断类型。判断不了时，按 `delivery-contract` 的「提问」一节问成员**一个**问题（带默认答案），本次 run 结束；成员回复后按回复路由，不再追问。
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
@@ -47,7 +48,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 | 涉及模块边界或接口设计 | S1 Architect（设计 PR）→ S2 Spec Writer → S3 若干 Builder |
 | bug | S1 Sleuth（先写复现测试，再修复并开 PR） |
 | 事实问题、选型 | S1 Scout（调研 PR）；成员想继续做时，追加后续 stage |
-| 看了才知道的设计问题 | S1 Prototyper（原型分支 + 结论评论）→ 结论写回父 issue，再决定后续 |
+| 看了才知道的设计问题 | S1 Prototyper（原型附件 + 结论文档 PR）→ 合并后按结论问成员是否追加后续 stage |
 | 大而模糊的方向 | S1 Cartographer（地图 + 决策票，决策票由 Cartographer 挂在地图 issue 下）→ 地图清楚后追加 Spec Writer 和 Builder 的 stage |
 | skill 或文档修改 | S1 Scribe |
 | 只需要一个答案 | 不开票（见入口第 1 步） |
@@ -105,7 +106,12 @@ multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c
 
 ## 交接入口
 
-- **Triager @Mika**：分诊结论就是需求。按入口第 2 步建父 issue，`parent.md` 里写原 issue 的链接 `[<KEY>](mention://issue/<原 issue id>)` 和分诊结论；再在原 issue 上回复父 issue 的链接。所有派活都经这一个入口。
+- **Triager @Mika**：原 issue 就是父 issue，不另建。本次 run 按顺序做完（SKIL-27 已验证：Mika 在这次 run 里把 issue 指派给自己，不会取消当前 run，也不会另起新 run，所以接手不能留给指派去触发）：
+  1. `multica issue subscriber add <原 issue id> --user-id cb288268-0840-47ad-837b-f1c63c65b0e6`；
+  2. 按「路由并建 Stage 1」路由（Triager 的 brief 在评论里）：发路由评论，建 Stage 1 子 issue；
+  3. **最后一步**：`multica issue assign <原 issue id> --to-id <Mika 的 id>`，再 `multica issue status <原 issue id> in_progress`。
+
+  指派放在最后：指派不会起新 run，前面几步做完 issue 才有负责人，stage 完成后也才能唤醒到 Mika。
 - **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。
 
 ## 故障
