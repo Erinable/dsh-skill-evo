@@ -16,7 +16,7 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
    完成判据：`git branch --show-current` 输出的仍是起始分支名。
 2. **同步基点**：开工前 `git fetch origin`。任务分支落后于 `origin/main` 时，在任务分支上 `git merge origin/main`，不新建也不切换分支。
    完成判据：`git merge-base --is-ancestor origin/main HEAD` 退出码为 0，`git branch --show-current` 仍是起始分支名。
-3. **推送**：`git push -u origin <任务分支>`。失败时重试，可带 `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=30` 防止挂住（`git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push -u origin <任务分支>`）。重试后仍失败，把 issue 置为 `blocked`，评论里写明失败的命令和实际输出。
+3. **推送**：`git push -u origin <任务分支>`。失败时重试，**最多 3 次**，可带 `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=30` 防止挂住（`git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push -u origin <任务分支>`）。3 次都失败就停止重试，把 issue 置为 `blocked`，评论里贴出失败的命令和实际输出。
    完成判据：`git status -sb` 显示与 `origin/<任务分支>` 同步；或 issue 已为 `blocked` 且评论里有失败命令和输出。
 4. **开 draft PR**：
    ```bash

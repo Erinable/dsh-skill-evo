@@ -93,10 +93,15 @@ multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c
 
 ## 收口
 
-1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
-2. `multica issue status <parent-id> done`。
+这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 都是成员合并 PR 后才变 `done` 的，合并就是验收，所以父 issue 由 Mika 直接关闭。不置 `in_review`，也不请成员确认后再关。
 
-每张子 issue 都是成员合并 PR 后才变 `done` 的，成员已经逐个验收，所以父 issue 由 Mika 关闭。
+1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
+2. 直接置 `done`：
+   ```bash
+   multica issue status <parent-id> done
+   ```
+
+完成判据：`multica issue get <parent-id> --output json` 的 `status` 为 `done`。停在 `in_review` 就是没收口。
 
 ## 交接入口
 
