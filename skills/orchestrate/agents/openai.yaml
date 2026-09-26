@@ -1,0 +1,5 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Route requests into staged sub-issues and release stages"
+policy:
+  allow_implicit_invocation: true
