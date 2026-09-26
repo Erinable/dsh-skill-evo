@@ -1,6 +1,6 @@
 ---
 name: grilling
-description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases — including "grill me" and "grill me with docs", both of which are this skill.
 ---
 
 Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
@@ -22,6 +22,17 @@ Format a round like so:
 ```
 
 Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
+
+## Two grounds: with a repo, without one
+
+The interview is the same either way. What differs is whether it leaves a paper trail. Decide once, at the start:
+
+- **A working directory is under you** → also load `domain-modeling` and run it alongside the interview. Every term you and the user pin down lands in `CONTEXT.md`; every hard-to-reverse decision lands as an ADR. The tree stops living only in the transcript, so a later reader — or a later run — can pick it up from the files. Prefer this whenever a repo is there to write into: the paper trail costs one extra skill load and buys everything the transcript loses.
+- **No working directory** (a plan, a design, a piece of writing, nothing with a repo under it) → pure conversation, nothing written to disk. The shared understanding you reach at the end is the whole deliverable, so state it in full rather than pointing at files that do not exist.
+
+These two grounds used to be two separate wrapper skills (`grill-me` and `grill-with-docs`), each existing only to supply a slash-command entry point. They are branches of this skill now.
+
+The ground is independent of the carrier below: an issue-async run in a checked-out repo takes the first branch and the issue-async carrier both.
 
 ## Two carriers for a round
 
