@@ -76,10 +76,11 @@ multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c
 被「Stage N complete」唤醒时，平台只尝试唤醒一次，所以每次都先核对再动：
 
 1. `multica issue children <parent-id> --output json`，确认 Stage N 每张子 issue 的 `status_category` 都是 `done` 或 `cancelled`。有未完成的，在父 issue 上说明是哪张，本次 run 结束。
-2. 按路由计划建下一 stage。下一 stage 是实现时，按「拆票」来建。
-3. 已经没有下一 stage 时，去「收口」。
+2. **下一 stage 已存在就不再建。** 同一份 `issue children` 输出里已有 Stage N+1 的子 issue 时（spec 修订票合并后 Stage N 会再次完成，就是这种情况）：找出 Stage N 里修订票描述中点名的原子 issue，其中仍是 `blocked` 的逐个 `multica issue status <child-id> todo`，本次 run 结束。不拆票、不建新票。
+3. 按路由计划建下一 stage。下一 stage 是实现时，按「拆票」来建。
+4. 已经没有下一 stage 时，去「收口」。
 
-完成判据：下一 stage 的子 issue 已建好且为 `todo`，或已进入收口。
+完成判据：Stage N+1 的子 issue 只有一套（没有重复建票），且为 `todo` 或已开工；或已进入收口。
 
 ### 拆票
 
@@ -106,8 +107,8 @@ multica issue subscriber add <child-id> --user-id cb288268-0840-47ad-837b-f1c63c
 
 | 情况 | 处理 |
 |---|---|
-| 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 在 Stage 1 追加一张 Spec Writer 修订票（`--stage 1 --status todo`），描述里写原子 issue 的问题。修订合并后 Stage 1 再次完成、唤醒你，把原子 issue 置回 `todo` |
-| Reviewer 第 3 次 BLOCK、run 失败、stage 唤醒丢失、PR 被关闭不合 | 由每日巡检发现，见 `PATROL.md` |
+| 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 在 spec 所在的 stage 追加一张 Spec Writer 修订票（`--stage <该 stage> --status todo`），描述里写原子 issue 的 KEY 和它报的问题。修订合并后该 stage 再次完成、唤醒你，按「放行」第 2 步把原子 issue 置回 `todo` |
+| Reviewer 第 3 次 BLOCK、run 失败、stage 唤醒丢失、PR 被关闭不合 | 由每日巡检发现、进摘要，见 `PATROL.md` |
 | 成员把修改意见留在 GitHub 上 | 没有 agent 会被触发，这是平台缺口；靠每个 PR 末尾「修改意见请评论在 <KEY> 上」的提示预防（见 `delivery-contract`） |
 
 ## 自动任务

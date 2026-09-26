@@ -20,8 +20,8 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
    ```bash
    gh pr create --draft --base main --title "<KEY>: <一句话>" --body-file ./pr-body.md
    ```
-   `pr-body.md` 第一行是 `Closes <KEY>`，最后一行是 `修改意见请评论在 <KEY> 上`。成员合并后，这个子 issue 会自动置为 `done`。
-   完成判据：`gh pr view --json isDraft,title,body` 显示 `isDraft: true`，标题以 `<KEY>: ` 开头，正文首行、末行如上。
+   `pr-body.md` 第一行是 `Closes <KEY>`，正文最后一行是 `修改意见请评论在 <KEY> 上`（有 attribution 行时放在它之前）。成员合并后，这个子 issue 会自动置为 `done`。
+   完成判据：`gh pr view --json isDraft,title,body` 显示 `isDraft: true`，标题以 `<KEY>: ` 开头，首行是 `Closes <KEY>`，attribution 之前的最后一行是 `修改意见请评论在 <KEY> 上`。
 4. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
    完成判据：评论已发出，正文里有 `mention://agent/<Reviewer 的 id>`。
 5. **状态**：`multica issue status <issue> in_review`。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
