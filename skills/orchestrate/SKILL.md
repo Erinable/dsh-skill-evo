@@ -33,7 +33,11 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 
 ## 路由并建 Stage 1
 
-0. 先查 `multica issue children <parent-id> --output json`：已经有子 issue 的，不再路由、不再建票，本次 run 直接结束。同一张 issue 被多跑一次也不会建出第二套子 issue。
+0. 先查 `multica issue children <parent-id> --output json`。已经有子 issue 的，不再路由、不再建票，再看 `multica issue get <parent-id> --output json` 的 `assignee_id`：
+   - 不是 Mika（Triager 交接时上次 run 建完子 issue、没走到最后一步指派就中断了）：`multica issue assign <parent-id> --to-id <Mika 的 id>`，再 `multica issue status <parent-id> in_progress`，本次 run 结束。
+   - 已经是 Mika：本次 run 直接结束。
+
+   同一张 issue 被多跑一次也不会建出第二套子 issue，也不会留下没有负责人的父 issue。
 1. 按路由表判断类型。判断不了时，按 `delivery-contract` 的「提问」一节问成员**一个**问题（带默认答案），本次 run 结束；成员回复后按回复路由，不再追问。
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
@@ -53,7 +57,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 | skill 或文档修改 | S1 Scribe |
 | 只需要一个答案 | 不开票（见入口第 1 步） |
 
-「再决定后续」「成员想继续做时」都通过 `delivery-contract` 的「提问」问成员，按回复追加 stage。
+「合并后按结论问成员是否追加后续 stage」「成员想继续做时」都通过 `delivery-contract` 的「提问」问成员，按回复追加 stage。
 
 ### stage 模板
 
