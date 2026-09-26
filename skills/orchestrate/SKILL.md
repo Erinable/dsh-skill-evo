@@ -36,7 +36,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的 `Subscribers` 补齐父 issue 订阅，再检查子 issue；此前在聊天入口不订阅。
 
 ```bash
-multica issue subscriber add <parent-id> --user-id <instance.md Subscribers 中的 user id>
+multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
 ```
 
 0. 先查 `multica issue children <parent-id> --output json`。已经有子 issue 的，不再路由、不再建票，再看 `multica issue get <parent-id> --output json` 的 `assignee_id`：
@@ -72,7 +72,7 @@ multica issue subscriber add <parent-id> --user-id <instance.md Subscribers 中�
 ```bash
 multica issue create --parent <parent-id> --stage <N> --status todo \
   --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
-  multica issue subscriber add <child-id> --user-id <instance.md Subscribers 中的 user id>
+multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
 ```
 
 | stage 内容 | 张数 | 指派 |

@@ -151,18 +151,18 @@ Use this operation when a skill must ask a person a question and resume from the
 
 ## Wayfinding operations
 
-The **map** is a single issue with **child** issues as tickets.
+Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: one issue labelled `map`, holding its notes, decisions, and open questions. Resolve the label by name with `multica label list --output json`; if absent, create it with `multica label create --name map --color <color>`, then `multica issue label add <map-id> <label-id>`. Keep the map's own status at `in_progress` while the effort is live.
-- **Child ticket**: `multica issue create --parent <map-id> --title "..." --description-file <path> --stage N`. An optional ticket-type label can describe the work. Once claimed, assign the ticket to the responsible agent.
+- **Map**: one issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. Resolve the label by name with `multica label list --output json`; if absent, create it with `multica label create --name wayfinder:map --color '#8b5cf6'`, then `multica issue label add <map-id> <label-id>`. Keep the map's own status at `in_progress` while the effort is live.
+- **Child ticket**: `multica issue create --parent <map-id> --title "..." --description-file <path> --stage N`. The ticket type goes on as a label — `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:task` — created once per workspace like any other label. Once claimed, assign the ticket to the driving dev.
 - **Blocking**: Multica has no dependency edge. Express a blocker with the `--stage N` barrier — every ticket in stage N runs only after stage N-1 finishes, and the parent's assignee is woken when a stage completes. Create a blocked ticket with `--status backlog` so it does not start early; the map owner promotes it to `todo` when its stage opens. For a dependency that cuts across stages, add a `Blocked by: ABC-<n>` line at the top of the child body and treat it as satisfied when that issue reaches `done` or `cancelled`.
 - **Frontier query**: `multica issue children <map-id> --output json` returns children grouped by stage. Read the lowest stage that still has unfinished work, drop anything in `backlog` (not yet promoted), `blocked`, or already assigned, and drop any ticket whose `Blocked by:` issues are not terminal. First in stage order, then in board order, wins.
 - **Claim**: `multica issue assign <id> --to <dev>` followed by `multica issue status <id> in_progress` — the session's first writes.
-- **Avoid duplicate work**: when a child ticket already covers a delegated task, do not dispatch a second agent to do the same work.
+- **Research tickets**: assign research tickets to the research agent, which delivers them as a PR. Follow `docs/agents/instance.md`'s `Agent routing` section for repository-specific routing. The map owner does not dispatch a second research agent for these tickets.
 - **Resolve**: how a ticket reaches `done` depends on its type, and it must reach a terminal status — a ticket parked at `in_review` never closes its stage, so the tickets behind it never unlock.
-  - Code and documentation tickets are delivered as a PR by the assigned agent (`Closes <KEY>`); merging it completes the ticket.
-  - Decision tickets are accepted by the member's reply. The map owner posts the resolution comment and sets `multica issue status <id> done` itself.
-  - A manually completed ticket is set to `done` by whoever did the work.
+  - `wayfinder:research` and `wayfinder:prototype` are delivered as a PR by the assigned agent (`Closes <KEY>`); merging it completes the ticket.
+  - `wayfinder:grilling`: the member's reply is the acceptance. The map owner posts the resolution comment and sets `multica issue status <id> done` itself.
+  - `wayfinder:task`: whoever did the work sets `done`.
 
   Then append a context pointer to the map's Decisions-so-far by rewriting the map body via `multica issue update <map-id> --description-file <path>`.
 
