@@ -1,7 +1,6 @@
 ---
 name: to-spec
-description: "Turn the current conversation into a spec and publish it to the project issue tracker: no interview, just synthesis of what you've already discussed."
-disable-model-invocation: true
+description: "Turn the current conversation into a spec and publish it to the project issue tracker: no interview, just synthesis of what you've already discussed. Use when the decisions are already settled — in this conversation, an issue's comment history, or a finished grilling round — and what's missing is the written spec someone can build from. Not for open questions: grill those first, since this skill synthesises rather than asks."
 ---
 
 This skill takes the current conversation context and codebase understanding and produces a spec. Do NOT interview the user; just synthesize what you already know.

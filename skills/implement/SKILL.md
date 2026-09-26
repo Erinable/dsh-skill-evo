@@ -1,7 +1,6 @@
 ---
 name: implement
-description: "Implement a piece of work based on a spec or set of tickets."
-disable-model-invocation: true
+description: "Implement a piece of work based on a spec or set of tickets. Use when you hold an agent-ready ticket or spec and the next step is writing the code: the work is already decided, and what remains is code, tests, review, and a commit. Not for deciding what to build — grill or spec it first."
 ---
 
 Implement the work described by the user in the spec or tickets.

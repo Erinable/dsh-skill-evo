@@ -1,7 +1,6 @@
 ---
 name: triage
-description: Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs.
-disable-model-invocation: true
+description: Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs. Use when a request arrives from outside and nobody has yet decided whether it is real, a duplicate, reproducible, or who it belongs to — a filed bug report, a feature ask, an unreviewed inbound PR, or a backlog sweep of untriaged issues. Not for an issue already triaged and agent-ready.
 ---
 
 # Triage
