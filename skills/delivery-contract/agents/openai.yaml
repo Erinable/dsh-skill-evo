@@ -1,0 +1,5 @@
+interface:
+  display_name: "Delivery Contract"
+  short_description: "Deliver a sub-issue as a draft PR, get reviewed, ask the member"
+policy:
+  allow_implicit_invocation: true
