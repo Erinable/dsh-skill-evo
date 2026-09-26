@@ -21,6 +21,85 @@ export interface ProposalInput {
   readonly now?: string
 }
 
+export const PROPOSAL_TRANSITIONS: Readonly<Record<ProposalStatus, readonly ProposalStatus[]>> = {
+  draft: ['proposed', 'replayed', 'observed', 'rejected', 'deferred'],
+  proposed: ['evaluating', 'rejected', 'deferred'],
+  evaluating: ['evaluated', 'rejected', 'deferred'],
+  evaluated: ['accepted', 'rejected', 'deferred'],
+  replayed: ['observed', 'evaluated', 'accepted', 'rejected', 'deferred'],
+  observed: ['evaluated', 'accepted', 'rejected', 'deferred'],
+  accepted: ['promoted', 'rejected'],
+  promoted: ['rolled-back'],
+  'rolled-back': [],
+  rejected: ['observed'],
+  deferred: ['observed', 'rejected'],
+  reverted: [],
+}
+
+export type ProposalLedgerErrorCode = 'ambiguous' | 'not-found' | 'invalid-transition'
+
+export class ProposalLedgerError extends Error {
+  constructor(readonly code: ProposalLedgerErrorCode, message: string) {
+    super(message)
+    this.name = 'ProposalLedgerError'
+  }
+}
+
+export function canTransition(from: ProposalStatus, to: ProposalStatus): boolean {
+  return PROPOSAL_TRANSITIONS[from].includes(to)
+}
+
+export function assertCanTransition(from: ProposalStatus, to: ProposalStatus): void {
+  if (!canTransition(from, to)) {
+    throw new ProposalLedgerError('invalid-transition', `invalid proposal transition ${from} -> ${to}`)
+  }
+}
+
+export type LedgerRecordStatus = Exclude<ProposalStatus, 'draft' | 'proposed' | 'reverted'>
+
+const LEDGER_RECORD_TARGETS: readonly ProposalStatus[] = Object.values(PROPOSAL_TRANSITIONS).flat()
+
+export const TERMINAL_STATUS_SUFFIXES: readonly LedgerRecordStatus[] = [
+  ...new Set(LEDGER_RECORD_TARGETS.filter((status): status is LedgerRecordStatus => status !== 'proposed')),
+]
+
+export function proposalRootId(id: string): string {
+  let root = id
+  while (true) {
+    const separator = root.lastIndexOf(':')
+    if (separator < 0 || !TERMINAL_STATUS_SUFFIXES.includes(root.slice(separator + 1) as LedgerRecordStatus)) return root
+    root = root.slice(0, separator)
+  }
+}
+
+export function ledgerRecordId(root: string, status: LedgerRecordStatus): string {
+  return `${proposalRootId(root)}:${status}`
+}
+
+export function latestProposalsByRoot(proposals: readonly SkillProposal[]): Map<string, SkillProposal> {
+  const latest = new Map<string, SkillProposal>()
+  for (const proposal of proposals) latest.set(proposalRootId(proposal.id), proposal)
+  return latest
+}
+
+export function findProposalById(proposals: readonly SkillProposal[], id: string): SkillProposal {
+  const latest = latestProposalsByRoot(proposals)
+  const exactRoot = latest.get(id)
+  if (exactRoot !== undefined) return exactRoot
+
+  for (let index = proposals.length - 1; index >= 0; index -= 1) {
+    if (proposals[index]!.id === id) return latest.get(proposalRootId(id))!
+  }
+
+  const segments = id.split(':')
+  const matchingRoots = [...latest.keys()].filter(root => {
+    const rootSegments = root.split(':')
+    return segments.length < rootSegments.length && segments.every((segment, index) => segment === rootSegments[index])
+  })
+  if (matchingRoots.length > 1) throw new ProposalLedgerError('ambiguous', `ambiguous proposal reference: ${id}`)
+  throw new ProposalLedgerError('not-found', `proposal not found: ${id}`)
+}
+
 /** Build a reviewable candidate without touching the production Skill file. */
 export function createProposal(input: ProposalInput): SkillProposal {
   const now = input.now ?? new Date().toISOString()
@@ -54,23 +133,7 @@ export function createProposal(input: ProposalInput): SkillProposal {
 /** A proposal can only move forward through explicit review states. */
 export function transitionProposal(proposal: SkillProposal, status: ProposalStatus, now = new Date().toISOString()): SkillProposal {
   if (proposal.status === status) return proposal
-  const allowed: Record<ProposalStatus, readonly ProposalStatus[]> = {
-    draft: ['proposed', 'replayed', 'observed', 'rejected', 'deferred'],
-    proposed: ['evaluating', 'rejected', 'deferred'],
-    evaluating: ['evaluated', 'rejected', 'deferred'],
-    evaluated: ['accepted', 'rejected', 'deferred'],
-    replayed: ['observed', 'evaluated', 'accepted', 'rejected', 'deferred'],
-    observed: ['evaluated', 'accepted', 'rejected', 'deferred'],
-    accepted: ['promoted', 'rejected'],
-    promoted: ['rolled-back'],
-    'rolled-back': [],
-    rejected: ['observed'],
-    deferred: ['observed', 'rejected'],
-    reverted: [],
-  }
-  if (!allowed[proposal.status].includes(status)) {
-    throw new Error(`invalid proposal transition ${proposal.status} -> ${status}`)
-  }
+  assertCanTransition(proposal.status, status)
   return { ...proposal, status, updatedAt: now }
 }
 

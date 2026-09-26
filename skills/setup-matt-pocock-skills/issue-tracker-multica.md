@@ -139,6 +139,16 @@ What follows from it:
 
 Skills that need this — `to-tickets`, `triage`, `wayfinder` — point here rather than restating it.
 
+## Ask a person and wait
+
+Use this operation when a skill must ask a person a question and resume from the reply. Inputs are `issue`, `body`, optional `thread`, and optional `next`.
+
+1. Write the question body to a file inside the working directory. Publish it with `multica issue comment add <issue> --content-file <body-file>`. If `thread` is supplied, also pass `--parent <thread>`.
+2. Read the issue assignee. If the issue is assigned to the current agent, register no wakeup: a member comment already wakes that assignee.
+3. Otherwise use the triggering comment's `author_id` when `author_type == member`; otherwise run `multica workspace member list --output json` and use the `user_id` of the member whose role is `owner`. Use a member `user_id`, never a membership `id`, issue `creator_id`, or issue `assignee_id`.
+4. Register exactly one one-shot event wakeup: `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <member-user-id>`. When supplied, pass `thread` as `--parent <thread>` and `next` as `--instruction <next>`.
+5. End the run after registering the wakeup. Do not poll or sleep.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
