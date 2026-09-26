@@ -34,7 +34,7 @@ WHEN a tokenized temporary file `<lock>.<token>.tmp` is encountered THE SYSTEM S
 
 ### R8. Repair sweeps locks, guards, and temporary files by directory
 
-WHEN `sweepLocks({directories, paths}, options?)` runs THE SYSTEM SHALL process each directory under `<dirname>/.lock-sweep.lock`, first eligible orphan guards, then locks through `reclaimLock`, then eligible temporary files; it SHALL skip a directory whose directory lock is unavailable and report `state: 'skipped'`; the directory lock and its own guard/tmp are excluded from the report.
+WHEN `sweepLocks({directories, paths}, options?)` runs THE SYSTEM SHALL process each directory under `<dirname>/.lock-sweep.lock`, first eligible orphan guards, then locks through `reclaimLock`, then eligible temporary files; it SHALL skip a directory whose directory lock is unavailable and report `state: 'skipped'`; if the directory lock's own stale reclaim guard blocks the sweep, the skipped result SHALL include that guard path for manual removal; the directory lock and its own guard/tmp are excluded from ordinary artifact entries.
 
 ### R9. Repair covers both root-owned and shared observation lock paths
 

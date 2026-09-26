@@ -71,7 +71,7 @@ hasCode(error: unknown, code: string): boolean
 1. `withLock` serializes contenders by atomically linking a fully written owner tmp file into the requested lock path.
 2. On `EEXIST`, it inspects the same path and can reclaim only `dead`, `rebooted`, or expired `unknown`; `held` and `foreign` remain protected.
 3. Reclamation acquires `<path>.reclaim`, rechecks the target, removes only a still-reclaimable target, and releases the guard by token. Normal contenders never remove guards.
-4. Repair acquires a per-directory sweep lock, removes eligible orphan guards, reclaims locks, and then removes eligible tmp files. Shared observation directories are handled by explicit paths so unrelated projects are not scanned.
+4. Repair acquires a per-directory sweep lock, removes eligible orphan guards, reclaims locks, and then removes eligible tmp files. Shared observation directories are handled by explicit paths so unrelated projects are not scanned. A stale guard for the directory lock itself prevents the sweep and is surfaced with its guard path for manual removal; it is not emitted as an ordinary artifact entry.
 5. Scope release compares the acquired token before unlinking, so a replacement lock cannot be deleted by an old owner.
 6. `repairEvolutionRoot` maps sweep results into additive legacy arrays and the new `locks` report field.
 7. Publication recovery remains the existing `.publish.json` flow; only lock acquisition/reclaim behavior changes. Mutation queues and lock locations remain unchanged.
@@ -97,5 +97,5 @@ The complete required scenarios are listed in `tasks.md`: L1–L15 and L11b for 
 - v0 and unknown classifications still depend on wall-clock mtime/createdAt during mixed-version operation.
 - A reboot detected after current uptime passes the recorded v1 uptime can conservatively leave a pid-reused lock as held.
 - Mixed old/new reclaimers can retain the documented race until all processes are upgraded.
-- An orphan reclaim guard blocks normal acquisition until repair; a stale directory-lock guard requires manual removal.
+- An orphan reclaim guard blocks normal acquisition until repair; a stale directory-lock guard is surfaced by the skipped sweep result and requires manual removal.
 - Local filesystem and same-host scope is intentional.

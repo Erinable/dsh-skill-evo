@@ -4,12 +4,12 @@ Tasks are ordered according to the five-step migration in `docs/design/unified-l
 
 ### 1. Implement the unified locking module and its protocol tests
 
-**Requirements:** R1, R2, R3, R4, R5, R6, R7, R8, R14  
+**Requirements:** R1, R2, R3, R4, R5, R6, R7, R8, R14
 **Depends on:** none
 
 **Goal:** Replace the implementation seam in `packages/skill-evolution/src/locking.ts` with `withLock`, `inspectLock`, `reclaimLock`, `sweepLocks`, `LockBusyError`, and the shared classifier. During this task only, compatibility wrappers `withFileLock` and `removeDeadLock` may remain internally so existing callers compile; they must delegate to the new protocol and be removed in Task 5.
 
-**Files:** `packages/skill-evolution/src/locking.ts`, new `packages/skill-evolution/tests/locking.spec.ts`, and any focused type/build configuration needed for the module.
+**Files:** `packages/skill-evolution/src/locking.ts` and new `packages/skill-evolution/tests/locking.spec.ts`.
 
 **Acceptance tests:**
 
@@ -24,7 +24,7 @@ Tasks are ordered according to the five-step migration in `docs/design/unified-l
 
 ### 2. Migrate JSONL, rotation, repair, and derived-refresh call sites
 
-**Requirements:** R8, R9, R10, R12  
+**Requirements:** R4, R12
 **Depends on:** 1
 
 **Goal:** Replace every JSONL-facing `withFileLock` call with `withLock` and its explicit operation label, while preserving each caller's queue and read/write semantics.
@@ -33,13 +33,13 @@ Tasks are ordered according to the five-step migration in `docs/design/unified-l
 
 **Acceptance tests:**
 
-- `rg -n "withFileLock|removeDeadLock" packages/skill-evolution/src --glob '!locking.ts'` shows no remaining JSONL, retention, repair, or refresh call site; each call passes `append`, `read`, `replace`, `rotate`, `repair`, or `refresh`.
-- Repair of a JSONL file with a dead owner lock succeeds and does not wait for the old fixed five-second behavior.
+- `rg -n "withFileLock" packages/skill-evolution/src --glob '!locking.ts'` shows no remaining JSONL, retention, repair, or refresh call site; each migrated call passes `append`, `read`, `replace`, `rotate`, `repair`, or `refresh`. The legacy `removeDeadLock` call in `repair.ts` remains for Task 4.
+- Repair of a JSONL file whose lock is an empty file with mtime set to 1970 succeeds immediately through the expired-unknown recovery path, rather than waiting for the old fixed five-second timeout.
 - Existing store, record, retention, and refresh tests pass; caller-owned write queues remain intact.
 
 ### 3. Migrate publication locking and preserve lifecycle semantics
 
-**Requirements:** R4, R11, R14  
+**Requirements:** R4, R11, R14
 **Depends on:** 1
 
 **Goal:** Change `SkillVersionStore.withMutationLock` to delegate to `withLock(..., {waitMs: 0})` at the existing lock path and preserve the domain error and recovery flow.
@@ -56,7 +56,7 @@ Tasks are ordered according to the five-step migration in `docs/design/unified-l
 
 ### 4. Replace repair lock discovery with the sweep protocol and report field
 
-**Requirements:** R5, R7, R8, R9, R10  
+**Requirements:** R5, R7, R8, R9, R10
 **Depends on:** 2, 3
 
 **Goal:** Replace `removeOrphanLocks` with one `sweepLocks` call that covers root directories and explicit shared paths, and expose the complete artifact report.
@@ -70,11 +70,13 @@ Tasks are ordered according to the five-step migration in `docs/design/unified-l
 - **R3:** Live, foreign, and grace-period unknown locks remain, with matching `locksPreserved` and `locks[].state`.
 - **R4:** Repair with an expired unknown JSONL lock completes without the former five-second busy failure.
 - **R5:** Two roots repairing the same observation directory concurrently coordinate through its directory lock; a stale guard is removed once, the other run reports removal or skipped, and neither run fails.
+- A stale `.lock-sweep.lock.reclaim` causes the directory result to be `skipped` with that guard path exposed for manual removal, while the directory-lock guard remains excluded from ordinary artifact entries.
+- After replacing `removeOrphanLocks`, `rg -n "removeDeadLock" packages/skill-evolution/src --glob '!locking.ts'` produces no output.
 - The legacy summary arrays contain only lock artifacts and all lock/guard/tmp records expose path, state, and removed flag.
 
 ### 5. Remove compatibility names, update documentation, and close the migration
 
-**Requirements:** R13, R14  
+**Requirements:** R13, R14
 **Depends on:** 1, 2, 3, 4
 
 **Goal:** Delete `withFileLock` and `removeDeadLock`, verify no repository caller or package test imports them, and document the final protocol and accepted defaults.
