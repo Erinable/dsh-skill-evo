@@ -64,7 +64,7 @@ Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock
 
 Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
 
-Do NOT close or modify any parent issue.
+Tickets on the frontier are published to be taken in parallel, so follow the issue-tracker config's "Concurrent writes" rule for what a run may write: only the issue it claimed, and the parent by appended comment only.
 
 <local-ticket-template>
 
