@@ -51,22 +51,8 @@ One round, one run. Each round ends with your run ending, and the member's reply
 
 Per round:
 
-1. Write the round to a file and post it as one issue comment (`--content-file`; see the tracker doc's rules on file-backed bodies). Reply in the thread you were triggered from by passing that thread's `--parent`.
-2. Decide whether a wakeup is needed. Read the `assignee_id` of the issue you posted on (`multica issue get <issue-id> --output json`):
-
-   - **The assignee is you** → register nothing. A member's comment on an issue already wakes its assignee, so a wakeup waiting for that same comment starts a second run for it — observed as two overlapping runs 29 seconds apart (`direct_human comment` and `trigger_owner issue_wakeup`) from a single member comment. The member's reply brings you back on its own.
-   - **No assignee, or someone else** → a member's comment does not wake you; only a wakeup does. Register one, naming the member whose answers you need:
-
-     ```
-     multica issue wakeup create <issue-id> \
-       --event comment.created \
-       --filter-actor-type member --filter-actor-id <member-user-id> \
-       --mode once \
-       --parent <thread-comment-id> \
-       --instruction "Grilling round <N> is posted. Read the new reply, recompute the frontier, ask the next round."
-     ```
-
-     `--filter-actor-type member` is what makes this correct: without it, your own comment and every agent write on the issue can wake you into a round nobody has answered. Get the member's UUID from the triggering comment's author, or from the issue's `creator_id` / `assignee_id`. `--mode once` matches one round; a `continuous` subscription on `comment.created` is how two agents wake each other in a loop.
+1. Write the round to a file-backed body. The adapter publishes it as an issue comment and replies in the thread you were triggered from by passing that `thread`.
+2. Call the selected tracker adapter's `Ask a person and wait` section with the issue, the file-backed round body, the triggering `thread`, and a `next` instruction to read the reply, recompute the frontier, and ask the next round.
 
 3. End the run. Do not poll, sleep, or re-read the issue hoping the answer lands before the turn closes.
 
