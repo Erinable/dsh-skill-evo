@@ -216,14 +216,14 @@ multica adapter 长出 6 个别家没有的节，其中两类本不属 tracker s
 
 | # | 决策 | 推荐 | 为什么难改 | 状态 |
 |---|---|---|---|---|
-| D-1 | tracker interface 的 10 个 `##` 标题（§6 表），标题即引用名 | 按 §6 | skill 按标题引用，改名就要改所有引用；装到别的仓库的旧副本不会跟着改 | 待成员确认 |
-| D-2 | 实例事实放独立文件 `docs/agents/instance.md`，不进 setup 模板；模板与 `docs/agents/issue-tracker.md` 逐字节相同 | 6-A | 这是 setup 的输出契约：别的仓库装出来的文件布局由它决定 | 待成员确认 |
-| D-3 | 依赖方向：skill → runtime → tracker，skill → instance；tracker 与 instance 不点名任何 skill 或 agent | 按 §3 | 方向一旦反过来（adapter 点名 skill 步骤），换 adapter 或改 skill 都会互相牵动 | 待成员确认 |
-| D-4 | 拍板人 = 工作区 owner，按 `workspace member list` 的 `role == owner` 取 `user_id`；触发评论作者是 member 时优先用作者 | 按 §4 | 这是 wakeup 能否触发的唯一依据；第二名成员加入后，是「谁问谁答」还是「永远问 owner」要另定 | 待成员确认 |
-| D-5 | 可达性前提：执行 ask-and-wait、引用 `docs/agents/*` 的 run 都检出了本仓库；orchestrate 入口的订阅挪到父 issue 第一次 run（6-R1） | 2-A + 6-R1 | 权威定义放在仓库文档而不是 skill，是这个前提下的选择；前提不成立时要改成 7-D（skill 化），是整体迁移 | 待成员确认 |
-| D-6 | runtime 是新 seam，落为 setup 模板 `runtime.md` + 安装副本 `docs/agents/runtime.md` | 7-A | 同 D-2，影响 setup 输出契约 | 待成员确认 |
+| D-1 | tracker interface 的 10 个 `##` 标题（§6 表），标题即引用名 | 按 §6 | skill 按标题引用，改名就要改所有引用；装到别的仓库的旧副本不会跟着改 | 已确认（ack7 回复「默认」，2026-09-26）|
+| D-2 | 实例事实放独立文件 `docs/agents/instance.md`，不进 setup 模板；模板与 `docs/agents/issue-tracker.md` 逐字节相同 | 6-A | 这是 setup 的输出契约：别的仓库装出来的文件布局由它决定 | 已确认（ack7 回复「默认」，2026-09-26）|
+| D-3 | 依赖方向：skill → runtime → tracker，skill → instance；tracker 与 instance 不点名任何 skill 或 agent | 按 §3 | 方向一旦反过来（adapter 点名 skill 步骤），换 adapter 或改 skill 都会互相牵动 | 已确认（ack7 回复「默认」，2026-09-26）|
+| D-4 | 拍板人 = 工作区 owner，按 `workspace member list` 的 `role == owner` 取 `user_id`；触发评论作者是 member 时优先用作者 | 按 §4 | 这是 wakeup 能否触发的唯一依据；第二名成员加入后，是「谁问谁答」还是「永远问 owner」要另定 | 已确认（ack7 回复「默认」，2026-09-26）|
+| D-5 | 可达性前提：执行 ask-and-wait、引用 `docs/agents/*` 的 run 都检出了本仓库；orchestrate 入口的订阅挪到父 issue 第一次 run（6-R1） | 2-A + 6-R1 | 权威定义放在仓库文档而不是 skill，是这个前提下的选择；前提不成立时要改成 7-D（skill 化），是整体迁移 | 已确认（ack7 回复「默认」，2026-09-26）|
+| D-6 | runtime 是新 seam，落为 setup 模板 `runtime.md` + 安装副本 `docs/agents/runtime.md` | 7-A | 同 D-2，影响 setup 输出契约 | 已确认（ack7 回复「默认」，2026-09-26）|
 
-依本 agent 的职责，不可逆决策要请成员拍板；问题和默认答案在本 issue 的交接评论里。成员回「默认」即全部按上表推荐执行。
+依本 agent 的职责，不可逆决策要请成员拍板；问题和默认答案在本 issue 的交接评论里。成员回「默认」即全部按上表推荐执行。ack7 已于 2026-09-26 回复「默认」，D-1…D-6 全部确认，Spec Writer 可按 §6/§8 直接拆 `tasks.md`。
 
 ## 8. 实现顺序与模块边界（给 Spec Writer 拆 `tasks.md`）
 
