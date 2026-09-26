@@ -84,6 +84,23 @@ Inside an issue body or comment, these link forms **act**, they do not merely re
 
 Use an agent mention only to hand over concrete new work. Crediting someone, or thanking them, is prose — write the name as plain text. A courtesy mention bills a run whose only possible reply is another courtesy.
 
+## Concurrent writes: only write the issue you claimed
+
+Unblocked issues run in parallel, so assume another agent is writing the tracker while you are. Multica has no locking and `multica issue update` replaces a field wholesale, so two runs editing one issue means the later write silently erases the earlier one.
+
+The rule, for every skill that writes issues:
+
+> **Write only the issue you claimed.** A parent issue gets comments appended, never a body or status change.
+
+What follows from it:
+
+- **Assignment is the claim.** `multica issue assign <id> --to <you>` then `multica issue status <id> in_progress`, as the first writes of the run, before any work. An unassigned open issue is unclaimed; an assigned one belongs to its assignee even if it looks stale.
+- **Append, don't replace, on anything shared.** `multica issue comment add` is additive and safe from any run. Reserve `multica issue update --description-file` for an issue you hold, and read the current body with `multica issue get` immediately before writing it back.
+- **Leave the parent's lifecycle to its own owner.** A child run never sets the parent's status, including to `done` — stage barriers already wake the parent's assignee when a stage completes. Report upward by commenting on the parent.
+- **Terminal status on your own issue only.** An agent finishing its claimed issue sets `in_review`; `done` stays a human decision.
+
+Skills that need this — `to-tickets`, `triage`, `wayfinder` — point here rather than restating it.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
