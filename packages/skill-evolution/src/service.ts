@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
-import { JsonlEventStore } from './store.js'
+import { ObservationLog, resolveLayout } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
@@ -39,7 +39,7 @@ export interface EvolutionServiceOptions {
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
 export class EvolutionService {
-  readonly observations: JsonlEventStore
+  readonly observations: ObservationLog
   readonly proposals: JsonlRecordStore<SkillProposal>
   readonly decisions: JsonlRecordStore<DecisionRecord>
   readonly experiences: JsonlRecordStore<Experience>
@@ -50,19 +50,21 @@ export class EvolutionService {
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
   private readonly projectionCursorPath: string
+  readonly layout: ReturnType<typeof resolveLayout>
 
   constructor(private readonly options: EvolutionServiceOptions) {
-    const state = join(options.root, '.skill-evolution')
-    this.projectionCursorPath = join(state, 'projection-cursor.json')
-    this.observations = new JsonlEventStore(options.store ?? join(state, 'observations.jsonl'))
-    this.proposals = new JsonlRecordStore(join(state, 'proposals.jsonl'))
-    this.decisions = new JsonlRecordStore(join(state, 'decisions.jsonl'))
-    this.experiences = new JsonlRecordStore(join(state, 'experiences.jsonl'))
-    this.failures = new JsonlRecordStore(join(state, 'failures.jsonl'))
-    this.clusters = new JsonlRecordStore(join(state, 'clusters.jsonl'))
-    this.diagnoses = new JsonlRecordStore(join(state, 'diagnoses.jsonl'))
-    this.feedback = new JsonlRecordStore(join(state, 'feedback.jsonl'))
-    this.evaluations = new JsonlRecordStore(join(state, 'evaluations.jsonl'))
+    this.layout = resolveLayout({ root: options.root, observationStore: options.store })
+    this.projectionCursorPath = this.layout.cursorPath
+    const path = (name: string) => this.layout.stores.find(store => store.name === name)!.path
+    this.observations = new ObservationLog(this.layout.observations.path)
+    this.proposals = new JsonlRecordStore(path('proposals'))
+    this.decisions = new JsonlRecordStore(path('decisions'))
+    this.experiences = new JsonlRecordStore(path('experiences'))
+    this.failures = new JsonlRecordStore(path('failures'))
+    this.clusters = new JsonlRecordStore(path('clusters'))
+    this.diagnoses = new JsonlRecordStore(path('diagnoses'))
+    this.feedback = new JsonlRecordStore(path('feedback'))
+    this.evaluations = new JsonlRecordStore(path('evaluations'))
     this.versions = new SkillVersionStore(options.root, { invalidate: options.invalidate })
   }
 
@@ -382,11 +384,14 @@ export class EvolutionService {
     const lastId = observations.at(-1)?.id
     const fingerprint = createContentHash(observations.map(item => item.id).join('\n'))
     if (cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint) {
-      return {
-        experiences: await this.experiences.readAll(),
-        failures: await this.failures.readAll(),
-        clusters: await this.clusters.readAll(),
-        diagnoses: await this.diagnoses.readAll(),
+      const existing = await Promise.all([
+        this.experiences.readAll(),
+        this.failures.readAll(),
+        this.clusters.readAll(),
+        this.diagnoses.readAll(),
+      ])
+      if (observations.length === 0 || existing.every(records => records.length > 0)) {
+        return { experiences: existing[0], failures: existing[1], clusters: existing[2], diagnoses: existing[3] }
       }
     }
     const workflow = new EvolutionWorkflow()
