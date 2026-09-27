@@ -317,3 +317,54 @@ test('completes the bundle to promotion and rollback lifecycle', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('runs the maintenance command lifecycle with quoted intent and validated dry-run', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-command-e2e-'))
+  try {
+    const base = '---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n'
+    const candidate = base.replace('Base.', 'Improved timeout diagnosis.')
+    const skillDir = join(dir, 'api-debugging')
+    await mkdir(join(skillDir, 'versions', '1.0.0'), { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), base)
+    await writeFile(join(skillDir, 'manifest.json'), JSON.stringify({ name: 'api-debugging', version: '1.0.0', contentHash: createContentHash(base), status: 'stable', scope: 'project', createdBy: 'human', createdAt: '2026-09-25T00:00:00.000Z', updatedAt: '2026-09-25T00:00:00.000Z' }))
+    const baseFile = join(dir, 'base.md')
+    const candidateFile = join(dir, 'candidate.md')
+    const casesFile = join(dir, 'cases.json')
+    const eventsPath = join(dir, 'events.jsonl')
+    await writeFile(baseFile, base)
+    await writeFile(candidateFile, candidate)
+    await writeFile(casesFile, JSON.stringify([{ id: 'timeout', category: 'original-failure', task: 'timeout', expected: { contains: ['Improved timeout diagnosis'] } }]))
+
+    const registered = []
+    const ctx = {
+      on() {},
+      commands: { register(definition) { registered.push(definition); return () => {} } },
+      logger: { warn() {} },
+    }
+    apply(ctx, { storePath: eventsPath })
+    const handler = registered[0].handler
+    const invocation = rawInput => handler({ rawInput, agent: { session: { id: 'command-session', header: { cwd: dir } } } })
+
+    const proposed = JSON.parse((await invocation(`propose --skill api-debugging --base-file ${baseFile} --candidate-file ${candidateFile} --proposed-version 1.1.0 --intent "Add timeout diagnosis"`)).text)
+    const proposedSingle = JSON.parse((await invocation(`propose --id second --skill api-debugging --base-file ${baseFile} --candidate-file ${candidateFile} --proposed-version 1.1.1 --intent 'Add timeout diagnosis'`)).text)
+    assert.equal(proposed.status, 'proposed')
+    assert.equal(proposedSingle.status, 'proposed')
+    const stored = await new EvolutionService({ root: dir, store: eventsPath }).proposals.readAll()
+    assert.equal(stored.find(item => item.id === proposed.proposalId).intent, 'Add timeout diagnosis')
+    assert.equal(stored.find(item => item.id === proposedSingle.proposalId).intent, 'Add timeout diagnosis')
+
+    const evaluated = JSON.parse((await invocation(`evaluate --proposal ${proposed.proposalId} --cases ${casesFile}`)).text)
+    const accepted = JSON.parse((await invocation(`accept --proposal ${evaluated.proposalId} --reason "Reviewed evaluation"`)).text)
+    assert.equal(accepted.status, 'accepted')
+    const manifestPath = join(skillDir, 'manifest.json')
+    const beforeDryRun = await readFile(manifestPath, 'utf8')
+    const dryRun = await invocation(`promote --proposal ${accepted.proposalId} --scope project --dry-run`)
+    assert.equal(dryRun.kind, 'success')
+    assert.equal(await readFile(manifestPath, 'utf8'), beforeDryRun)
+    const promoted = await invocation(`promote --proposal ${accepted.proposalId} --scope project`)
+    assert.equal(promoted.kind, 'success')
+    assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).version, '1.1.0')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

@@ -1,7 +1,7 @@
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { assertFeedbackKind, assertPublicationScope, createContentHash, createProposal, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, renderProposalMarkdown } from '@dsh-skill-evo/core'
+import { readFile } from 'node:fs/promises'
+import { assertFeedbackKind, createContentHash, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -181,93 +181,77 @@ export function apply(ctx, config = {}) {
 }
 
 async function executeMaintenanceCommand(invocation, config) {
-  const words = invocation.rawInput.trim().split(/\s+/).filter(Boolean)
-  const action = words.shift() ?? 'observe'
-  const root = invocation.agent?.session?.header?.cwd ?? process.cwd()
-  const storePath = config.storePath ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'skill-evolution', 'events.jsonl')
-  const service = new EvolutionService({ root, store: storePath, ...(config.invalidate === undefined ? {} : { invalidate: config.invalidate }) })
-  if (action === 'observe') {
-    const snapshot = await service.refreshDerived()
-    return { kind: 'success', text: JSON.stringify({ observations: (await service.observations.readAll()).length, experiences: snapshot.experiences.length, failures: snapshot.failures.length, clusters: snapshot.clusters.length }, null, 2) }
+  try {
+    const words = tokenize(invocation.rawInput)
+    const action = words.shift() ?? 'observe'
+    const root = invocation.agent?.session?.header?.cwd ?? process.cwd()
+    const storePath = config.storePath ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'skill-evolution', 'events.jsonl')
+    const service = new EvolutionService({ root, store: storePath, ...(config.invalidate === undefined ? {} : { invalidate: config.invalidate }) })
+    if (action === 'observe') {
+      const snapshot = await service.refreshDerived()
+      return { kind: 'success', text: JSON.stringify({ observations: (await service.observations.readAll()).length, experiences: snapshot.experiences.length, failures: snapshot.failures.length, clusters: snapshot.clusters.length }, null, 2) }
+    }
+    if (action === 'failures') return { kind: 'success', text: renderFailuresMarkdown(await service.listFailures()) }
+    if (action === 'metrics') return { kind: 'success', text: JSON.stringify(await service.metrics(), null, 2) }
+    if (action === 'health') return { kind: 'success', text: JSON.stringify(await service.healthReport(), null, 2) }
+    if (action === 'repair') return { kind: 'success', text: JSON.stringify(await service.repair(), null, 2) }
+    if (action === 'propose') {
+      const flags = parseFlags(words)
+      const result = await proposeSkillChange(service, {
+        root,
+        skillName: requiredFlag(flags, 'skill'),
+        baseFile: resolve(requiredFlag(flags, 'base-file')),
+        candidateFile: resolve(requiredFlag(flags, 'candidate-file')),
+        proposedVersion: requiredFlag(flags, 'proposed-version'),
+        intent: requiredFlag(flags, 'intent'),
+        ...(flags.id === undefined ? {} : { id: flags.id }),
+        ...(flags['base-version'] === undefined ? {} : { baseVersion: flags['base-version'] }),
+        ...(flags.output === undefined ? {} : { reportPath: resolve(flags.output) }),
+      })
+      return { kind: 'success', text: JSON.stringify({ proposalId: result.proposal.id, status: result.proposal.status, report: result.reportPath }, null, 2) }
+    }
+    if (action === 'evaluate') {
+      const flags = parseFlags(words)
+      const result = await evaluateProposal(service, {
+        root,
+        proposalRef: requiredFlag(flags, 'proposal'),
+        casesFile: resolve(requiredFlag(flags, 'cases')),
+        ...(flags.output === undefined ? {} : { evaluationPath: resolve(flags.output) }),
+        ...(flags.report === undefined ? {} : { reportPath: resolve(flags.report) }),
+      })
+      return { kind: 'success', text: JSON.stringify({ proposalId: result.recordId, evaluation: result.result, evaluationPath: result.evaluationPath }, null, 2) }
+    }
+    if (action === 'accept' || action === 'reject' || action === 'defer') {
+      const flags = parseFlags(words)
+      const result = await reviewProposal(service, { proposalRef: requiredFlag(flags, 'proposal'), decision: action, reason: requiredFlag(flags, 'reason') })
+      return { kind: 'success', text: JSON.stringify({ proposalId: result.recordId, status: result.proposal.status }, null, 2) }
+    }
+    if (action === 'promote') {
+      const flags = parseFlags(words)
+      const result = await promoteProposal(service, {
+        proposalRef: requiredFlag(flags, 'proposal'),
+        scope: flags.scope ?? 'project',
+        dryRun: flags['dry-run'] === 'true',
+        ...(flags.evaluation === undefined ? {} : { evaluationPath: resolve(flags.evaluation) }),
+        ...(flags.reason === undefined ? {} : { reason: flags.reason }),
+      })
+      return { kind: 'success', text: JSON.stringify(result, null, 2) }
+    }
+    if (action === 'rollback') {
+      const flags = parseFlags(words)
+      const result = await rollbackSkill(service, { skillName: requiredFlag(flags, 'skill'), version: requiredFlag(flags, 'version'), reason: flags.reason })
+      return { kind: 'success', text: JSON.stringify({ ...result, status: 'rolled-back' }, null, 2) }
+    }
+    if (action === 'feedback') {
+      const flags = parseFlags(words)
+      const record = await service.recordFeedback({ sessionId: flags.session ?? String(invocation.agent.session.id), skillName: flags.skill, kind: assertFeedbackKind(flags.kind ?? 'other'), note: flags.note ?? words.join(' '), source: 'user' })
+      return { kind: 'success', text: `Feedback recorded: ${record.id}` }
+    }
+    return { kind: 'error', text: 'Usage: /skill-evolution observe | failures | metrics | health | repair | feedback | propose | evaluate | accept | reject | defer | promote | rollback' }
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+    return { kind: 'error', ...(code === undefined ? {} : { code }), text: error instanceof Error ? error.message : String(error) }
   }
-  if (action === 'failures') {
-    return { kind: 'success', text: renderFailuresMarkdown(await service.listFailures()) }
-  }
-  if (action === 'metrics') {
-    return { kind: 'success', text: JSON.stringify(await service.metrics(), null, 2) }
-  }
-  if (action === 'health') {
-    return { kind: 'success', text: JSON.stringify(await service.healthReport(), null, 2) }
-  }
-  if (action === 'repair') {
-    return { kind: 'success', text: JSON.stringify(await service.repair(), null, 2) }
-  }
-  if (action === 'propose') {
-    const flags = parseFlags(words)
-    const skillName = requiredFlag(flags, 'skill')
-    const current = await service.versions.readCurrent(skillName)
-    if (current === undefined) throw new Error(`current Skill not found: ${skillName}`)
-    const baseContent = await readFile(resolve(requiredFlag(flags, 'base-file')), 'utf8')
-    const candidateContent = await readFile(resolve(requiredFlag(flags, 'candidate-file')), 'utf8')
-    if (baseContent !== current.content) throw new Error('base file does not match current Skill content')
-    const proposal = await service.stageProposal(createProposal({
-      id: flags.id,
-      skillName,
-      baseVersion: flags['base-version'] ?? current.manifest.version,
-      baseContent,
-      proposedVersion: requiredFlag(flags, 'proposed-version'),
-      candidateContent,
-      intent: requiredFlag(flags, 'intent'),
-      generatedBy: 'human',
-    }))
-    const report = resolve(flags.output ?? join(root, '.skill-evolution', 'proposals', `${proposal.id}.md`))
-    const snapshot = await service.refreshDerived()
-    await mkdir(dirname(report), { recursive: true })
-    await writeFile(report, renderProposalMarkdown({ proposal, failures: snapshot.failures, clusters: snapshot.clusters, diagnosis: snapshot.diagnoses.find(item => item.id === proposal.diagnosisId) }), 'utf8')
-    return { kind: 'success', text: JSON.stringify({ proposalId: proposal.id, status: proposal.status, report }, null, 2) }
-  }
-  if (action === 'evaluate') {
-    const flags = parseFlags(words)
-    const proposal = await findProposal(service, requiredFlag(flags, 'proposal'))
-    const cases = JSON.parse(await readFile(resolve(requiredFlag(flags, 'cases')), 'utf8'))
-    const result = await service.evaluate(proposal, cases)
-    return { kind: 'success', text: JSON.stringify({ proposalId: proposal.id, evaluation: result }, null, 2) }
-  }
-  if (action === 'accept' || action === 'reject' || action === 'defer') {
-    const flags = parseFlags(words)
-    const proposal = await findProposal(service, requiredFlag(flags, 'proposal'))
-    const reason = requiredFlag(flags, 'reason')
-    const result = action === 'accept' ? await service.acceptProposal(proposal, reason) : action === 'reject' ? await service.rejectProposal(proposal, reason) : await service.deferProposal(proposal, reason)
-    return { kind: 'success', text: JSON.stringify({ proposalId: result.id, status: result.status }, null, 2) }
-  }
-  if (action === 'promote') {
-    const flags = parseFlags(words)
-    const proposal = await findProposal(service, requiredFlag(flags, 'proposal'))
-    const evaluation = JSON.parse(await readFile(resolve(requiredFlag(flags, 'evaluation')), 'utf8'))
-    const scope = assertPublicationScope(flags.scope ?? 'project')
-    if (flags['dry-run'] === 'true') return { kind: 'success', text: JSON.stringify({ dryRun: true, proposal, evaluation, scope }, null, 2) }
-    await service.promote(proposal, evaluation, scope)
-    return { kind: 'success', text: JSON.stringify({ proposalId: proposal.id, status: 'promoted' }, null, 2) }
-  }
-  if (action === 'rollback') {
-    const flags = parseFlags(words)
-    await service.rollback(requiredFlag(flags, 'skill'), requiredFlag(flags, 'version'), flags.reason ?? 'manual rollback')
-    return { kind: 'success', text: JSON.stringify({ skill: flags.skill, version: flags.version, status: 'rolled-back' }, null, 2) }
-  }
-  if (action === 'feedback') {
-    const flags = parseFlags(words)
-    const record = await service.recordFeedback({ sessionId: flags.session ?? String(invocation.agent.session.id), skillName: flags.skill, kind: assertFeedbackKind(flags.kind ?? 'other'), note: flags.note ?? words.join(' '), source: 'user' })
-    return { kind: 'success', text: `Feedback recorded: ${record.id}` }
-  }
-  return { kind: 'error', text: 'Usage: /skill-evolution observe | failures | metrics | health | repair | feedback | propose | evaluate | accept | reject | defer | promote | rollback' }
-}
-
-async function findProposal(service, id) {
-  const records = await service.proposals.readAll()
-  const matches = records.filter(record => record.id === id || record.id.startsWith(`${id}:`))
-  const proposal = matches.at(-1)
-  if (proposal === undefined) throw new Error(`proposal not found: ${id}`)
-  return proposal
 }
 
 function requiredFlag(flags, name) {
@@ -286,6 +270,29 @@ function parseFlags(words) {
     else flags[key] = 'true'
   }
   return flags
+}
+
+function tokenize(input) {
+  const words = []
+  let word = ''
+  let quote = undefined
+  let escaped = false
+  for (const character of String(input ?? '').trim()) {
+    if (escaped) { word += character; escaped = false; continue }
+    if (character === '\\' && quote !== "'") { escaped = true; continue }
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined
+      else word += character
+      continue
+    }
+    if (character === '"' || character === "'") { quote = character; continue }
+    if (/\s/.test(character)) {
+      if (word.length > 0) { words.push(word); word = '' }
+    } else word += character
+  }
+  if (escaped) word += '\\'
+  if (word.length > 0) words.push(word)
+  return words
 }
 
 function redactRecord(value, depth = 0) {
