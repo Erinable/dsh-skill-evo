@@ -1,0 +1,92 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, describe, expect, it } from 'vitest'
+
+const packageDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const cli = join(packageDir, 'bin', 'dsh-skill-evolution.mjs')
+const dirs = []
+afterEach(async () => Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))))
+
+const base = '---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nUse curl.\n'
+const candidate = `${base}Check the response status before editing.\n`
+const passingCase = [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }]
+
+async function run(root, ...args) {
+  const result = await new Promise(resolveResult => {
+    const child = spawn(process.execPath, [cli, ...args], { cwd: root })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('close', code => resolveResult({ code, stdout, stderr }))
+  })
+  return result
+}
+
+async function setup() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-cli-'))
+  dirs.push(root)
+  await mkdir(join(root, 'api-debugging'), { recursive: true })
+  await writeFile(join(root, 'api-debugging', 'SKILL.md'), base)
+  await writeFile(join(root, 'base.md'), base)
+  await writeFile(join(root, 'candidate.md'), candidate)
+  await writeFile(join(root, 'cases.json'), JSON.stringify(passingCase))
+  return root
+}
+
+describe('CLI maintenance lifecycle', () => {
+  it('delegates lifecycle commands and validates promote dry-runs', async () => {
+    const root = await setup()
+    const feedback = await run(root, 'feedback', '--session', 's1', '--kind', 'incorrect', '--skill', 'api-debugging', '--note', 'n', '--attribution', 'content')
+    expect(feedback.code).toBe(0)
+    expect(JSON.parse(feedback.stdout)).toMatchObject({ kind: 'incorrect', attribution: 'content' })
+    const proposed = await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'candidate.md', '--proposed-version', '1.1.0', '--intent', 'Improve diagnostics')
+    expect(proposed.code).toBe(0)
+    const proposedRecord = JSON.parse(proposed.stdout).proposal
+
+    const evaluated = await run(root, 'evaluate', '--proposal', proposedRecord.id, '--cases', 'cases.json')
+    expect(evaluated.code).toBe(0)
+    expect(await readFile(join(root, '.skill-evolution', 'evaluations', `${proposedRecord.id}.json`), 'utf8')).toContain(proposedRecord.id)
+    const evaluatedRecord = JSON.parse((await run(root, 'accept', '--proposal', `${proposedRecord.id}:evaluated`, '--reason', 'Reviewed')).stdout)
+    expect(evaluatedRecord.id).toMatch(/:accepted$/)
+
+    const dryRun = await run(root, 'promote', '--proposal', evaluatedRecord.id, '--dry-run')
+    expect(dryRun.code).toBe(0)
+    expect(JSON.parse(dryRun.stdout).dryRun).toBe(true)
+    const promoted = await run(root, 'promote', '--proposal', evaluatedRecord.id, '--format', 'json')
+    expect(promoted.code).toBe(0)
+    expect(JSON.parse(promoted.stdout)).toMatchObject({ promoted: true, version: '1.1.0' })
+  })
+
+  it('returns typed errors for invalid promote dry-runs', async () => {
+    const root = await setup()
+    const proposed = JSON.parse((await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'candidate.md', '--proposed-version', '1.1.0', '--intent', 'Improve diagnostics')).stdout).proposal
+    const unaccepted = await run(root, 'promote', '--proposal', proposed.id, '--dry-run')
+    expect(unaccepted).toMatchObject({ code: 1 })
+    expect(unaccepted.stderr).toContain('invalid-transition')
+    await run(root, 'evaluate', '--proposal', proposed.id, '--cases', 'cases.json')
+    const accepted = JSON.parse((await run(root, 'accept', '--proposal', `${proposed.id}:evaluated`, '--reason', 'Reviewed')).stdout)
+    const missingArtifact = await run(root, 'promote', '--proposal', accepted.id, '--evaluation', 'missing.json', '--dry-run')
+    expect(missingArtifact.code).toBe(1)
+    expect(missingArtifact.stderr).toContain('evaluation-missing')
+    await writeFile(join(root, 'fake.json'), JSON.stringify({ passedGate: true }))
+    const fakeArtifact = await run(root, 'promote', '--proposal', accepted.id, '--evaluation', 'fake.json', '--dry-run')
+    expect(fakeArtifact.code).toBe(1)
+    expect(fakeArtifact.stderr).toContain('evaluation-mismatch')
+    const invalidScope = await run(root, 'promote', '--proposal', accepted.id, '--scope', 'bogus', '--dry-run')
+    expect(invalidScope.code).toBe(1)
+    expect(invalidScope.stderr).toContain('invalid-option')
+
+    const badCandidate = `${base}Use a different response phrase.\n`
+    await writeFile(join(root, 'bad-candidate.md'), badCandidate)
+    await writeFile(join(root, 'bad-cases.json'), JSON.stringify([{ ...passingCase[0], expected: { contains: ['missing phrase'] } }]))
+    const second = JSON.parse((await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'bad-candidate.md', '--proposed-version', '1.2.0', '--intent', 'Try another change')).stdout).proposal
+    await run(root, 'evaluate', '--proposal', second.id, '--cases', 'bad-cases.json')
+    const secondAccepted = JSON.parse((await run(root, 'accept', '--proposal', `${second.id}:evaluated`, '--reason', 'Review failed gate')).stdout)
+    const failedGate = await run(root, 'promote', '--proposal', secondAccepted.id, '--dry-run')
+    expect(failedGate.stderr).toContain('gate-failed')
+  })
+})
