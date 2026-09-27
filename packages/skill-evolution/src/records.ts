@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { withFileLock } from './locking.js'
+import { withLock } from './locking.js'
 
 /** Small append-only JSONL repository for derived evolution records. */
 export class JsonlRecordStore<T extends { readonly id: string }> {
@@ -11,7 +11,7 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
   constructor(readonly filePath: string) {}
 
   async append(record: T): Promise<boolean> {
-    return this.enqueue(() => withFileLock(`${this.filePath}.lock`, async () => {
+    return this.enqueue(() => withLock(`${this.filePath}.lock`, 'append', async () => {
       await this.ensureInitialized()
       await this.refreshKnownIds()
       if (this.knownIds.has(record.id)) return false
@@ -28,7 +28,7 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
   }
 
   async readAll(): Promise<T[]> {
-    return withFileLock(`${this.filePath}.lock`, async () => {
+    return withLock(`${this.filePath}.lock`, 'read', async () => {
       await this.ensureInitialized()
       const text = await readFile(this.filePath, 'utf8')
       return parseLines(text)
@@ -41,7 +41,7 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
 
   /** Replace a derived projection atomically while retaining append-only input facts. */
   async replaceAll(records: readonly T[]): Promise<void> {
-    await this.enqueue(() => withFileLock(`${this.filePath}.lock`, async () => {
+    await this.enqueue(() => withLock(`${this.filePath}.lock`, 'replace', async () => {
       await this.ensureInitialized()
       const temporary = `${this.filePath}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`
       await writeFile(temporary, records.length === 0 ? '' : `${records.map(record => JSON.stringify(record)).join('\n')}\n`, 'utf8')
