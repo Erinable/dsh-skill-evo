@@ -69,7 +69,7 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     evaluationReportsDir: join(stateDir, 'evaluations'),
     stores,
     observations: stores[0],
-    candidateDir: (proposalRootId: string) => join(stateDir, 'candidates', proposalRootId),
+    candidateDir: (proposalRootId: string) => join(stateDir, 'candidates', encodeURIComponent(proposalRootId)),
     publicationLockPath: (skillName: string) => join(stateDir, 'locks', `${skillName}.lock`),
     skillVersionsDir: (skillName: string) => join(options.root, skillName, 'versions'),
   }

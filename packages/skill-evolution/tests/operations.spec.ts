@@ -91,12 +91,13 @@ describe('core maintenance operations', () => {
     expect((await service.proposals.readAll()).some(item => item.id === `${proposed.proposal.id}:promoted`)).toBe(true)
   })
 
-  it('keeps one root-keyed candidate directory when promoting a ledger record', async () => {
+  it('keeps one encoded root-keyed candidate directory when promoting a ledger record', async () => {
     const { root, service, proposalRef } = await acceptedProposal()
     await promoteProposal(service, { proposalRef, scope: 'project' })
 
     const candidateNames = await readdir(join(root, '.skill-evolution', 'candidates'))
-    expect(candidateNames).toEqual([proposalRootId(proposalRef)])
+    expect(candidateNames).toEqual([encodeURIComponent(proposalRootId(proposalRef))])
+    expect(candidateNames[0]).not.toContain(':')
   })
 
   it.each([true, false])('rejects an unaccepted proposal in %s mode without publication', async dryRun => {

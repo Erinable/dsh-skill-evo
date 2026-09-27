@@ -2,7 +2,6 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
-import { TERMINAL_STATUS_SUFFIXES } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 
 export interface JsonlRepairResult {
@@ -124,9 +123,8 @@ async function inspectLegacyCandidateDirectories(layout: EvolutionLayout): Promi
     if (isMissing(error)) return []
     throw error
   }
-  const suffixes = new Set<string>(TERMINAL_STATUS_SUFFIXES)
   return entries
-    .filter(entry => entry.isDirectory() && suffixes.has(entry.name.slice(entry.name.lastIndexOf(':') + 1)) && entry.name.includes(':'))
+    .filter(entry => entry.isDirectory() && entry.name.includes(':'))
     .map(entry => join(layout.candidatesDir, entry.name))
     .sort()
 }
