@@ -401,3 +401,13 @@ ADR 编号冲突（两个设计 PR 并行，都取了下一个号）：先合并
 | Q8 | 并行 PR 的 ADR 编号冲突怎么办？ | 后合并的 PR 改号，Reviewer 检查 |
 | Q9 | spec 任务做完之后还维护吗？ | 不维护，冻结为变更记录；现状以代码、ADR、`CONTEXT.md` 和架构文档为准 |
 | Q10 | 是否按 §3.5 修改 Architect / Spec Writer 的 agent instructions？ | 改。Mika 在票 D 里先贴改动预览，你确认后再更新 |
+
+## 6. SKIL-91 成员规则与平台 skill 同步
+
+`docs/design/skil-91-member-rules.md` 是成员位置盘点和规则入口；不可逆选择记录在 ADR-0017、ADR-0018。仓库合并后，平台安装副本仍是独立的运行时缓存，按 ADR-0013 的仓库权威原则同步：
+
+1. 在包含已合并 `main` 的检出目录运行 `multica skill list --output json`，按 `config.origin.path` 找到 `skills/orchestrate` 和 `skills/delivery-contract` 对应的 skill id。
+2. 首选保留现有 id 和 agent 绑定的整包同步：`multica skill refresh <orchestrate-id>`、`multica skill refresh <delivery-contract-id>`。
+3. 若只需定点同步或 `refresh` 不可用，分别执行 `multica skill update <id> --content-file skills/<name>/SKILL.md`；含附属文件的 orchestrate 再执行 `multica skill files upsert <id> --path PATROL.md --content-file skills/orchestrate/PATROL.md`。不要用 `skill import` 新建第二份同名 skill。
+4. 用 `multica skill get <id> --with-content --output json` 复核：`.content` 与仓库 `SKILL.md` 相同，orchestrate 的 `PATROL.md` 也相同；平台副本不再含旧 owner 硬编码。
+5. 成员确认 `docs/design/skil-91-member-rules.md` 的 Triager 原文 → 新文预览后，由 Mika 用 `multica agent update` 应用 agent instruction；本票不直接改平台 agent。

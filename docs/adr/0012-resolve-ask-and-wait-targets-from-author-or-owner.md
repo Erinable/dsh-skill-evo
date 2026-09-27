@@ -2,9 +2,9 @@
 status: accepted
 ---
 
-# 提问对象解析：触发评论作者是 member 时用作者；否则用拍板人 = 工作区 owner，按 `user_id` 解析；都不从 issue 的 `creator_id` / `assignee_id` 取
+# 提问对象身份解析：只使用已验证的 member `user_id`（目标选择见 ADR-0017）
 
-触发评论的作者是 member 时，优先用作者；否则用 owner 的 `user_id`。The wakeup filter therefore uses the triggering member when available and otherwise resolves the workspace owner from the member list, rather than reading issue creator or assignee fields that may identify an agent.
+ADR-0017 部分取代本 ADR 的目标选择顺序，但本 ADR 仍约束身份来源：触发评论的作者是 member 时可用作者；否则从 workspace member list 解析 owner 的 `user_id`。The wakeup filter therefore uses a verified member `user_id`, rather than an issue field that may identify an agent. ADR-0017 另加了 issue 描述中的提出人元数据，并允许仅在 `creator_type == member` 时使用 `creator_id`；这两个受限来源不会把 agent id 当成员。
 
 ## Considered Options
 

@@ -30,17 +30,18 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
    # 查重第 6 步复查：没有更早的同源父 issue
    multica issue status <parent-id> todo
    ```
-   `parent.md` 写成员原话和你理解的目标。成员点名了现有 issue 的，照样建父 issue，在 `parent.md` 里写出它的 KEY，让父 issue 的首次路由 run 去复用它（查重第 2 步：建父 issue 时点名的 KEY 不跳步）。
+   `parent.md` 写成员原话、你理解的目标，以及提出人元数据：`需求提出人 user_id: <member-user-id>`。聊天上下文拿不到成员 `user_id` 时写 `需求提出人 user_id: unresolved (fallback to Decision maker)`，不要写 agent id。成员点名了现有 issue 的，照样建父 issue，在 `parent.md` 里写出它的 KEY，让父 issue 的首次路由 run 去复用它（查重第 2 步：建父 issue 时点名的 KEY 不跳步）。
 3. 聊天回合到此为止：不建子 issue，不改现有 issue 的父 issue、stage、负责人。这些是父 issue 首次路由 run 的事；聊天 run 也做，就是两个 run 同时对一件事建票（SKIL-80 的聊天 run 和首次路由 run 并发，聊天 run 另建了重复的 SKIL-81）。
 
-完成判据：父 issue 存在，负责人 Mika，状态 `todo`；本次聊天 run 没有建子 issue。成员订阅在首次仓库路由 run 中完成。
+完成判据：父 issue 存在，负责人 Mika，状态 `todo`；本次聊天 run 没有建子 issue。`Subscribers` 集合在首次仓库路由 run 中完成订阅。
 
 ## 路由并建 Stage 1
 
-开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的 `Subscribers` 补齐父 issue 订阅，再检查子 issue；此前在聊天入口不订阅。
+开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的提出人解析顺序读取父 issue 描述。tracker 来源票若尚无 `需求提出人 user_id` 行，先用触发评论的 member 作者，再用已验证的 `creator_type == member` / `creator_id` 解析，重读完整描述后追加该行并用 `multica issue update <parent-id> --description-file <file>` 写回；仍解析不出就写 `unresolved`。再按 `Subscribers` 补齐父 issue 订阅，最后检查子 issue；此前在聊天入口不订阅。已有提出人元数据优先于本次触发来源，避免把路由 agent 或子 issue 上的评论作者误认成提出人。
 
 ```bash
-multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
+# Repeat once for each resolved `user_id` in `instance.md`'s `Subscribers` set.
+multica issue subscriber add <parent-id> --user-id <subscriber-user-id>
 ```
 
 0. 先查 `multica issue children <parent-id> --output json`。已经有子 issue 的，不再路由、不再建票，再看 `multica issue get <parent-id> --output json` 的 `assignee_id`：
@@ -52,7 +53,7 @@ multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（D
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue（先查重；父 issue 描述里点名的现有 KEY 是同一种票，直接复用），父 issue 置 `in_progress`。
 
-完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；路由评论写了查重关键词和结论；父 issue 和 Stage 1 子 issue 已订阅 `docs/agents/instance.md` 的 `Subscribers`。
+完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；路由评论写了查重关键词和结论；父 issue 和 Stage 1 子 issue 都订阅 `docs/agents/instance.md` 的 `Subscribers` 集合。
 
 ### 路由表
 
@@ -78,7 +79,8 @@ multica issue create --parent <parent-id> --stage <N> --status backlog \
   --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
 # 查重第 6 步复查：没有更早的同源票
 multica issue status <child-id> todo
-multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
+# Repeat once for each resolved `user_id` in `instance.md`'s `Subscribers` set.
+multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 ```
 
 | stage 内容 | 张数 | 指派 |
@@ -86,7 +88,7 @@ multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（De
 | spec / 设计 / 调研 / 原型 / 地图 / bug / 文档 | 1 张 | 路由表对应的 agent |
 | 实现 | `tasks.md` 每条 task 一张，同一 stage 并行 | Builder |
 
-`child.md` 写清目标、验收标准、上游产物的位置（已合并的 `specs/<slug>/` 路径或 PR 链接）、相关 ADR 编号（本需求涉及的 `docs/adr/NNNN-*.md`），末尾一行：「按 `delivery-contract` 交付」。
+`child.md` 必须继承父 issue 的 `需求提出人 user_id: <member-user-id>` 行（父 issue 写的是 `unresolved` 时原样继承），另写清目标、验收标准、上游产物的位置（已合并的 `specs/<slug>/` 路径或 PR 链接）、相关 ADR 编号（本需求涉及的 `docs/adr/NNNN-*.md`），末尾一行：「按 `delivery-contract` 交付」。没有父 issue 的 tracker 来源票按 `creator_type == member` 解析 `creator_id`，否则回退 Decision maker。
 
 ## 放行
 
