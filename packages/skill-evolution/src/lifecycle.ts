@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { LockBusyError, withLock } from './locking.js'
+import { proposalRootId } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
 
@@ -66,7 +67,7 @@ export class SkillVersionStore {
   async writeCandidate(proposal: SkillProposal): Promise<string> {
     assertSkillName(proposal.skillName)
     assertVersion(proposal.proposedVersion)
-    const directory = this.layout().candidateDir(proposal.id)
+    const directory = this.layout().candidateDir(proposalRootId(proposal.id))
     await mkdir(directory, { recursive: true })
     await writeAtomic(join(directory, 'SKILL.md'), proposal.candidateContent)
     await writeAtomic(join(directory, 'proposal.json'), `${JSON.stringify(proposal, null, 2)}\n`)
@@ -108,7 +109,7 @@ export class SkillVersionStore {
       await this.writeCandidate(proposal)
       return {
         manifest: this.manifestFor(proposal, options.scope, 'observed'),
-        path: join(this.layout().candidateDir(proposal.id), 'SKILL.md'),
+        path: join(this.layout().candidateDir(proposalRootId(proposal.id)), 'SKILL.md'),
       }
     }
 

@@ -20,6 +20,7 @@ export interface EvolutionRepairReport {
   readonly manifestIssues: readonly string[]
   readonly locksPreserved: readonly string[]
   readonly locks: readonly SweptLock[]
+  readonly legacyCandidateDirectories: readonly string[]
 }
 
 /** Repair append-only files while preserving invalid input in a quarantine file. */
@@ -110,7 +111,22 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
   const manifestIssues = await inspectManifests(root, layout)
-  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
+  const legacyCandidateDirectories = await inspectLegacyCandidateDirectories(layout)
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks, legacyCandidateDirectories }
+}
+
+async function inspectLegacyCandidateDirectories(layout: EvolutionLayout): Promise<string[]> {
+  let entries
+  try {
+    entries = await readdir(layout.candidatesDir, { withFileTypes: true })
+  } catch (error) {
+    if (isMissing(error)) return []
+    throw error
+  }
+  return entries
+    .filter(entry => entry.isDirectory() && entry.name.includes(':'))
+    .map(entry => join(layout.candidatesDir, entry.name))
+    .sort()
 }
 
 async function inspectManifests(root: string, layout: EvolutionLayout): Promise<string[]> {
