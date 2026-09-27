@@ -228,6 +228,19 @@ describe('ObservationLog state root', () => {
     expect(await store.append(observation('new', 'agent-step'))).toBe(true)
   })
 
+  it('quarantines an unterminated tail through rotateJsonl compatibility API', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-compat-tail-'))
+    dirs.push(dir)
+    const path = join(dir, 'events.jsonl')
+    const tail = Buffer.from('legacy-partial-tail')
+    await writeFile(path, Buffer.concat([Buffer.from(`${JSON.stringify(observation('complete-compat', 'agent-step'))}\n`), tail]))
+
+    const result = await rotateJsonl(path, { maxBytes: 1 })
+    expect(result.invalidQuarantine).toBeDefined()
+    expect(await readFile(result.invalidQuarantine!, 'utf8')).toBe(tail.toString())
+    expect((await readFile(result.rotated!, 'utf8')).endsWith('\n')).toBe(true)
+  })
+
   it('rotates only a residual tail into an empty archive', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-only-tail-'))
     dirs.push(dir)
@@ -251,7 +264,7 @@ describe('ObservationLog state root', () => {
     expect((await readdir(join(dir, 'archive')))).toEqual([])
   })
 
-  it('keeps the legacy thirty-day default retention', async () => {
+  it('does not delete archives unless retention is explicitly requested', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-retention-'))
     dirs.push(dir)
     const path = join(dir, 'observations.jsonl')
@@ -261,7 +274,8 @@ describe('ObservationLog state root', () => {
     await writeFile(archive, '', 'utf8')
     await utimes(archive, new Date('2000-01-01'), new Date('2000-01-01'))
     const result = await rotateJsonl(path, { maxBytes: 2 })
-    expect(result.deleted).toContain(archive)
+    expect(result.deleted).toEqual([])
+    expect(await readFile(archive, 'utf8')).toBe('')
   })
 })
 

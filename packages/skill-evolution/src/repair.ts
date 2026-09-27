@@ -29,6 +29,14 @@ export async function repairJsonlFile(
   return withLock(`${path}.lock`, 'repair', () => repairJsonlUnlocked(path, options))
 }
 
+/** Repair a JSONL path while the caller already owns its lock. */
+export async function repairJsonlFileUnlocked(
+  path: string,
+  options: { readonly parse?: (value: unknown) => boolean } = {},
+): Promise<JsonlRepairResult> {
+  return repairJsonlUnlocked(path, options)
+}
+
 async function repairJsonlUnlocked(path: string, options: { readonly parse?: (value: unknown) => boolean }): Promise<JsonlRepairResult> {
   await mkdir(dirname(path), { recursive: true })
   let text = ''
