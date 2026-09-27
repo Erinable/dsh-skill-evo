@@ -1,3 +1,6 @@
+> 状态：已实现（SKIL-35 → SKIL-59…66）。决策见 ADR-0007、0008；实现契约见 `specs/skil-46-unified-lock-protocol/`。
+> 本文是历史提案，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
+
 # 统一锁协议：锁文件写 owner，repair 回收崩溃遗留锁
 
 - Issue：SKIL-41（父 SKIL-35，来源 SKIL-34 扫描第 1 条）

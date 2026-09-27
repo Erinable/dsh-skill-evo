@@ -1,17 +1,6 @@
-## Scope and source of truth
+## Scope and decision authority
 
-This spec implements the merged design in `docs/design/unified-lock-protocol.md` (upstream PR #16, merge `e12b334`). The design's interface, classification table, three-layer reclamation protocol, migration order, and test matrix are normative. The implementation scope is `packages/skill-evolution`; no DSH adapter or bundle import is introduced.
-
-## Decisions
-
-- **D1 (accepted default):** `unknownGraceMs` defaults to 600000 ms (10 minutes). This protects empty/corrupt v0 locks during mixed-version deployment.
-- **D2 (accepted default):** delete `withFileLock` and `removeDeadLock`; repository callers migrate to `withLock`. The package is 0.1.0 and no repository call site uses those names after migration.
-- **D3 (accepted default):** a `held` lock is never reclaimed because of age. Reclaiming a demonstrably live owner could permit concurrent JSONL writes or publication.
-- **F1:** owner records are v1 `{v, token, pid, hostname, createdAt, uptimeMs, operation}`; v0 records lacking `v`, `token`, and `uptimeMs` remain readable.
-- **F2:** lock paths remain `<resource>.lock` and `.skill-evolution/locks/<skill>.lock`.
-- **F3:** `locking.ts` depends only on Node modules; lifecycle depends on it; no DSH dependency is added.
-- **F4:** `EvolutionRepairReport.locks` is additive.
-- **F5:** internal protocol artifacts are `<lock>.<token>.tmp`, `<lock>.reclaim`, and `<directory>/.lock-sweep.lock`.
+The lock protocol decisions, accepted defaults, compatibility policy, and implementation boundary are recorded in ADR-0007 and ADR-0008. The implementation scope remains `packages/skill-evolution`; no DSH adapter or bundle import is introduced.
 
 ## Interface contract
 

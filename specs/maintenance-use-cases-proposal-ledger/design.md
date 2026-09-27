@@ -4,21 +4,9 @@ This change moves the maintenance use cases and proposal-ledger rules into `@dsh
 
 The design does not change the state-root layout or candidate directory key owned by SKIL-42, and it does not add DSH dependencies to core. The manual DSH check in task 9 is acceptance evidence, not a new runtime integration contract.
 
-## Decisions and Assumptions
+## Decision authority
 
-The upstream design and review settled these defaults. They are recorded here so a builder does not reopen them:
-
-| ID | Decision | Boundary or risk |
-| --- | --- | --- |
-| D1 | Keep `:status` suffixes in persisted proposal record ids. | Reads remain compatible with historical JSONL. |
-| D2 | Resolve only an exact root or exact record id. | A bare prefix now returns `ambiguous`; this is an intentional bug fix. |
-| D3 | Evaluation defaults to `.skill-evolution/evaluations/<root>.json`; promote may omit `--evaluation`. | The final state-root provider remains SKIL-42's responsibility. |
-| D4 | Remove bespoke evaluate/accept/promote decisions and the timestamped accept id; count lifecycle metrics from deterministic transition decisions. | Historical bespoke records remain readable. |
-| D5 | Use a quote-aware bundle tokenizer for single- and double-quoted values. | This changes the slash-command input grammar to match the documented examples. |
-| D6 | Do not rename `candidates/<proposal-id>` directories in this change. | A suffixed directory key is deferred to SKIL-42. |
-| D7 | `operations.ts` and ledger helpers import only core modules. | No DSH or bundle import may point inward to core. |
-| D8 | Add operations and ledger helpers to `src/index.ts` without removing existing exports. | Existing consumers keep their imports. |
-| D9 | The transition table is authoritative, so `draft -> rejected`, `draft -> deferred`, and `accepted -> rejected` become valid. | If policy changes, edit the table; do not add a second guard list. |
+Proposal record identity, transition-table authority, core operation boundaries, and adapter parsing decisions are recorded in ADR-0004, ADR-0005, and ADR-0006. This spec retains the implementation contract and verification details below.
 
 ## Module Boundaries
 

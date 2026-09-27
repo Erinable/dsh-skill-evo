@@ -1,3 +1,6 @@
+> 状态：已实现（SKIL-36 → SKIL-45、57、58、70）。决策见 ADR-0009、0010、0011、0012、0013；实现契约见 `specs/skil-36-seams/`。
+> 本文是历史提案，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
+
 # 设计：提问契约单一来源、实例事实剥离、tracker/运行时 seam（SKIL-36 S1）
 
 基线 `origin/main` @ `c168579`。上游证据、行号、before/after 图见 SKIL-34 评论附件 `architecture-review-20260926.html`。本文只出设计，不改实现。用词按 `codebase-design`：module / interface / depth / seam / adapter / leverage / locality。

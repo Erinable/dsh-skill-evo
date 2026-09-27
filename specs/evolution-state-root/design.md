@@ -1,10 +1,8 @@
 # 设计：状态布局、事实流与 cursor
 
-## 已确认决定与当前假设
+## 决策来源
 
-**决定**（SKIL-47 票面记录的成员回复）：A1 不搬目录；A2 archive 是权威 observation 事实；A3 缺省不删 archive。采纳合并设计 `docs/design/evolution-state-root.md` §3 的 `state-root.ts`、§4 的三项修法、§5 的零迁移路径。公开的 `JsonlEventStore`、`rotateJsonl`、`repairEvolutionRoot` 均保留并标记旧用法，避免破坏依赖。`EvolutionRepairReport.projectionCursorRebuilt` 保持 boolean 字段但改成“本次调用确实完成重投影并写入 cursor”的含义。
-
-**当前假设**（可由 Builder 读代码验证，不是待成员拍板）：归档命名、mtime retention、`JsonlHealth` 结构以及本机文件锁沿用现有实现；不存在需要迁移的另一套线上布局。旧版已删除的归档无法恢复，发布说明需说明此限制。`retentionDays` 是显式请求删除历史事实，调用方承担数据缩减后派生变化的结果。
+目录布局、归档事实语义、retention 默认行为和 cursor 修复决策见 ADR-0001、ADR-0002、ADR-0003。本文以下内容定义实现契约、数据流、错误处理和验证策略。
 
 ## 模块边界与接口
 

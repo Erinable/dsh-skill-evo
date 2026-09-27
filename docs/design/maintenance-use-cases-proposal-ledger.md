@@ -1,3 +1,6 @@
+> 状态：已实现（SKIL-37 → SKIL-48…56）。决策见 ADR-0004、0005、0006；实现契约见 `specs/maintenance-use-cases-proposal-ledger/`。
+> 本文是历史提案，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
+
 本文回应 SKIL-40：把「维护用例」（propose / evaluate / promote 等）与「proposal 台账」（id 解析、latest 状态、状态转移表）各自收敛成 core 里的一个 deep module，让 CLI（`bin/dsh-skill-evolution.mjs`）和 bundle（`dsh-bundle/index.js`）退化成薄 adapter。只出设计，不含实现代码。
 
 ## 1. 现状

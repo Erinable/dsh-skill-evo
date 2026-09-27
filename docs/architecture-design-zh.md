@@ -8,6 +8,8 @@
 
 ### 1.1 Evolution 是独立能力，不扩张 Skill Registry
 
+本节决策见 ADR-0015。
+
 现有 `dsh-skill` 负责：
 
 - 注册和合并 Skill provider；
@@ -27,6 +29,8 @@
 Evolution 不把质量分、成功率或生命周期状态加入 `SkillRegistry` 的解析决策。Registry 的 rank 仍然只是同名来源优先级，不能被复用为 Skill 质量分、灰度比例或 canary 路由。
 
 ### 1.2 事实事件和派生判断分开
+
+本节决策见 ADR-0016。
 
 系统分两类数据：
 
@@ -313,6 +317,8 @@ DecisionRecord 是长期维护的核心，不允许只保存最终 patch。被�
 ## 4. 候选和版本生命周期
 
 ### 4.1 Proposal 状态
+
+Proposal 台账和状态转移决策见 ADR-0004、ADR-0005、ADR-0006。
 
 ```text
 draft
@@ -613,6 +619,8 @@ packages/skill/tool-evolution/
 验收：Skill 库可以减少重复和无效内容，且每次整理都有决策历史，不以 Skill 数量增长为成功标准。
 
 ## 10. 关键不变量
+
+相关架构不变量见 ADR-0014、ADR-0015、ADR-0016。
 
 1. Evolution 不能修改已产生的原始 observation。
 2. 派生归因必须引用 observation ID，并允许后续修正。
