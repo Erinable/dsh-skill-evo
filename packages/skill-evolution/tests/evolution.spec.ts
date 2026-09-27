@@ -3,6 +3,7 @@ import { hostname, tmpdir, uptime } from 'node:os'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { readdir } from 'node:fs/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   EvolutionWorkflow,
@@ -171,6 +172,67 @@ describe('phase 3 proposal and evaluation', () => {
 })
 
 describe('phase 4 publication and phase 5 portfolio maintenance', () => {
+  it('does not leave publication artifacts when a historical version precheck fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-precheck-'))
+    dirs.push(dir)
+    const store = new SkillVersionStore(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    await mkdir(join(dir, 'api-debugging'), { recursive: true })
+    await writeFile(join(dir, 'api-debugging', 'SKILL.md'), base)
+    const initial = createProposal({ id: 'precheck-initial', skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: base, proposedVersion: '1.0.0', candidateContent: base, intent: 'Initial' })
+    await store.promote(initial, { scope: 'project' })
+    await rm(join(dir, 'api-debugging', 'versions', '1.0.0', 'manifest.json'))
+    const next = createProposal({ id: 'precheck-next', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: base.replace('Base.', 'Next.'), intent: 'Next' })
+
+    await expect(store.promote(next, { scope: 'project' })).rejects.toThrow('incomplete published Skill version')
+    await expect(readdir(join(dir, 'api-debugging', 'versions', '1.1.0'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(dir, 'api-debugging', '.publish.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(dir, '.skill-evolution', 'candidates', next.id, 'SKILL.md'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('recovers an empty journaled version so a following promotion succeeds', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-recovery-'))
+    dirs.push(dir)
+    const store = new SkillVersionStore(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    await mkdir(join(dir, 'api-debugging'), { recursive: true })
+    await writeFile(join(dir, 'api-debugging', 'SKILL.md'), base)
+    const initial = createProposal({ id: 'recovery-initial', skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: base, proposedVersion: '1.0.0', candidateContent: base, intent: 'Initial' })
+    await store.promote(initial, { scope: 'project' })
+    const next = createProposal({ id: 'recovery-next', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: base.replace('Base.', 'Next.'), intent: 'Next' })
+    const root = join(dir, 'api-debugging')
+    await mkdir(join(root, 'versions', next.proposedVersion))
+    await writeFile(join(root, '.publish.json'), `${JSON.stringify({ proposalId: next.id, version: next.proposedVersion, contentHash: createContentHash(next.candidateContent) })}\n`)
+
+    await expect(store.readCurrent('api-debugging')).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
+    await expect(readdir(join(root, 'versions', next.proposedVersion))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, '.publish.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(store.promote(next, { scope: 'project' })).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
+  })
+
+  it('does not delete data for an untrusted journal version', async () => {
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    for (const version of ['', '.', '..', '../x', '../../outside']) {
+      const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-journal-guard-'))
+      dirs.push(dir)
+      const root = join(dir, 'api-debugging')
+      const store = new SkillVersionStore(dir)
+      await mkdir(root, { recursive: true })
+      await writeFile(join(root, 'SKILL.md'), base)
+      const initial = createProposal({ id: `journal-guard-${version || 'empty'}`, skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: base, proposedVersion: '1.0.0', candidateContent: base, intent: 'Initial' })
+      await store.promote(initial, { scope: 'project' })
+      const sibling = join(dir, 'outside', 'sibling.txt')
+      await mkdir(join(dir, 'outside'), { recursive: true })
+      await writeFile(sibling, 'keep')
+      await writeFile(join(root, '.publish.json'), `${JSON.stringify({ proposalId: initial.id, version, contentHash: createContentHash(base) })}\n`)
+
+      await expect(store.readCurrent('api-debugging')).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
+      await expect(readdir(join(root, 'versions'))).resolves.toContain('1.0.0')
+      await expect(readFile(sibling, 'utf8')).resolves.toBe('keep')
+      await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('contentHash')
+    }
+  })
+
   it('promotes atomically, preserves prior versions, and rolls back by hash', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-'))
     dirs.push(dir)
