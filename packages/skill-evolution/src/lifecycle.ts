@@ -2,10 +2,10 @@ import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:
 import { join } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
-import type { AdoptionBase, SkillManifest, SkillProposal } from './types.js'
+import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
 
 export interface SkillVersionStoreOptions {
-  readonly invalidate?: (skillName: string, scope: 'project' | 'user' | 'stable') => void | Promise<void>
+  readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
   readonly now?: () => string
 }
 
@@ -73,17 +73,18 @@ export class SkillVersionStore {
   async promote(
     proposal: SkillProposal,
     options: {
-      readonly scope: 'explicit-only' | 'project' | 'user' | 'stable'
+      readonly scope: PublicationScope
       readonly expectedBase?: AdoptionBase
     },
   ): Promise<PublishedSkill> {
+    assertPublicationScope(options.scope)
     return this.withMutationLock(proposal.skillName, () => this.promoteUnlocked(proposal, options))
   }
 
   private async promoteUnlocked(
     proposal: SkillProposal,
     options: {
-      readonly scope: 'explicit-only' | 'project' | 'user' | 'stable'
+      readonly scope: PublicationScope
       readonly expectedBase?: AdoptionBase
     },
   ): Promise<PublishedSkill> {
@@ -145,15 +146,16 @@ export class SkillVersionStore {
   async rollback(
     skillName: string,
     version: string,
-    options: { readonly scope: 'project' | 'user' | 'stable'; readonly expectedBase?: AdoptionBase },
+    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
   ): Promise<PublishedSkill> {
+    assertPublicationScope(options.scope)
     return this.withMutationLock(skillName, () => this.rollbackUnlocked(skillName, version, options))
   }
 
   private async rollbackUnlocked(
     skillName: string,
     version: string,
-    options: { readonly scope: 'project' | 'user' | 'stable'; readonly expectedBase?: AdoptionBase },
+    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
   ): Promise<PublishedSkill> {
     assertSkillName(skillName)
     assertVersion(version)
@@ -234,7 +236,7 @@ export class SkillVersionStore {
     return run
   }
 
-  private manifestFor(proposal: SkillProposal, scope: 'explicit-only' | 'project' | 'user' | 'stable', status: SkillManifest['status']): SkillManifest {
+  private manifestFor(proposal: SkillProposal, scope: PublicationScope, status: SkillManifest['status']): SkillManifest {
     const now = this.clock()
     return {
       name: proposal.skillName,

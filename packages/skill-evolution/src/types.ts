@@ -55,7 +55,7 @@ export interface AdoptionCandidate {
   readonly proposalId: string
   readonly skill: SkillRef
   readonly expectedBase: AdoptionBase
-  readonly target: 'explicit-only' | 'project' | 'user' | 'stable'
+  readonly target: PublicationScope
   readonly effectiveAt: 'next-load' | string
 }
 
@@ -282,7 +282,7 @@ export interface SkillManifest {
   readonly parentVersion?: string
   readonly contentHash: string
   readonly status: ArtifactLifecycleState
-  readonly scope: 'explicit-only' | 'project' | 'user' | 'stable'
+  readonly scope: PublicationScope
   readonly createdBy: 'human' | 'evolution-agent' | 'mixed'
   readonly createdAt: string
   readonly updatedAt: string
@@ -298,7 +298,30 @@ export interface PortfolioEntry {
   readonly updatedAt: string
 }
 
-export type FeedbackKind = 'incorrect' | 'constraint' | 'retry' | 'dissatisfied' | 'satisfied' | 'goal-changed' | 'other'
+export const PUBLICATION_SCOPES = ['explicit-only', 'project', 'user', 'stable'] as const
+export type PublicationScope = typeof PUBLICATION_SCOPES[number]
+
+export const FEEDBACK_KINDS = ['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'other'] as const
+export type FeedbackKind = typeof FEEDBACK_KINDS[number]
+
+export class InvalidOptionError extends Error {
+  readonly code = 'invalid-option'
+
+  constructor(readonly option: string, readonly value: unknown, allowed: readonly string[]) {
+    super(`${option} must be one of: ${allowed.join(', ')}`)
+    this.name = 'InvalidOptionError'
+  }
+}
+
+export function assertPublicationScope(value: unknown): PublicationScope {
+  if (typeof value === 'string' && (PUBLICATION_SCOPES as readonly string[]).includes(value)) return value as PublicationScope
+  throw new InvalidOptionError('scope', value, PUBLICATION_SCOPES)
+}
+
+export function assertFeedbackKind(value: unknown): FeedbackKind {
+  if (typeof value === 'string' && (FEEDBACK_KINDS as readonly string[]).includes(value)) return value as FeedbackKind
+  throw new InvalidOptionError('feedback kind', value, FEEDBACK_KINDS)
+}
 
 export interface FeedbackRecord {
   readonly id: string
