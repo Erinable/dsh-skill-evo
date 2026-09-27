@@ -8,6 +8,15 @@ bundle override is not replaced by the root's default `.skill-evolution` path.
 
 ## Local development
 
+Build the local dependencies before installing the bundle. Run these commands
+in order from the repository root:
+
+```bash
+(cd packages/skill-evolution && npm install && npm run build)
+(cd packages/dsh-adapter && npm install && npm run build)
+(cd packages/dsh-bundle && npm install)
+```
+
 Install the bundle as a symlink so source changes are visible to the profile:
 
 ```bash
