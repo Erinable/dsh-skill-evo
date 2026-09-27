@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
+import { resolveLayout, type EvolutionLayout } from './state-root.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -92,12 +93,11 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
 }
 
 /** Repair projections, stale locks, and skill manifests under an evolution root. */
-export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string }): Promise<EvolutionRepairReport> {
-  const observationsPath = options.observationsPath ?? join(root, '.skill-evolution', 'observations.jsonl')
+export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string; readonly layout?: EvolutionLayout }): Promise<EvolutionRepairReport> {
+  const layout = options.layout ?? resolveLayout({ root, ...(options.observationsPath === undefined ? {} : { observationStore: options.observationsPath }) })
+  const observationsPath = options.observationsPath ?? layout.observations.path
   const lockPaths = [...new Set([...options.jsonlPaths, observationsPath].map(path => `${path}.lock`))]
-  const stateDir = join(root, '.skill-evolution')
-  const locksDir = join(stateDir, 'locks')
-  const directories = [...new Set([stateDir, locksDir])]
+  const directories = [...new Set([layout.stateDir, layout.locksDir])]
   const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
   for (const path of options.jsonlPaths) {
@@ -109,11 +109,11 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
-  const manifestIssues = await inspectManifests(root)
+  const manifestIssues = await inspectManifests(root, layout)
   return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
 }
 
-async function inspectManifests(root: string): Promise<string[]> {
+async function inspectManifests(root: string, layout: EvolutionLayout): Promise<string[]> {
   const issues: string[] = []
   let entries
   try { entries = await readdir(root, { withFileTypes: true }) } catch (error) { if (isMissing(error)) return []; throw error }
@@ -127,7 +127,7 @@ async function inspectManifests(root: string): Promise<string[]> {
     if (skill !== undefined && manifest !== undefined && manifest.contentHash !== createContentHash(skill)) {
       issues.push(manifestPath)
     }
-    const versions = join(directory, 'versions')
+    const versions = layout.skillVersionsDir(entry.name)
     let versionEntries
     try { versionEntries = await readdir(versions, { withFileTypes: true }) } catch (error) { if (isMissing(error)) continue; throw error }
     for (const version of versionEntries) {

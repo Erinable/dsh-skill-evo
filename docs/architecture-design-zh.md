@@ -370,26 +370,39 @@ interface AdoptionRequest {
 
 ### 4.3 文件布局
 
-保持普通 Skill 目录可用，Evolution 元数据旁置：
+保持普通 Skill 目录可用，Evolution 状态集中在 root 下的 `.skill-evolution/`：
 
 ```text
 .dsh/skills/api-debugging/
 ├── SKILL.md                 # 当前默认正文
 ├── manifest.json            # 可选的人工维护元数据
-├── evolution/
-│   ├── identity.json        # 稳定身份和当前指针
-│   ├── decisions.jsonl      # 该 Skill 的决策历史引用
-│   ├── experiences.jsonl    # 该 Skill 的派生经验引用
-│   └── proposals/
-│       └── <id>/
-│           ├── proposal.json
-│           └── SKILL.md
+├── current.json             # 当前版本指针
+├── .publish.json             # 发布恢复日志（仅发布中存在）
 └── versions/
-    ├── <content-hash>/SKILL.md
-    └── <content-hash>/manifest.json
+    ├── <version>/SKILL.md
+    └── <version>/manifest.json
+
+<root>/.skill-evolution/
+├── observations.jsonl       # 原始事实；archive/ 下的分段同样属于事实
+├── archive/                 # observations.jsonl 的归档分段
+├── proposals.jsonl
+├── decisions.jsonl
+├── feedback.jsonl
+├── evaluations.jsonl
+├── experiences.jsonl         # 派生视图
+├── failures.jsonl
+├── clusters.jsonl
+├── diagnoses.jsonl
+├── proposals/<id>/           # 隔离候选与报告
+├── evaluations/              # 评估 artifact
+├── candidates/<id>/           # 待发布 Skill 候选
+├── locks/                    # 发布锁；JSONL 锁紧邻各自的 .jsonl 文件
+└── projection-cursor.json
 ```
 
-第一版也可以把 evolution store 放到用户级 DSH home，避免修改项目仓库；`path` 和 scope 仍需记录。生成候选时写入隔离目录，采用时才复制或切换到正式路径。
+Observation store 可以通过显式 `--store` 或 adapter 配置放在用户级 DSH home，archive 始终紧邻对应 store；集中目录只描述默认布局。生成候选时写入隔离目录，采用时才复制或切换到正式路径。retention 默认关闭，只有显式提供保留天数时才删除旧 archive；被删除的 archive 不再参与 repair 或 cursor 重建，无法恢复其中的事实。升级前旧默认 30 天策略已经删除的 archive 同样无法恢复，只能从仍存在的事实重建。
+
+独立 `repairEvolutionRoot` 只修复文件和锁，返回 `projectionCursorRebuilt: false`；`EvolutionService.repair()`（CLI 与 bundle 的 repair 入口）完成成功重投影后返回 `true`，重投影失败则抛错。
 
 ## 5. 运行时生效语义
 

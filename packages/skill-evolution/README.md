@@ -21,7 +21,11 @@ The package is intentionally independent of the DeepSeek Harness repository. Int
 ## Surface by phase
 
 - `RuntimeObservation`: append-only facts with stable event IDs.
-- `JsonlEventStore`: durable JSONL append/read/query with event-id idempotency.
+- `ObservationLog`: archive-aware durable observation stream with event-id
+  idempotency across the current file and archive segments.
+- `JsonlEventStore`: legacy current-file-only JSONL append/read/query; it does
+  not provide the logical fact stream across archives. New observation
+  integrations should use `ObservationLog`.
 - `buildExposureView`: derives catalog/load/follow-up exposure without claiming Skill impact.
 - `validateAdoptionBase`: rejects candidates whose expected content hash is stale.
 - `createContentHash`: binds observations and proposals to exact content snapshots.
@@ -55,9 +59,18 @@ Operational reporting:
   failure, follow-up, proposal, rollback, and context-cost metrics.
 - The `dsh-skill-evolution` binary provides maintenance commands and writes
   Markdown proposal artifacts under `.skill-evolution/proposals/` by default.
-- `repair` validates JSONL IDs, quarantines malformed lines, rebuilds the
-  projection checkpoint, preserves live publication locks, and reports manifest
-  hash mismatches. `rotate` archives oversized JSONL files with retention.
+- `repairEvolutionRoot` validates JSONL IDs, quarantines malformed lines,
+  preserves live publication locks, and reports manifest hash mismatches. It is
+  the standalone repair primitive and returns `projectionCursorRebuilt: false`;
+  it does not touch the cursor. `EvolutionService.repair()` is the service,
+  CLI, and bundle operation: after successful re-projection it returns
+  `projectionCursorRebuilt: true`, while a failed re-projection throws.
+  Both only see archive segments that still exist. Explicit retention deletes
+  archives permanently; before this layout was introduced, the old default
+  30-day retention may already have deleted segments, so recovery is limited
+  to the facts that remain. `rotateJsonl` is the legacy current-file rotation
+  helper; new observation integrations should use `ObservationLog.rotate`,
+  which leaves retention disabled unless `retentionDays` is explicitly supplied.
 - `health` is a read-only readiness probe for file existence, permissions,
   malformed records, byte size, and trailing partial lines.
 - Proposal transitions are recorded with actor, status pair, evidence, hashes,

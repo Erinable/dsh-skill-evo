@@ -69,7 +69,7 @@ export class EvolutionService {
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
     this.feedback = new JsonlRecordStore(path('feedback'))
     this.evaluations = new JsonlRecordStore(path('evaluations'))
-    this.versions = new SkillVersionStore(options.root, { invalidate: options.invalidate })
+    this.versions = new SkillVersionStore(options.root, { invalidate: options.invalidate, layout: this.layout })
   }
 
   async recordObservation(event: RuntimeObservation): Promise<boolean> {
@@ -149,7 +149,7 @@ export class EvolutionService {
   async repair(): Promise<EvolutionRepairReport> {
     const paths = [this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
     const jsonl: JsonlRepairResult[] = []
-    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath })
+    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath, layout: this.layout })
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
       for (const path of await archivePaths(this.observations.filePath)) {
