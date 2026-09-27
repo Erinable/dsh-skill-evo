@@ -80,7 +80,7 @@ multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（De
 | spec / 设计 / 调研 / 原型 / 地图 / bug / 文档 | 1 张 | 路由表对应的 agent |
 | 实现 | `tasks.md` 每条 task 一张，同一 stage 并行 | Builder |
 
-`child.md` 写清目标、验收标准、上游产物的位置（已合并的 `specs/<slug>/` 路径或 PR 链接），末尾一行：「按 `delivery-contract` 交付」。
+`child.md` 写清目标、验收标准、上游产物的位置（已合并的 `specs/<slug>/` 路径或 PR 链接）、相关 ADR 编号（本需求涉及的 `docs/adr/NNNN-*.md`），末尾一行：「按 `delivery-contract` 交付」。
 
 ## 放行
 

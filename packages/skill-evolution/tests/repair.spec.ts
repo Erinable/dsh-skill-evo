@@ -1,6 +1,6 @@
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EvolutionService, SkillVersionStore, createContentHash, createObservation, createProposal, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
@@ -30,18 +30,22 @@ async function old(path: string): Promise<void> {
 }
 
 describe('repair lock sweep', () => {
-  it('reports legacy suffixed candidate directories without moving or deleting them', async () => {
+  it('reports legacy colon-containing candidate directories without changing them', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-candidates-'))
     roots.push(root)
-    const legacy = join(root, '.skill-evolution', 'candidates', 'proposal-root:accepted')
-    await mkdir(legacy, { recursive: true })
-    await writeFile(join(legacy, 'SKILL.md'), 'legacy candidate')
+    const legacySuffixed = join(root, '.skill-evolution', 'candidates', 'proposal:accepted')
+    const legacyRoot = join(root, '.skill-evolution', 'candidates', 'proposal:root')
+    await mkdir(legacySuffixed, { recursive: true })
+    await mkdir(legacyRoot, { recursive: true })
+    await writeFile(join(legacySuffixed, 'marker.txt'), 'keep', 'utf8')
+    await writeFile(join(legacyRoot, 'marker.txt'), 'keep-root', 'utf8')
 
-    const report = await repairEvolutionRoot(root, { jsonlPaths: [] })
+    const report = await new EvolutionService({ root }).repair()
 
-    expect(report.legacyCandidateDirs).toEqual([legacy])
-    await expect(readFile(join(legacy, 'SKILL.md'), 'utf8')).resolves.toBe('legacy candidate')
-    await expect(readFile(join(root, '.skill-evolution', 'candidates', 'proposal-root', 'SKILL.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(report.legacyCandidateDirectories).toEqual([legacyRoot, legacySuffixed].sort())
+    expect(await readFile(join(legacySuffixed, 'marker.txt'), 'utf8')).toBe('keep')
+    expect(await readFile(join(legacyRoot, 'marker.txt'), 'utf8')).toBe('keep-root')
+    expect((await readdir(join(root, '.skill-evolution', 'candidates'))).sort()).toEqual(['proposal:accepted', 'proposal:root'])
   })
 
   it('reclaims a stale publication lock so the following promote succeeds', async () => {

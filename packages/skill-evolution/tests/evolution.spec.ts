@@ -506,16 +506,16 @@ describe('phase workflow orchestration', () => {
     await mkdir(skillDir, { recursive: true })
     await writeFile(join(skillDir, 'SKILL.md'), base)
     const service = new EvolutionService({ root: dir })
-    const draft = createProposal({ id: 'candidate-root', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' })
+    const draft = createProposal({ id: 'candidate:root', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' })
     const proposed = await service.stageProposal(draft)
     const evaluation = await service.evaluate(proposed, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
-    const evaluated = (await service.proposals.readAll()).find(item => item.id === 'candidate-root:evaluated')!
+    const evaluated = (await service.proposals.readAll()).find(item => item.id === 'candidate:root:evaluated')!
     await service.acceptProposal(evaluated, 'reviewed')
-    const accepted = (await service.proposals.readAll()).find(item => item.id === 'candidate-root:accepted')!
+    const accepted = (await service.proposals.readAll()).find(item => item.id === 'candidate:root:accepted')!
     await service.promote(accepted, evaluation, 'project')
 
     const candidateEntries = await readdir(service.layout.candidatesDir, { withFileTypes: true })
-    expect(candidateEntries.filter(entry => entry.isDirectory()).map(entry => entry.name)).toEqual(['candidate-root'])
+    expect(candidateEntries.filter(entry => entry.isDirectory()).map(entry => entry.name)).toEqual(['candidate%3Aroot'])
     expect(candidateEntries.some(entry => entry.name.includes(':'))).toBe(false)
   })
 
