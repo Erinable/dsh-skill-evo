@@ -8,9 +8,10 @@ import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInp
 import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
-import { repairEvolutionRoot, repairJsonlFile, type EvolutionRepairReport } from './repair.js'
+import { repairEvolutionRoot, repairJsonlFile, repairJsonlFileUnlocked, type EvolutionRepairReport } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
+import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import type {
   DecisionRecord,
@@ -135,7 +136,11 @@ export class EvolutionService {
   }
 
   async health(): Promise<readonly JsonlHealth[]> {
-    return Promise.all([this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath].map(inspectJsonlHealth))
+    const current = [this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
+    const archives = await archivePaths(this.observations.filePath)
+    const reports = await Promise.all(current.map(path => inspectJsonlHealth(path)))
+    const archiveReports = await Promise.all(archives.map(path => inspectJsonlHealth(path, { parse: isObservationValue, requireTrailingNewline: true })))
+    return [...reports, ...archiveReports]
   }
 
   async healthReport(): Promise<{ readonly jsonl: readonly JsonlHealth[]; readonly skillIssues: readonly string[] }> {
@@ -143,15 +148,15 @@ export class EvolutionService {
   }
 
   async repair(): Promise<EvolutionRepairReport> {
-    const paths = [this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
+    const paths = [this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
     const jsonl = []
-    for (const path of paths) {
-      jsonl.push(await repairJsonlFile(path, path === this.observations.filePath ? {
-        parse: value => {
-          try { parseObservation(JSON.stringify(value)); return true } catch { return false }
-        },
-      } : undefined))
-    }
+    await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
+      jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
+      for (const path of await archivePaths(this.observations.filePath)) {
+        jsonl.push(await repairJsonlFileUnlocked(path, { parse: isObservationValue }))
+      }
+    })
+    for (const path of paths) jsonl.push(await repairJsonlFile(path))
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: [], observationsPath: this.observations.filePath })
     await writeFile(this.projectionCursorPath, '{}\n', 'utf8')
     await this.refreshDerived()
@@ -407,6 +412,10 @@ export class EvolutionService {
     await writeFile(this.projectionCursorPath, `${JSON.stringify({ count: observations.length, lastId, fingerprint })}\n`, 'utf8')
     return snapshot
   }
+}
+
+function isObservationValue(value: unknown): boolean {
+  try { parseObservation(JSON.stringify(value)); return true } catch { return false }
 }
 
 
