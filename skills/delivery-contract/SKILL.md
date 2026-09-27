@@ -1,6 +1,6 @@
 ---
 name: delivery-contract
-description: "交付契约。在被指派的子 issue 上交付 PR、提交或回应评审（PASS / BLOCK）、需要成员拍板提问、发现 spec 有问题时使用。"
+description: "交付契约。接到指派的子 issue 就先读，开 PR、发交付或交接评论之前必须读过；回应评审（PASS / BLOCK）、需要成员拍板提问、发现 spec 有问题、建任何 issue（含「另建跟踪票」）之前查重时也用。"
 ---
 
 执行 agent 在一张子 issue 上交付一个 PR 的完整契约：怎么交付、怎么被评审、怎么提问、怎么交接。Reviewer 按「评审契约」一节执行。
@@ -27,23 +27,24 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
    完成判据：`gh pr view --json isDraft,title,body` 显示 `isDraft: true`，标题以 `<KEY>: ` 开头，首行是 `Closes <KEY>`，attribution 之前的最后一行是 `修改意见请评论在 <KEY> 上`。
 5. **状态**：先 `multica issue status <issue> in_review`，再发交接评论。顺序不能反：@Reviewer 会立刻起 Reviewer 的 run，状态还没改就可能被读到旧状态。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
    完成判据：`multica issue get <issue> --output json` 的 `status` 为 `in_review` 或 `blocked`。
-6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
-   完成判据：评论已发出；发出前对正文文件执行 `grep -cE 'mention://(agent|squad)/' <正文文件>` 输出 `1`，这一个就是给 Reviewer 的 `mention://agent/<Reviewer 的 id>`（见「贴原始输出前清理 mention」）。
+6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），**只用「交接」一节的交接命令发出**，`TO=Reviewer`。
+   完成判据：交接命令最后打印 `handoff ok: Reviewer <评论 id>`。没打印就是没交接，issue 不能停在 `in_review` 就结束 run。
 
-修改意见的唯一来源是 Multica issue 上的评论；GitHub 上的评论不会触发任何 agent，所以 PR 末尾那句提示是必需的。
+修改意见以 Multica issue 上的评论为准。GitHub 上的评论不会触发任何 agent，只能等每日巡检转到 issue 上，最迟隔一天，所以 PR 末尾那句提示仍是必需的。
 
 ## 被评审之后
 
 - **PASS**：Reviewer 已把 PR 转为正式 PR，issue 上会有「等待合并」的评论。你的工作到此为止，等成员合并。
 - **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
+- **GitHub 意见**：issue 上出现以 `GitHub 意见：#<n>` 开头、@ 你的评论，是每日巡检把成员留在 GitHub PR 上的意见转了过来。把引用的每条意见当作成员在 issue 上的评论处理：要改就回原任务分支返工、推送，再按交付步骤 5、6 置 `in_review`、发交接评论并 @Reviewer，交接评论里逐条写每个意见链接怎么处理的；只是提问就在 issue 上回答，不改状态。不要去 GitHub 上回复。
 - **PR 冲突**：每日巡检或成员在 issue 上 @ 你说 PR 与 main 冲突时，按「PR 冲突时」处理。PASS 之后也可能发生。
 
 ## 评审契约（Reviewer）
 
 1. **只读检出**：`git fetch origin` 后执行 `git diff origin/main...origin/<分支>`，工作区保持无提交。
 2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论；再在子 issue 上评论，写明「等待合并」。
-3. **BLOCK**：在子 issue 上评论，写清哪条验收标准没过、在哪个位置、要改什么，并 @ 原执行 agent。
+3. **BLOCK**：在子 issue 上评论，写清哪条验收标准没过、在哪个位置、要改什么，用「交接」一节的交接命令发出，`TO=<原执行 agent 名>`、`PARENT=<触发你的交接评论 id>`。
 4. **ADR 检查**：PR 引入的不可逆决策（数据格式、公开接口、依赖方向）有没有对应的 `docs/adr/` 文件；PR 与已有 ADR 冲突时，有没有按 `docs/agents/domain.md` 的「Flag ADR conflicts」显式标出；新 ADR 的编号是否与 `origin/main` 上已有的编号冲突，冲突时后合并的 PR 改号。任何一项没满足就判 BLOCK，理由写明缺的是哪一项。
 5. **冲突复核**：执行 agent 解完冲突后 @ 你，交接评论第一行是 `冲突已解决：#<n>`。按「PR 冲突时」的复核规则只核对合并本身。
 6. **轮次**：发 BLOCK 前先数这张 issue 上已有几条 BLOCK。本次是第 3 次时，改为把 issue 置为 `blocked`，评论里写明需要成员做什么决定，这一次不 @ 执行 agent。
@@ -82,13 +83,40 @@ PR 已交付（`in_review`，不管是 draft 待评审还是已 PASS 等合并�
 
 ## 交接：必须显式 @
 
-显式 @ 是唯一已证实会给对方起 run 的交接方式（SKIL-18/21/26 的每一次交接都靠它）。不带 @ 的 agent 评论能不能唤醒 issue 负责人，没有验证过，不要依赖。所以每次把工作交给另一个 agent，都要在评论里写 mention 链接：
+显式 @ 是唯一已证实会给对方起 run 的交接方式（SKIL-18/21/26 的每一次交接都靠它）。不带 @ 的 agent 评论能不能唤醒 issue 负责人，没有验证过，不要依赖。mention 会给对方起一个新 run，只在真的交出工作时用；致谢和告知写纯文本。
 
-```markdown
-[@Reviewer](mention://agent/<Reviewer 的 id>)
+**交接评论只用下面这条命令发，不手写 mention、不手抄 id、不直接 `multica issue comment add`。** 先把正文（不含 mention）写进 `./handoff.md`，改第一行的三个值，整段粘进一次 shell 调用：
+
+```bash
+ISSUE=<issue id>; BODY=./handoff.md; TO=Reviewer; PARENT=
+(
+  set -eu
+  [ -s "$BODY" ] || { echo "handoff FAILED: $BODY missing or empty" >&2; exit 1; }
+  perl -pi -e 's#\[@?([^\]]*)\]\(mention://(agent|squad)/[^)]*\)#\@$1#g; s#mention://(agent|squad)/#mention:‹$1›/#g' "$BODY"
+  ID=$(multica agent list --output json | jq -r --arg n "$TO" '[.[] | select(.name == $n) | .id] | if length == 1 then .[0] else empty end')
+  [ -n "$ID" ] || { echo "handoff FAILED: no unique agent named $TO" >&2; exit 1; }
+  if [ "$TO" = Reviewer ]; then
+    ST=$(multica issue get "$ISSUE" --output json | jq -r .status)
+    [ "$ST" = in_review ] || { echo "handoff FAILED: status is $ST, set in_review first" >&2; exit 1; }
+  fi
+  printf '\n[@%s](mention://agent/%s)\n' "$TO" "$ID" >> "$BODY"
+  N=$(grep -cE 'mention://(agent|squad)/' "$BODY" || true)
+  [ "$N" = 1 ] || { echo "handoff FAILED: $N mention lines, want 1" >&2; exit 1; }
+  CID=$(multica issue comment add "$ISSUE" --content-file "$BODY" ${PARENT:+--parent "$PARENT"} --output json | jq -r .id)
+  multica issue comment list "$ISSUE" --compact --output json \
+    | jq -e --arg c "$CID" --arg m "mention://agent/$ID" '.[] | select(.id == $c) | .content | contains($m)' >/dev/null \
+    || { echo "handoff FAILED: posted comment $CID does not carry the mention" >&2; exit 1; }
+  rm -f "$BODY"
+  echo "handoff ok: $TO $CID"
+)
 ```
 
-id 现查，不要记：`multica agent list --output json`，按 `name` 取 `id`。mention 会给对方起一个新 run，只在真的交出工作时用；致谢和告知写纯文本。
+- `TO`：交给谁，填 agent 的 `name`。交付和返工是 `Reviewer`；Reviewer 打回是原执行 agent（如 `Builder`）；spec 有问题是 `Mika`。只有 `TO=Reviewer` 时检查状态已是 `in_review`（交付步骤 5）。
+- `PARENT`：本次 run 是被某条评论触发的（比如 Reviewer 的 BLOCK），填那条评论的 id；否则留空。
+- 命令先清理正文里所有 agent / squad mention（见下一节），再按名字现查 id 追加唯一一行交接 mention，数到恰好 1 行才发，发完读回这条评论确认 mention 还在。
+- 输出 `handoff ok: <TO> <评论 id>` 才算交接完成。输出 `handoff FAILED: ...` 时按提示修正后重跑整段，不要改用手写评论绕过。
+
+这条命令防的是已发生过的四种漏交接：没读本 skill 就按 agent 通用规则发了不带 @ 的评论（SKIL-55/61/62/66/67）；手写 mention 时写错对象（SKIL-63 @ 了 Sleuth）；手抄 id 抄错一位，grep 照样数到 1（SKIL-82 的 `acc6459c`）；返工回复里没带 @（SKIL-67）。
 
 ## 贴原始输出前清理 mention
 
@@ -100,10 +128,43 @@ id 现查，不要记：`multica agent list --output json`，按 `name` 取 `id`
 perl -pi -e 's#\[@?([^\]]*)\]\(mention://(agent|squad)/[^)]*\)#\@$1#g; s#mention://(agent|squad)/#mention:‹$1›/#g' <正文文件>
 ```
 
-第一段把 `[@名字](mention://agent/<id>)`、`[@名字](mention://squad/<id>)` 换成纯文本 `@名字`；第二段把剩下裸露的 `mention://agent/`、`mention://squad/` 前缀改成 `mention:‹agent›/`、`mention:‹squad›/`，不再被解析。这条命令对交接 mention 一视同仁，所以交接用的那一行放在清理之后再追加。
+第一段把 `[@名字](mention://agent/<id>)`、`[@名字](mention://squad/<id>)` 换成纯文本 `@名字`；第二段把剩下裸露的 `mention://agent/`、`mention://squad/` 前缀改成 `mention:‹agent›/`、`mention:‹squad›/`，不再被解析。这条命令对交接 mention 一视同仁，所以交接用的那一行放在清理之后再追加——「交接」一节的交接命令已经按这个顺序做了，交接评论不用再单独跑。
 
 完成判据：发出前执行 `grep -cE 'mention://(agent|squad)/' <正文文件>`，输出等于这条评论**有意**交接的次数：交接评论是 `1`，其余是 `0`。`grep -c` 数的是行，交接 mention 单独占一行。
 
+## 建票前查重
+
+任何 `multica issue create` 之前都先查重：票面要求「另建跟踪票」、Mika 建父 issue 或子 issue、追加修订票都算。`orchestrate` 的「已有子 issue 就不再建」只看一个父 issue，防不住同一问题从两条路径各建一张（SKIL-81：新父 SKIL-80 下还没有子 issue，但同一个 D6 已经有挂在 SKIL-77 下的 SKIL-79，结果两张都开工、各出一个 PR）。
+
+1. **分清要建哪一种票**：父 issue，还是执行票或跟踪票（stage 子 issue、拆票、修订票、「另建跟踪票」都算后一种）。
+2. **定两组关键词**：
+   - **问题关键词**：问题编号（`D6`、`Task 3`）或一句话里的核心名词。它只在同一份来源文档里唯一，换一份文档，`D6`、`Task 1` 就会撞号，所以不能单独作为判据。
+   - **来源锚点**：本票指向的来源，至少取一个：spec 路径 `specs/<slug>/`、代码位置（`state-root.ts:72`）或函数名、来源 issue 的 KEY、设计稿路径。
+
+   请求或描述里点名了现有 KEY（「把 SKIL-79 指派给…」）时，如果要建的票和点名的票**是同一种**（都是执行票或跟踪票），点名的那张就是要用的票，跳到第 5 步复用。建父 issue 时不跳：点名的 KEY 写进父 issue 描述，照常走第 3、4 步，交给父 issue 的首次路由 run 去复用。
+3. **搜**：两组关键词各跑一次，必须带 `--include-closed`（不带时已完成的票搜不出来）：
+   ```bash
+   multica issue search "<关键词>" --include-closed --limit 20 --output json
+   multica issue children <目标父 issue> --output json
+   multica issue children <来源 issue> --output json   # 跟踪票通常挂在来源 issue 下
+   ```
+4. **判定**：从结果里去掉本 issue、目标父 issue、来源 issue。剩下的票，同时满足下面两条才算**重复**：
+   - (a) 标题含问题关键词，或者和要建的票标题说的是同一件事；
+   - (b) 描述里有同一个来源锚点，也就是同一个 `specs/<slug>/`、同一个代码位置或函数，或者同一个来源 KEY。
+
+   只满足一条的（比如别的 spec 的 `Task 1`、别的文档的 `D6`）**不算重复**，在评论里列出来，写明「同号不同源」。建父 issue 时，只和已有的**父 issue**（`parent_issue_id` 为空）比；搜到的执行票、跟踪票不算重复，把它的 KEY 写进父 issue 描述。(a)(b) 看不出来时不自己猜，按所选 tracker adapter 的 `Ask a person and wait` 问成员一个问题，默认答案是「不算重复，新建」。
+5. **处理**（只对第 4 步判定为重复、也就是来源相同的票）：
+
+   | 重复票的状态 | 做法 |
+   |---|---|
+   | 未完成（不是 `done` / `cancelled`） | 复用，不新建：`multica issue update <KEY> --parent <目标父> --stage <N> --description-file ./child.md`，再按需 `assign`、`status todo` |
+   | `done` | 不新建。在本 issue 上写明已由 `<KEY>` 完成；确有遗留时才新建，描述第一行写「续 `<KEY>`」，只写遗留部分 |
+   | `cancelled` | 可以新建，描述里写「替代已取消的 `<KEY>`」 |
+
+6. **建后复查**：所有新票（包括父 issue 和修订票）都先建成 `backlog`，这时不会起 run。建完把第 3 步的搜索再跑一遍：如果出现一张 `created_at` 早于新票、状态不是 `cancelled`、按第 4 步判定为重复的票（并发的另一个 run 刚建的），就把新票置 `cancelled`，按第 5 步复用那张；否则按原计划置 `todo`。已经起了 run 的重复票，只置 `cancelled` 停不下来（SKIL-81 置 `cancelled` 后，Sleuth 的 run 照跑，又把它改回了 `in_review`）。要先用 `multica issue runs <KEY> --active` 找到进行中的 run，执行 `multica issue cancel-task <run-id> --issue <KEY>`，再置 `cancelled`。
+
+完成判据：本次 run 的评论里写了用过的问题关键词、来源锚点和结论（「无重复，新建 `<KEY>`」「复用 `<KEY>`」或「同号不同源：`<KEY>`」）；新建的票在复查时没有更早的同源票；同一个问题关键词加同一个来源锚点下，未取消、未完成的票只有一张。
+
 ## spec 有问题时
 
-实现中发现 spec 矛盾、缺失或写不通：把子 issue 置为 `blocked`，评论写清是 spec 的哪一处、为什么写不通、你建议怎么改，并 @Mika。Mika 会追加一张 Spec Writer 修订票，修订合并后再放行你这张。
+实现中发现 spec 矛盾、缺失或写不通：把子 issue 置为 `blocked`，评论写清是 spec 的哪一处、为什么写不通、你建议怎么改，用「交接」一节的交接命令发出，`TO=Mika`。Mika 会追加一张 Spec Writer 修订票，修订合并后再放行你这张。
