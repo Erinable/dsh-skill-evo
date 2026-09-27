@@ -38,8 +38,7 @@ The ground is independent of the carrier below: an issue-async run in a checked-
 
 A round is always the same content. What differs is how you hand it over and how the answer comes back. Check these conditions in order and take the first that matches:
 
-1. **`MULTICA_TASK_ID` is set in the environment** (or the runtime brief says the task reaches a terminal state when the turn exits) → **issue-async**. The run cannot outlive the turn, so there is nothing to wait inside.
-2. **Otherwise** → **interactive session**. The session survives across the user's reply.
+1. Follow `docs/agents/runtime.md`'s `## Which mode am I in`: one-shot runs use **issue-async**, while interactive sessions survive across the user's reply.
 
 ### Interactive session
 
@@ -54,13 +53,13 @@ Per round:
 1. Write the round to a file-backed body. The adapter publishes it as an issue comment and replies in the thread you were triggered from by passing that `thread`.
 2. Call the selected tracker adapter's `Ask a person and wait` section with the issue, the file-backed round body, the triggering `thread`, and a `next` instruction to read the reply, recompute the frontier, and ask the next round.
 
-3. End the run. Do not poll, sleep, or re-read the issue hoping the answer lands before the turn closes.
+3. End the run after the adapter operation. Follow the runtime's `## Subagents: fan out, converge before the turn ends` for fact-finding subagents; do not poll or sleep.
 
 On waking: read the comments added since your last round, attribute each answer to its question number, recompute the frontier, and post the next round. A question the member did not answer stays on the frontier — carry it into the next round as still-open, in their words or not at all. Answers are the member's to give, so every round you post is a round you leave for them; supplying the missing side yourself would settle the tree against a decision nobody made.
 
 When the frontier is empty, post the shared-understanding summary and apply step 2 again — a wakeup only when the issue is not assigned to you: the member's confirmation is itself an answer, and it arrives in a later run.
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, docs), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Dispatch every such fact-finder for this round in one batch so they run concurrently, and **collect all of their reports before this run ends** — see the tracker doc's fan-out-and-converge rule. A sub-agent still reading when your turn exits is orphaned and its answer is lost, so the question it was settling comes back unsettled with nothing to show.
+Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, docs), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Follow `docs/agents/runtime.md`'s `## Subagents: fan out, converge before the turn ends` while collecting those reports.
 
 Inside the round, a running sub-agent is an unsettled prerequisite: it does not stall the rest of the frontier. Ask every question that doesn't depend on it now, in this same round, and leave the questions downstream of that fact for a later round. What waits on the sub-agent is those downstream questions — never your own turn boundary.
 
