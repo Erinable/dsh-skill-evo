@@ -16,16 +16,17 @@
 
 `docs/sdd-practice-zh.md:93` 的「推测」段落建议改为：
 
-> **推测**（本项目的推导，综合下列一手证据）：Spec Kit Agents 的增益归因于 context-grounding hooks，不是角色数量。2025-12 以后的对照实验进一步显示，在编码任务上增加 agent 数量不会单调带来收益：BOAD 在 SWE-bench Live 上子 agent 数 2 个最好、3–5 个下降；Scaling Agent Systems 在 SWE-bench Verified 上所有 multi-agent 架构都略低于强模型单 agent；同一工作流改由单 agent 执行，函数级编码结果持平或略好。同时，在角色数不变时加上或去掉一个校验环节，结果移动幅度远大于此。因此杠杆在校验闸和角色**划分方式**（按依赖内聚切分、明确文件所有权、只保留确有帮助的子 agent），不在角色数量。artifact 契约是否独立构成杠杆，目前没有单独的对照实验。
+> **推测**（本项目的推导，综合下列一手证据）：Spec Kit Agents 的增益归因于 context-grounding hooks，不是角色数量。2025-12 以后的对照实验进一步显示，在编码任务上增加 agent 数量不会单调带来收益：BOAD 在 SWE-bench Live 上子 agent 数 2 个最好、3–5 个下降；Scaling Agent Systems 在 SWE-bench Verified 上所有 multi-agent 架构都略低于强模型单 agent；同一工作流改由单 agent 执行，函数级编码结果持平或略好。同时，在角色数基本不变时，加上或去掉一个校验环节同样能让结果大幅移动（MAST 给 ChatDev 加目标校验 +15.6%；2607.04212 编译率 22%→40%，但校验环节与 ChatDev 2.0 框架差异混杂）。两组数据来自不同基准和指标，不宜比较大小。因此杠杆在校验闸和角色**划分方式**（按依赖内聚切分、明确文件所有权、只保留确有帮助的子 agent），不在角色数量。artifact 契约是否独立构成杠杆，目前没有单独的对照实验。
 
 `docs/sdd-practice-zh.md:95` 的边界说明建议改为：
 
-> 边界：直接变动 agent 数量的对照实验都基于预印本，样本量有限（Scaling Agent Systems 的 SWE-bench 子集 n=20）；函数级编码（HumanEval / MBPP）上有 multi-agent 高于单 agent 的结果，但多在置信区间内。还没有在仓库级任务上、保持校验闸不变、只删功能角色的实验，所以「大花名册一定更差」同样没有被证实。
+> 边界：直接变动 agent 数量的对照实验都基于预印本，样本量有限（Scaling Agent Systems 的 SWE-bench 子集 n=20）；函数级编码（HumanEval / MBPP）上有 multi-agent 高于单 agent 的结果：HumanEval 上多在置信区间内；MBPP 上 6 个 MAS 全部更高，其中 3 个超出 Wilson 半宽（±5.3）。还没有在仓库级任务上、保持校验闸不变、只删功能角色的实验，所以「大花名册一定更差」同样没有被证实。
 
 另有两处连带修改：
 
 - `docs/sdd-practice-zh.md:76` 小节标题「唯一有实证评估的那一条」：对**多 agent SDD 配置**仍然成立，对**多 agent 编码**已不成立。建议改为「唯一有实证评估的多 agent SDD 配置」，并新增一小节引用本文 §1–§3。
-- `research/sources.md:75`、`:84` 的「只有 Spec Kit Agents 做了实证评估」同理，需要限定到 SDD 配置，并补录本文来源。
+- `research/sources.md:75` 的「只有 Spec Kit Agents 做了实证评估」同理，需要限定到多 Agent SDD 配置，并在「SDD 与多 Agent 协作」表中补录本文 §1–§4 的来源。`:84` 的「性质」栏已写为「唯一有实证评估的多 Agent SDD 配置」，无需改。
+
 ## §1 角色 / agent 数量：直接对照
 
 **BOAD**（arXiv 2512.23631v2，2025-12-29 提交，预印本）。在 SWE 任务上用 bandit 搜索子 agent 组合，Seed-OSS-36B。
@@ -46,7 +47,7 @@
 
 **反向信号：BenchAgent / Do More Agents Help?**（arXiv 2606.05670，2026-06-04 提交，预印本）。
 - 来源明说：10 个基准平均，6 个 MAS 中至多 1 个超过同条件的单 agent，其余落后 2.56–11.29 分。
-- 来源明说：但编码子集方向相反。HumanEval 上单 agent 84.73，6 个 MAS 中 4 个更高（最高 93.89），另有 81.68 和 61.83；MBPP 上 6 个 MAS 全部高于单 agent 68.32（72.72–75.95）。作者把 Wilson 半宽内的差异定为 descriptive。
+- 来源明说：但编码子集方向相反。HumanEval 上单 agent 84.73，6 个 MAS 中 4 个更高（最高 93.89），另有 81.68 和 61.83；MBPP 上 6 个 MAS 全部高于单 agent 68.32（72.72–75.95）。作者把 Wilson 半宽内的差异定为 descriptive；按 Table 5 的最大 Wilson 半宽（HumanEval ±8.4、MBPP ±5.3），HumanEval 上只有 93.89 超出半宽，MBPP 上 75.07 / 75.95 / 75.36 三个超出半宽。MBPP 上的反向信号不能当作噪声处理。
 - 推断：函数级编码上 debate / ensemble 式拓扑可能有小幅增益。这与 §1 其余结论的冲突可能来自任务粒度（函数级 vs 仓库级）和模型强弱，但没有来源直接验证这一解释。
 
 ## §2 角色划分：同样数量，不同分法
