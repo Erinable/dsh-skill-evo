@@ -58,11 +58,13 @@ Multica has no locking and `multica issue update` replaces fields wholesale. Ass
 
 ## Ask a person and wait
 
-1. Write the question body to a UTF-8 file inside the working directory. Publish it with `multica issue comment add <issue> --content-file <body-file>`; if replying to a thread, pass the triggering `thread` as `--parent <thread>`.
-2. Read the issue assignee. If the issue is assigned to this agent, register no wakeup: a member reply wakes that assignee directly.
-3. Otherwise use the triggering comment's `author_id` when `author_type == member`. If there is no member author, read `docs/agents/instance.md`'s `Decision maker` section, run `multica workspace member list --output json`, and use the matching owner's `user_id`. Never use a membership `id`, `creator_id`, or `assignee_id`.
-4. Register exactly one one-shot event wakeup: `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <member-user-id>`. Pass the triggering `thread` as wakeup `--parent <thread>` and the continuation as `--instruction <next>`.
-5. End the run after registering the wakeup. Do not poll or sleep. On the next run, read the member reply and follow the `next` instruction.
+1. Write one question body to a UTF-8 file inside the working directory. It must name the target, classify the question (`business judgment` or `irreversible / permission / spending`), state the default answer, and record the ask timestamp. Publish it with `multica issue comment add <issue> --content-file <body-file>`; if replying to a thread, pass the triggering `thread` as `--parent <thread>`.
+2. Resolve the request initiator: use the chat initiator for a chat-created request, or the triggering comment's `author_id` when `author_type == member`. If no member initiator is available, use the decision maker from `docs/agents/instance.md`.
+3. Choose exactly one target. Ask the request initiator for business judgment. Ask the decision maker for irreversible decisions, permissions, or spending. When the initiator is the decision maker, that person is the target for both classes. Resolve the target through `multica workspace member list --output json` and use its `user_id`; never use a membership id, agent id, `creator_id`, or `assignee_id`.
+4. Read the issue assignee. If the issue is assigned to this agent, register no wakeup: a reply from the target member wakes that assignee directly.
+5. Otherwise register exactly one one-shot event wakeup filtered to the target member: `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <target-user-id>`. Pass the triggering `thread` as wakeup `--parent <thread>` and the continuation as `--instruction <next>`.
+6. Only the target member's reply answers the question. With a registered wakeup, other member replies do not wake this wait; the target filter is intentional so an unrelated reply cannot settle a decision. If the issue is assigned to this agent and the tracker directly wakes it for any comment, discard non-target replies as context and keep the question open.
+7. End the run after publishing and, when required, registering the wakeup. Do not poll or sleep. On the next run, read the target's reply and follow the `next` instruction. If no reply arrives, the `2 / 4 / 7 day` escalation in `delivery-contract` and `orchestrate/PATROL.md` applies.
 
 ## Wayfinding operations
 

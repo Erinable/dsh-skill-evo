@@ -73,10 +73,12 @@ PR 已交付（`in_review`，不管是 draft 待评审还是已 PASS 等合并�
 
 ## 提问（需要成员拍板时）
 
-1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案，成员可以只回「默认」。然后把 issue 置为 `blocked`。
-2. 使用所选 tracker adapter 的 `Ask a person and wait` 一节，传入 `issue`、文件中的 `body`，以及触发线程 `thread` 和回复后的 `next`（如有）。由 adapter 负责发布、收件人解析、一次性唤醒和结束本次 run；调用方不得复制 tracker 命令。
+1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案，成员可以只回「默认」。每个问题标出 `business judgment` 或 `irreversible / permission / spending`，并写明目标和提问时间；然后把 issue 置为 `blocked`。
+2. 目标规则：业务判断问需求提出人（聊天发起者或触发评论的 member 作者）；不可逆决策、权限或花费问 `docs/agents/instance.md` 的 Decision maker。需求提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
+3. 使用所选 tracker adapter 的 `Ask a person and wait` 一节，传入 `issue`、文件中的 `body`，以及触发线程 `thread` 和回复后的 `next`（如有）。由 adapter 负责发布、收件人解析、只过滤目标成员的一次性唤醒和结束本次 run；调用方不得复制 tracker 命令。其他成员的回复只作上下文，不算回答。
+4. 目标成员无回复时按 `orchestrate/PATROL.md` 的升级表处理：2 天提醒一次，4 天再次提醒并在适用时转 Decision maker，7 天对可逆业务问题按明确默认答案继续；不可逆、权限或花费问题不自动执行，置 `backlog` 等 Decision maker 安排。
 
-完成判据：问题评论已发出、issue 为 `blocked`，并已按 adapter 规则结束本次 run。
+完成判据：问题评论已发出、包含目标/类别/默认值/时间戳，issue 为 `blocked`，并已按 adapter 规则结束本次 run。
 
 ## 交接：必须显式 @
 

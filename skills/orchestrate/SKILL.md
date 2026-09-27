@@ -29,14 +29,15 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
    ```
    `parent.md` 写成员原话和你理解的目标。
 
-完成判据：父 issue 存在，负责人 Mika，状态 `todo`。成员订阅在首次仓库路由 run 中完成。
+完成判据：父 issue 存在，负责人 Mika，状态 `todo`。`Subscribers` 集合在首次仓库路由 run 中完成订阅。
 
 ## 路由并建 Stage 1
 
 开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的 `Subscribers` 补齐父 issue 订阅，再检查子 issue；此前在聊天入口不订阅。
 
 ```bash
-multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
+# Repeat once for each resolved `user_id` in `instance.md`'s `Subscribers` set.
+multica issue subscriber add <parent-id> --user-id <subscriber-user-id>
 ```
 
 0. 先查 `multica issue children <parent-id> --output json`。已经有子 issue 的，不再路由、不再建票，再看 `multica issue get <parent-id> --output json` 的 `assignee_id`：
@@ -48,7 +49,7 @@ multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（D
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
 
-完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；父 issue 和 Stage 1 子 issue 已订阅 `docs/agents/instance.md` 的 `Subscribers`。
+完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；父 issue 和 Stage 1 子 issue 都订阅 `docs/agents/instance.md` 的 `Subscribers` 集合。
 
 ### 路由表
 
@@ -72,7 +73,8 @@ multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（D
 ```bash
 multica issue create --parent <parent-id> --stage <N> --status todo \
   --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
-multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
+# Repeat once for each resolved `user_id` in `instance.md`'s `Subscribers` set.
+multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 ```
 
 | stage 内容 | 张数 | 指派 |

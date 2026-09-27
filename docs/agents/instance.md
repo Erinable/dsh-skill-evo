@@ -8,7 +8,12 @@ The workspace owner is the decision maker. Resolve the owner through the tracker
 
 ## Subscribers
 
-Subscribe the decision maker when creating parent or child issues. A chat-created parent is subscribed during its first repository-backed routing run, when this file is available.
+The default subscriber set is the request initiator plus the decision maker, deduplicated by `user_id`:
+
+- **Request initiator**: the chat initiator for a chat-created request, or the member who authored the triggering comment for an issue run.
+- **Decision maker**: the workspace owner from the `Decision maker` section above.
+
+When no member request initiator can be resolved, subscribe only the decision maker. A parent and every child issue use this same set. Resolve each person through the tracker adapter's workspace member query and pass `user_id`; membership ids, agent ids, `creator_id`, and `assignee_id` are not substitutes.
 
 ## Labels in this workspace
 

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0017
 ---
 
 # 提问对象解析：触发评论作者是 member 时用作者；否则用拍板人 = 工作区 owner，按 `user_id` 解析；都不从 issue 的 `creator_id` / `assignee_id` 取
