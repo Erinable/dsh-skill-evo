@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { createContentHash, parseObservation, serializeObservation } from './events.js'
 import { withLock } from './locking.js'
+import { proposalRootId } from './proposal.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
@@ -69,7 +70,7 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     evaluationReportsDir: join(stateDir, 'evaluations'),
     stores,
     observations: stores[0],
-    candidateDir: (proposalId: string) => join(stateDir, 'candidates', proposalId),
+    candidateDir: (proposalId: string) => join(stateDir, 'candidates', proposalRootId(proposalId)),
     publicationLockPath: (skillName: string) => join(stateDir, 'locks', `${skillName}.lock`),
     skillVersionsDir: (skillName: string) => join(options.root, skillName, 'versions'),
   }

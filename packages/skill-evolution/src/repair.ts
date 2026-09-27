@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
+import { proposalRootId } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 
 export interface JsonlRepairResult {
@@ -18,6 +19,7 @@ export interface EvolutionRepairReport {
   readonly projectionCursorRebuilt: boolean
   readonly orphanLocksRemoved: readonly string[]
   readonly manifestIssues: readonly string[]
+  readonly legacyCandidateDirs: readonly string[]
   readonly locksPreserved: readonly string[]
   readonly locks: readonly SweptLock[]
 }
@@ -110,7 +112,17 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
   const manifestIssues = await inspectManifests(root, layout)
-  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
+  const legacyCandidateDirs = await inspectLegacyCandidateDirs(layout)
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, legacyCandidateDirs, locks }
+}
+
+async function inspectLegacyCandidateDirs(layout: EvolutionLayout): Promise<string[]> {
+  let entries
+  try { entries = await readdir(layout.candidatesDir, { withFileTypes: true }) } catch (error) { if (isMissing(error)) return []; throw error }
+  return entries
+    .filter(entry => entry.isDirectory() && proposalRootId(entry.name) !== entry.name)
+    .map(entry => join(layout.candidatesDir, entry.name))
+    .sort((left, right) => left.localeCompare(right))
 }
 
 async function inspectManifests(root: string, layout: EvolutionLayout): Promise<string[]> {

@@ -30,6 +30,20 @@ async function old(path: string): Promise<void> {
 }
 
 describe('repair lock sweep', () => {
+  it('reports legacy suffixed candidate directories without moving or deleting them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-candidates-'))
+    roots.push(root)
+    const legacy = join(root, '.skill-evolution', 'candidates', 'proposal-root:accepted')
+    await mkdir(legacy, { recursive: true })
+    await writeFile(join(legacy, 'SKILL.md'), 'legacy candidate')
+
+    const report = await repairEvolutionRoot(root, { jsonlPaths: [] })
+
+    expect(report.legacyCandidateDirs).toEqual([legacy])
+    await expect(readFile(join(legacy, 'SKILL.md'), 'utf8')).resolves.toBe('legacy candidate')
+    await expect(readFile(join(root, '.skill-evolution', 'candidates', 'proposal-root', 'SKILL.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('reclaims a stale publication lock so the following promote succeeds', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-promote-'))
     roots.push(root)
