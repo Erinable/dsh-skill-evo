@@ -84,7 +84,11 @@ export async function withLock<T>(path: string, operation: string, fn: () => Pro
     const attempt = await createOwner(path, operation)
     if (attempt.acquired) { try { return await fn() } finally { await release(path, attempt.owner.token) } }
     last = await inspectLock(path, options)
-    if (last.kind === 'free' && (waitMs > 0 || Date.now() < deadline)) continue
+    if (last.kind === 'free') {
+      if (Date.now() >= deadline) throw new LockBusyError(path, last, guard)
+      await delay(1)
+      continue
+    }
     if (reclaimable(last)) { const result = await reclaimLock(path, options); guard = result.guard; if (result.removed) continue }
     if (waitMs === 0 || Date.now() >= deadline) throw new LockBusyError(path, last, guard)
     await delay(Math.min(20, Math.max(1, deadline - Date.now())))
@@ -113,7 +117,7 @@ async function sweepDirectory(
       let entries: string[] = []
       try { entries = await readdir(directory) } catch (error) { if (!hasCode(error, 'ENOENT')) throw error }
       const ownGuard = `${sweepPath}.reclaim`
-      const ownTmp = (name: string) => name.startsWith(`${sweepPath}.`) && name.endsWith('.tmp')
+      const ownTmp = (name: string) => name.startsWith('.lock-sweep.lock.') && name.endsWith('.tmp')
       const locks = selected === undefined
         ? entries.filter(name => name.endsWith('.lock') && name !== '.lock-sweep.lock').map(name => join(directory, name))
         : selected

@@ -66,6 +66,9 @@ describe('unified locking protocol', () => {
     await withLock(path, 'test', async () => undefined)
     const deleter = setInterval(() => { void readdir(dir).then(names => Promise.all(names.filter(name => /^tmp\.lock\.[^.]+\.tmp$/.test(name)).map(name => unlink(join(dir, name)).catch(() => undefined)))).catch(() => undefined) }, 0)
     for (let index = 0; index < 200; index += 1) await withLock(path, 'test', async () => undefined)
+    const started = Date.now()
+    await withLock(path, 'budget', async () => undefined, { waitMs: 200 }).catch(() => undefined)
+    expect(Date.now() - started).toBeLessThan(1_000)
     clearInterval(deleter)
   })
 
@@ -79,12 +82,13 @@ describe('unified locking protocol', () => {
   })
 
   it('sweeps explicit paths under their directory lock and protects unrelated artifacts', async () => {
-    const dir = await fixture(); const path = join(dir, 'shared.jsonl.lock'); const ownGuard = join(dir, '.lock-sweep.lock.reclaim')
+    const dir = await fixture(); const path = join(dir, 'shared.jsonl.lock'); const ownGuard = join(dir, '.lock-sweep.lock.reclaim'); const ownTmp = join(dir, '.lock-sweep.lock.deadbeef.tmp')
     await writeFile(path, JSON.stringify(deadOwner())); await writeFile(`${path}.reclaim`, JSON.stringify(deadOwner())); await writeFile(`${path}.dead.tmp`, JSON.stringify(deadOwner()))
-    await writeFile(ownGuard, JSON.stringify(deadOwner())); await writeFile(join(dir, 'unrelated.tmp'), JSON.stringify(deadOwner()))
-    const report = await sweepLocks({ directories: [], paths: [path] })
+    await writeFile(ownGuard, JSON.stringify(deadOwner())); await writeFile(ownTmp, JSON.stringify(deadOwner())); await writeFile(join(dir, 'unrelated.tmp'), JSON.stringify(deadOwner()))
+    const report = await sweepLocks({ directories: [dir], paths: [] })
     expect(report.some(item => item.path === `${path}.reclaim` && item.removed)).toBe(true)
     await expect(stat(ownGuard)).resolves.toBeDefined()
+    await expect(stat(ownTmp)).resolves.toBeDefined()
     await expect(stat(join(dir, 'unrelated.tmp'))).resolves.toBeDefined()
   })
 })
