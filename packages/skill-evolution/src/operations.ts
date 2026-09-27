@@ -115,7 +115,7 @@ export async function proposeSkillChange(service: EvolutionService, options: Pro
     intent: options.intent,
   })
   const staged = await service.stageProposal(proposal)
-  const reportPath = options.reportPath ?? join(options.root ?? serviceRoot(service), '.skill-evolution', 'proposals', `${proposalRootId(staged.id)}.md`)
+  const reportPath = options.reportPath ?? join(service.layout.proposalReportsDir, `${proposalRootId(staged.id)}.md`)
   await writeText(reportPath, renderProposalMarkdown({ proposal: staged }))
   return { proposal: staged, reportPath }
 }
@@ -133,10 +133,9 @@ export async function evaluateProposal(service: EvolutionService, options: Evalu
   const result = await service.evaluate(proposal, cases, options.runner)
   const artifact = await findArtifact(service, result.artifactId)
   if (artifact === undefined) throw new OperationError('evaluation-missing', `evaluation artifact was not persisted for ${proposalRootId(proposal.id)}`)
-  const root = options.root ?? serviceRoot(service)
-  const evaluationPath = options.evaluationPath ?? join(root, '.skill-evolution', 'evaluations', `${proposalRootId(proposal.id)}.json`)
+  const evaluationPath = options.evaluationPath ?? join(service.layout.evaluationReportsDir, `${proposalRootId(proposal.id)}.json`)
   const evaluated = await latestProposal(service, proposalRootId(proposal.id))
-  const reportPath = options.reportPath ?? join(root, '.skill-evolution', 'proposals', `${proposalRootId(proposal.id)}.md`)
+  const reportPath = options.reportPath ?? join(service.layout.proposalReportsDir, `${proposalRootId(proposal.id)}.md`)
   await writeText(evaluationPath, `${JSON.stringify(artifact, null, 2)}\n`)
   await writeText(reportPath, renderProposalMarkdown({ proposal: evaluated, evaluation: result }))
   return { proposal: evaluated, recordId: evaluated.id, result, artifact, evaluationPath, reportPath }

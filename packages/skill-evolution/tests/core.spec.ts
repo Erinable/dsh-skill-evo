@@ -251,7 +251,7 @@ describe('ObservationLog state root', () => {
     expect((await readdir(join(dir, 'archive')))).toEqual([])
   })
 
-  it('keeps the legacy thirty-day default retention', async () => {
+  it('does not delete archives unless retention is explicitly requested', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-retention-'))
     dirs.push(dir)
     const path = join(dir, 'observations.jsonl')
@@ -261,7 +261,8 @@ describe('ObservationLog state root', () => {
     await writeFile(archive, '', 'utf8')
     await utimes(archive, new Date('2000-01-01'), new Date('2000-01-01'))
     const result = await rotateJsonl(path, { maxBytes: 2 })
-    expect(result.deleted).toContain(archive)
+    expect(result.deleted).toEqual([])
+    expect(await readFile(archive, 'utf8')).toBe('')
   })
 })
 

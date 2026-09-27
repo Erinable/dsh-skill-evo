@@ -1,7 +1,7 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { assertFeedbackKind, assertPublicationScope, createContentHash, createProposal, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, renderProposalMarkdown } from '@dsh-skill-evo/core'
+import { assertFeedbackKind, assertPublicationScope, createContentHash, createProposal, EvolutionService, ObservationLog, redactSensitiveText, renderFailuresMarkdown, renderProposalMarkdown } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -121,7 +121,7 @@ function mapTurnEnd(base, event) {
  */
 export function apply(ctx, config = {}) {
   const storePath = config.storePath ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'skill-evolution', 'events.jsonl')
-  const adapter = new DshEvolutionAdapter(new JsonlEventStore(storePath))
+  const adapter = new DshEvolutionAdapter(new ObservationLog(storePath))
   const defaultMapper = createDefaultEventMapper()
   let writeQueue = Promise.resolve()
 
@@ -220,7 +220,7 @@ async function executeMaintenanceCommand(invocation, config) {
       intent: requiredFlag(flags, 'intent'),
       generatedBy: 'human',
     }))
-    const report = resolve(flags.output ?? join(root, '.skill-evolution', 'proposals', `${proposal.id}.md`))
+    const report = resolve(flags.output ?? join(service.layout.proposalReportsDir, `${proposal.id}.md`))
     const snapshot = await service.refreshDerived()
     await mkdir(dirname(report), { recursive: true })
     await writeFile(report, renderProposalMarkdown({ proposal, failures: snapshot.failures, clusters: snapshot.clusters, diagnosis: snapshot.diagnoses.find(item => item.id === proposal.diagnosisId) }), 'utf8')

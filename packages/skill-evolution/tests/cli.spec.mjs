@@ -49,7 +49,7 @@ describe('CLI maintenance lifecycle', () => {
 
     const evaluated = await run(root, 'evaluate', '--proposal', proposedRecord.id, '--cases', 'cases.json')
     expect(evaluated.code).toBe(0)
-    expect(await readFile(join(root, '.skill-evolution', 'evaluations', `${proposedRecord.id}.json`), 'utf8')).toContain(proposedRecord.id)
+    expect(await readFile(join(root, '.skill-evolution', 'reports', 'evaluations', `${proposedRecord.id}.json`), 'utf8')).toContain(proposedRecord.id)
     const evaluatedRecord = JSON.parse((await run(root, 'accept', '--proposal', `${proposedRecord.id}:evaluated`, '--reason', 'Reviewed')).stdout)
     expect(evaluatedRecord.id).toMatch(/:accepted$/)
 
