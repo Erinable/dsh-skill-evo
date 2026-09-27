@@ -109,11 +109,11 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
-  const manifestIssues = await inspectManifests(root)
+  const manifestIssues = await inspectManifests(root, layout)
   return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
 }
 
-async function inspectManifests(root: string): Promise<string[]> {
+async function inspectManifests(root: string, layout: EvolutionLayout): Promise<string[]> {
   const issues: string[] = []
   let entries
   try { entries = await readdir(root, { withFileTypes: true }) } catch (error) { if (isMissing(error)) return []; throw error }
@@ -127,7 +127,7 @@ async function inspectManifests(root: string): Promise<string[]> {
     if (skill !== undefined && manifest !== undefined && manifest.contentHash !== createContentHash(skill)) {
       issues.push(manifestPath)
     }
-    const versions = join(directory, 'versions')
+    const versions = layout.skillVersionsDir(entry.name)
     let versionEntries
     try { versionEntries = await readdir(versions, { withFileTypes: true }) } catch (error) { if (isMissing(error)) continue; throw error }
     for (const version of versionEntries) {

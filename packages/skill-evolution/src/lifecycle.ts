@@ -38,7 +38,7 @@ export class SkillVersionStore {
   private async readCurrentUnlocked(skillName: string): Promise<CurrentSkill | undefined> {
     assertSkillName(skillName)
     const directory = skillDirectory(this.root, skillName)
-    await recoverPublication(directory, this.options.invalidate)
+    await recoverPublication(directory, this.layout().skillVersionsDir(skillName), this.options.invalidate)
     const contentPath = join(directory, 'SKILL.md')
     const content = await readTextIfPresent(contentPath)
     if (content === undefined) return undefined
@@ -303,11 +303,12 @@ async function readVersionIfPresent(directory: string): Promise<{ readonly conte
 
 async function recoverPublication(
   directory: string,
+  versionsDirectory: string,
   invalidate?: SkillVersionStoreOptions['invalidate'],
 ): Promise<void> {
   const journal = await readJsonIfPresent<{ readonly version?: string; readonly contentHash?: string }>(join(directory, '.publish.json'))
   if (journal?.version === undefined || journal.contentHash === undefined) return
-  const versionDirectory = join(directory, 'versions', journal.version)
+  const versionDirectory = join(versionsDirectory, journal.version)
   const version = await readVersionIfPresent(versionDirectory).catch(() => undefined)
   if (version === undefined || version.contentHash !== journal.contentHash) return
   await writeAtomic(join(directory, 'SKILL.md'), await readFile(join(versionDirectory, 'SKILL.md'), 'utf8'))

@@ -376,9 +376,11 @@ interface AdoptionRequest {
 .dsh/skills/api-debugging/
 ├── SKILL.md                 # 当前默认正文
 ├── manifest.json            # 可选的人工维护元数据
+├── current.json             # 当前版本指针
+├── .publish.json             # 发布恢复日志（仅发布中存在）
 └── versions/
-    ├── <content-hash>/SKILL.md
-    └── <content-hash>/manifest.json
+    ├── <version>/SKILL.md
+    └── <version>/manifest.json
 
 <root>/.skill-evolution/
 ├── observations.jsonl       # 原始事实；archive/ 下的分段同样属于事实
@@ -394,11 +396,13 @@ interface AdoptionRequest {
 ├── proposals/<id>/           # 隔离候选与报告
 ├── evaluations/              # 评估 artifact
 ├── candidates/<id>/           # 待发布 Skill 候选
-├── locks/                    # JSONL 与发布锁
+├── locks/                    # 发布锁；JSONL 锁紧邻各自的 .jsonl 文件
 └── projection-cursor.json
 ```
 
-Observation store 可以通过显式 `--store` 或 adapter 配置放在用户级 DSH home，archive 始终紧邻对应 store；集中目录只描述默认布局。生成候选时写入隔离目录，采用时才复制或切换到正式路径。retention 默认关闭，只有显式提供保留天数时才删除旧 archive；被删除的 archive 不再参与 repair 或 cursor 重建，无法恢复其中的事实。
+Observation store 可以通过显式 `--store` 或 adapter 配置放在用户级 DSH home，archive 始终紧邻对应 store；集中目录只描述默认布局。生成候选时写入隔离目录，采用时才复制或切换到正式路径。retention 默认关闭，只有显式提供保留天数时才删除旧 archive；被删除的 archive 不再参与 repair 或 cursor 重建，无法恢复其中的事实。升级前旧默认 30 天策略已经删除的 archive 同样无法恢复，只能从仍存在的事实重建。
+
+独立 `repairEvolutionRoot` 只修复文件和锁，返回 `projectionCursorRebuilt: false`；`EvolutionService.repair()`（CLI 与 bundle 的 repair 入口）完成成功重投影后返回 `true`，重投影失败则抛错。
 
 ## 5. 运行时生效语义
 

@@ -57,11 +57,48 @@ describe('EvolutionLayout', () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-layout-'))
     dirs.push(root)
     const layout = resolveLayout({ root })
-    expect(layout.stateDir).toBe(join(root, '.skill-evolution'))
+    expect(layout).toMatchObject({
+      root,
+      stateDir: join(root, '.skill-evolution'),
+      cursorPath: join(root, '.skill-evolution', 'projection-cursor.json'),
+      locksDir: join(root, '.skill-evolution', 'locks'),
+      candidatesDir: join(root, '.skill-evolution', 'candidates'),
+      proposalReportsDir: join(root, '.skill-evolution', 'proposals'),
+      evaluationReportsDir: join(root, '.skill-evolution', 'evaluations'),
+    })
     expect(layout.candidateDir('proposal-1')).toBe(join(root, '.skill-evolution', 'candidates', 'proposal-1'))
     expect(layout.publicationLockPath('api-debugging')).toBe(join(root, '.skill-evolution', 'locks', 'api-debugging.lock'))
     expect(layout.skillVersionsDir('api-debugging')).toBe(join(root, 'api-debugging', 'versions'))
     expect(layout.observations.path).toBe(join(root, '.skill-evolution', 'observations.jsonl'))
+    expect(layout.stores).toEqual([
+      { name: 'observations', role: 'fact', projectionInput: true, path: join(root, '.skill-evolution', 'observations.jsonl') },
+      { name: 'proposals', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'proposals.jsonl') },
+      { name: 'decisions', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'decisions.jsonl') },
+      { name: 'feedback', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'feedback.jsonl') },
+      { name: 'evaluations', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'evaluations.jsonl') },
+      { name: 'experiences', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'experiences.jsonl') },
+      { name: 'failures', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'failures.jsonl') },
+      { name: 'clusters', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'clusters.jsonl') },
+      { name: 'diagnoses', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'diagnoses.jsonl') },
+    ])
+  })
+
+  it('only overrides the observation store path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-layout-override-'))
+    dirs.push(root)
+    const override = join(root, 'custom', 'observations.jsonl')
+    const layout = resolveLayout({ root, observationStore: override })
+    expect(layout.observations.path).toBe(override)
+    expect(layout.stores.slice(1).map(store => store.path)).toEqual([
+      join(root, '.skill-evolution', 'proposals.jsonl'),
+      join(root, '.skill-evolution', 'decisions.jsonl'),
+      join(root, '.skill-evolution', 'feedback.jsonl'),
+      join(root, '.skill-evolution', 'evaluations.jsonl'),
+      join(root, '.skill-evolution', 'experiences.jsonl'),
+      join(root, '.skill-evolution', 'failures.jsonl'),
+      join(root, '.skill-evolution', 'clusters.jsonl'),
+      join(root, '.skill-evolution', 'diagnoses.jsonl'),
+    ])
   })
 })
 
