@@ -1,4 +1,4 @@
-本文是 SKIL-76 的文档治理方案：哪些 `docs/design/*.md` 里的决策迁成 ADR、`CONTEXT.md` 收什么、`specs/` 与 `docs/design/` 怎么分工去重，以及采纳后的执行拆分。**只出方案，不迁移**：本 PR 不改 `docs/design/`、`specs/`、`skills/` 下任何文件。基线 `origin/main` @ `f7acabe`。
+本文是 SKIL-76 的文档治理方案：哪些 `docs/design/*.md` 里的决策迁成 ADR、`CONTEXT.md` 收什么、`specs/` 与 `docs/design/` 怎么分工去重，以及采纳后的执行拆分。**只出方案，不迁移**：本 PR 不改 `docs/design/`、`specs/`、`skills/` 下任何文件。基线 `origin/main` @ `22ae904`（行号在 `f7acabe` 起草，之后合入的提交只改了 `lifecycle.ts` 与 README，已复核）。
 
 ## 0. 读了什么、现状
 
@@ -29,7 +29,7 @@
 |---|---|---|---|---|
 | 0001 | 演化状态集中在 `<root>/.skill-evolution/`，observation log 可以放在状态目录之外 | `evolution-state-root.md:17`（§1.1 错位）、`:265`（A1） | 搬家要迁移线上数据、回滚要反向搬；`docs/architecture-design-zh.md` §4.3 原先画的是每个 Skill 旁边放 `evolution/`，读者会以为代码没按设计实现；bundle 的 `~/.dsh/skill-evolution/events.jsonl` 在状态目录外，这件事不看上下文会被当成 bug「修掉」 | 明确（SKIL-38，A1） |
 | 0002 | 归档段是权威 observation 事实；retention 缺省不删归档 | `:174-179`（问题 B，B-2 被否）、`:266-267`（A2、A3） | 决定线上数据口径，删掉的归档恢复不了；「rotate 之后 readAll 还带着归档」和一般日志轮转的直觉相反；B-2（增量 cursor）是真实备选，被否是因为它削弱了「派生可由事实完整重建」这条不变量 | 明确（SKIL-38，A2/A3） |
-| 0003 | 跨归档去重放在 observation log 类本身，service 和 bundle 构造同一个类 | `:81`（§1.5 bundle 旁路）、`:164-172`（A-3 被否）、`:211`、`:269`（A5） | 放在 service 里「看起来更干净」，但 bundle 的热写路径绕过 service，去重会失效；这是后人最可能「重构」回去的地方 | A5 默认接受（设计稿自认属实现，`:271`） |
+| 0003 | 跨归档去重放在 observation log 类本身，service 和 bundle 构造同一个类 | `:81`（§1.5 bundle 旁路）、`:164-172`（A-3 被否）、`:211`、`:269`（A5） | 放在 service 里「看起来更干净」，但 bundle 的热写路径绕过 service，去重会失效；这是后人最可能「重构」回去的地方。设计稿把 A5 标为可逆（`:269-271`），代码层面确实可逆；列为 ADR 是因为逆转的代价不可见：去重一旦移出这个类，bundle 热路径会静默写出重复 observation，而重复写进 append-only 事实流就删不掉了。按三条件这一条最勉强，Q1 单列 | A5 默认接受（设计稿自认属实现，`:271`） |
 | 0004 | proposal 状态机只有一张转移表，service 守卫都从表推出 | `maintenance-use-cases-proposal-ledger.md:103-112`（§2.4，B「双份 + 一致性测试」被否）、`:233`（D9） | 后果出人意料：`accepted→rejected`、`draft→rejected/deferred` 从此合法；以后要改策略，改的是表而不是再加一份守卫。`docs/architecture-design-zh.md:340-344` 已写了结论，但没写为什么和被否的选项 | 默认接受（SKIL-43） |
 | 0005 | proposal 台账的记录身份：record id 带 `:status` 后缀、只按精确 root 或 record id 查、每次转移只写一条确定性 decision | `:88-101`（§2.3）、`:225`（D1）、`:226`（D2）、`:228`（D4） | 持久化格式，历史 `proposals.jsonl` / `decisions.jsonl` 依赖它；「id 为什么带后缀」「为什么不支持前缀查找」都会让读者意外；D2 是行为变更（裸前缀从返回最后一条变为报 `ambiguous`） | 默认接受（SKIL-43） |
 | 0006 | 维护用例住在 core，CLI 与 bundle 是薄 adapter；evaluation artifact 由 core 写盘 | `:49-69`（§2.1，B facade、C dispatcher 被否）、`:71-86`（§2.2，B「adapter 写」被否）、`:231`（D7） | 边界决策；「core 摸文件系统」看着像违反分层，实际是为了让「必须落 evaluation 文件」这条不变量不能在两个 adapter 间漂移 | 默认接受（SKIL-43） |
@@ -38,7 +38,7 @@
 | 0009 | agent 工作流拆成 tracker / runtime / instance 三条 seam，依赖方向固定为 skill → runtime → tracker、skill → instance | `skil-36-seams.md:31-51`（§3）、`:221`（D-3） | 方向一旦反过来，换 adapter 和改 skill 会互相牵动；7-B、7-C 是真实备选 | 明确（SKIL-39，D-3） |
 | 0010 | tracker adapter 的 10 个 `##` 标题是引用契约 | `:177-194`、`:219`（D-1） | skill 按标题名引用，改名要改所有引用，装到别的仓库的旧副本也不会跟着改 | 明确（SKIL-39，D-1） |
 | 0011 | setup 模板与 `docs/agents/` 安装副本逐字节相同；实例事实只放 `docs/agents/instance.md` | `:112-124`（6-B、6-C 被否）、`:220`（D-2）、`:224`（D-6） | 这是 setup 的输出契约；「为什么不在副本末尾加一节覆盖」看起来更省事，被否的理由（没法用一条 `diff` 验证）不写下来就会被再提一次 | 明确（SKIL-39，D-2/D-6） |
-| 0012 | 拍板人 = 工作区 owner，按 `user_id` 解析，不从 issue 的 `creator_id` / `assignee_id` 取 | `:84-91`、`:222`（D-4） | 这是 wakeup 能不能触发的唯一依据；从 creator / assignee 取看起来最自然，但那两个字段常常是 agent，wakeup 会静默永不触发 | 明确（SKIL-39，D-4） |
+| 0012 | 提问对象解析：触发评论作者是 member 时用作者；否则用拍板人 = 工作区 owner，按 `user_id` 解析；都不从 issue 的 `creator_id` / `assignee_id` 取 | `:84-91`、`:222`（D-4） | 这是 wakeup 能不能触发的唯一依据；从 creator / assignee 取看起来最自然，但那两个字段常常是 agent，wakeup 会静默永不触发 | 明确（SKIL-39，D-4） |
 | 0013 | 权威规则放在仓库文档里，不做成 skill；前提是引用它的 run 都检出了本仓库 | `:171-175`（7-D 被否）、`:223`（D-5） | 前提一旦不成立就要整体改成 skill 化；「skill 从 skill 库加载、不依赖检出」是一个有力的反方论点，被否的理由需要留下来 | 明确（SKIL-39，D-5） |
 
 每条 ADR 按 `ADR-FORMAT.md` 写：1–3 句正文，加 `status` frontmatter，被否选项值得记的写 `Considered Options`，末尾一行链回设计稿的对应章节。ADR 里不抄复现输出、判定表细节、测试矩阵。
@@ -113,7 +113,7 @@ _Avoid_: rotation（两者不是一回事）
 （retention.ts:4；ADR-0002）
 
 **Fact record**:
-append-only 的权威记录：Observation、Proposal 的 Ledger record、Decision record、Feedback、Evaluation。
+只追加、不修改的权威记录；Observation、Ledger record、Decision record 都属于这一类。
 _Avoid_: raw data
 （state-root.ts:51-55 role 'fact'；architecture §1.2）
 
@@ -172,7 +172,7 @@ _Avoid_: draft
 （lifecycle.ts:25、:66）⚠6
 
 **Base**:
-Proposal 所针对的 Skill 内容快照（名称 + 内容 hash）；当前内容与 Base 不一致时 Proposal 过期（stale）。
+Proposal 所针对的那一版 Skill 内容；Skill 当前内容已不是 Base 时，Proposal 过期（stale）。
 _Avoid_: parent version, original
 （types.ts:49 AdoptionBase；architecture 不变量 5）
 
@@ -214,7 +214,7 @@ _Avoid_: test
 （types.ts:171）
 
 **Evaluation artifact**:
-落盘的 Evaluation 结果，绑定 Proposal、Base 和候选的 hash 以及评估策略；是 Promote 的前置证据。
+一次 Evaluation 的持久结果，只对它所评估的那个 Proposal、Base 和 Candidate content 有效；是 Promote 的前置证据。
 _Avoid_: report
 （types.ts:219；ADR-0006）
 
@@ -383,7 +383,7 @@ ADR 编号冲突（两个设计 PR 并行，都取了下一个号）：先合并
 | 2 | C：去重 | 四份设计稿加状态块；四份 spec `design.md` 的决策表换成 ADR 引用、删掉「normative」措辞；`docs/architecture-design-zh.md` §1、§4.1、§10 加 ADR 引用；`docs/agents/domain.md:15` | A、B 合并后 |
 | 2 | D：流程 | `orchestrate:83`、`delivery-contract` 评审契约；Architect / Spec Writer instructions 由 Mika 出预览、成员确认后更新 | A 合并后；与 C 并行（改的文件不重叠） |
 
-验收可以机械检查：`ls docs/adr | wc -l` 等于采纳的条数；`grep -rn 'normative' specs` 无输出；`grep -c '^> 状态：' docs/design/*.md` 每个文件都是 1；`CONTEXT.md` 里没有 `.jsonl`、`.lock`、`cursor` 字样。
+验收可以机械检查：`ls docs/adr | wc -l` 等于采纳的条数；`grep -n 'normative' specs/*/design.md` 无输出（`requirements.md` 里的 normative 说的是默认值属于 spec 本身，例如 `specs/skil-46-unified-lock-protocol/requirements.md:59` 的 R14、`specs/skil-36-seams/requirements.md:3`，保留）；`grep -c '^> 状态：' docs/design/*.md` 每个文件都是 1；`CONTEXT.md` 里没有 `.jsonl`、`.lock`、`cursor` 字样。
 
 ## 5. 需要成员拍板的决策点
 
@@ -391,7 +391,7 @@ ADR 编号冲突（两个设计 PR 并行，都取了下一个号）：先合并
 
 | # | 问题 | 默认答案 |
 |---|---|---|
-| Q1 | §1.1 的 13 条 ADR 是否全部迁移？ | 全部迁移 |
+| Q1 | §1.1 的 13 条 ADR 是否全部迁移？ADR-0003 按「难以逆转」一条最勉强（理由见表内），单独问：留还是降为 spec 里的实现契约？ | 全部迁移，0003 保留 |
 | Q2 | §1.3 的三条（core 不依赖 DSH、不扩张 Registry、事实与派生分离）是否也写成 ADR 0014–0016？ | 写，放在票 A 里 |
 | Q3 | 你没有明确回复过的决策（台账 D1–D9 → ADR 0004–0006；锁 D3、F1 → ADR 0007–0008；state-root A5 → ADR 0003），ADR 状态写成什么？ | `accepted`，正文注明「设计 PR 合并即接受默认答案」 |
 | Q4 | 单 context，agent 工作流词汇留在 `docs/agents/*`、不进 `CONTEXT.md`？ | 是，不建 `CONTEXT-MAP.md` |
