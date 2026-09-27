@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, createDefaultEventMapper, mapFileObservation } from '../index.js'
-import { EvolutionService, createContentHash } from '@dsh-skill-evo/core'
+import { EvolutionService, createContentHash, rotateJsonl } from '@dsh-skill-evo/core'
 import { createReferenceExecutor, runDshComparison } from '@dsh-skill-evo/dsh-adapter'
 
 async function createContext() {
@@ -47,6 +47,28 @@ test('persists an explicit mapped Skill observation', async () => {
     assert.equal(event.kind, 'skill-loaded')
     assert.equal(event.skill.name, 'api-debugging')
     assert.deepEqual(warnings, [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('deduplicates replayed bundle observations after archive rotation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-archive-'))
+  try {
+    const path = join(dir, 'events.jsonl')
+    const { ctx, emit } = await createContext()
+    apply(ctx, { storePath: path })
+    const event = { id: 'replayed-session:1', seq: 1, type: 'skill-loaded', skillName: 'api-debugging' }
+    emit({ id: 'replayed-session' }, event)
+    const before = await readEvents(path)
+    assert.equal(before.length, 1)
+
+    const rotation = await rotateJsonl(path, { maxBytes: 1 })
+    assert.ok(rotation.rotated)
+    emit({ id: 'replayed-session' }, event)
+    const after = await readEvents(path)
+    assert.equal(after.length, 0)
+    assert.equal((await readFile(rotation.rotated, 'utf8')).split('\n').filter(Boolean).length, 1)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

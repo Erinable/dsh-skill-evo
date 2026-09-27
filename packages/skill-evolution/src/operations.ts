@@ -302,9 +302,6 @@ async function writeText(path: string, text: string): Promise<void> {
   await writeFile(path, text, 'utf8')
 }
 
-function serviceRoot(service: EvolutionService): string {
-  return service.layout.root
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
