@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { afterEach, describe, expect, it } from 'vitest'
-import { EvolutionService, createObservation, type RuntimeObservation } from '../src/index.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { EvolutionService, createObservation, fingerprintOf, readCursor, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
 import { withLock } from '../src/locking.js'
 
 const dirs: string[] = []
@@ -20,6 +20,19 @@ function observation(id: string): RuntimeObservation {
     sessionId: 'session-1',
     correlationIds: [],
     payload: {},
+    source: 'runtime',
+  })
+}
+
+function failedObservation(id: string, error: string): RuntimeObservation {
+  return createObservation({
+    id,
+    kind: 'skill-load-failed',
+    occurredAt: '2026-09-25T00:00:00.000Z',
+    sessionId: 'session-1',
+    skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' },
+    correlationIds: [],
+    payload: { error },
     source: 'runtime',
   })
 }
@@ -94,5 +107,89 @@ describe('observation archive health and repair', () => {
     const service = new EvolutionService({ root })
     expect(await service.health()).toHaveLength(9)
     expect((await service.repair()).jsonl).toHaveLength(9)
+  })
+
+  it('forces projection repair and keeps standalone repair from changing the cursor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-cursor-repair-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.appendMany([
+      failedObservation('first', 'first failure'),
+      failedObservation('second', 'second failure'),
+    ])
+    const fresh = await service.refreshDerived()
+    const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
+    const failuresPath = join(root, '.skill-evolution', 'failures.jsonl')
+    const failureLines = (await readFile(failuresPath, 'utf8')).trimEnd().split('\n')
+    await writeFile(failuresPath, `${failureLines[0]}\n`, 'utf8')
+    const beforeStandalone = await readFile(cursorPath, 'utf8')
+
+    const standalone = await repairEvolutionRoot(root, { jsonlPaths: [], observationsPath: service.observations.filePath })
+    expect(standalone.projectionCursorRebuilt).toBe(false)
+    expect(await readFile(cursorPath, 'utf8')).toBe(beforeStandalone)
+
+    const report = await service.repair()
+    expect(report.projectionCursorRebuilt).toBe(true)
+    expect(await service.failures.readAll()).toEqual(fresh.failures)
+    expect(await readCursor(cursorPath)).toEqual({ count: 2, lastId: 'second', fingerprint: fingerprintOf(['first', 'second']) })
+  })
+
+  it('does not parse an observation tail when standalone repair leaves the cursor alone', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-cursor-tail-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.append(observation('complete'))
+    await service.refreshDerived()
+    const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
+    const before = await readFile(cursorPath, 'utf8')
+    await writeFile(service.observations.filePath, `${await readFile(service.observations.filePath, 'utf8')}partial`, 'utf8')
+
+    await expect(repairEvolutionRoot(root, { jsonlPaths: [], observationsPath: service.observations.filePath })).resolves.toMatchObject({ projectionCursorRebuilt: false })
+    expect(await readFile(cursorPath, 'utf8')).toBe(before)
+  })
+
+  it('propagates a derived projection failure without reporting a successful repair', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-projection-failure-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.append(failedObservation('failure', 'projection failure'))
+    await service.refreshDerived()
+    vi.spyOn(service.failures, 'replaceAll').mockRejectedValueOnce(new Error('injected projection failure'))
+
+    await expect(service.repair()).rejects.toThrow('injected projection failure')
+  })
+
+  it('propagates a cursor write failure without reporting a successful repair', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-cursor-failure-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.append(failedObservation('failure', 'cursor failure'))
+    await service.refreshDerived()
+    const badCursorPath = join(root, '.skill-evolution', 'cursor-directory')
+    await mkdir(badCursorPath)
+    ;(service as unknown as { projectionCursorPath: string }).projectionCursorPath = badCursorPath
+
+    await expect(service.repair()).rejects.toThrow()
+  })
+
+  it('self-heals a legacy cursor that only covered the current observation segment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-legacy-cursor-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.append(failedObservation('archived', 'archived failure'))
+    await service.observations.rotate({ maxBytes: 1 })
+    await service.observations.append(failedObservation('current', 'current failure'))
+    const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
+    await Promise.all([
+      writeFile(join(root, '.skill-evolution', 'experiences.jsonl'), '', 'utf8'),
+      writeFile(join(root, '.skill-evolution', 'failures.jsonl'), '', 'utf8'),
+      writeFile(join(root, '.skill-evolution', 'clusters.jsonl'), '', 'utf8'),
+      writeFile(join(root, '.skill-evolution', 'diagnoses.jsonl'), '', 'utf8'),
+    ])
+    await writeFile(cursorPath, `${JSON.stringify({ count: 1, lastId: 'current', fingerprint: fingerprintOf(['current']) })}\n`, 'utf8')
+
+    const snapshot = await service.refreshDerived()
+    expect(snapshot.failures).toHaveLength(2)
+    expect(await readCursor(cursorPath)).toEqual({ count: 2, lastId: 'current', fingerprint: fingerprintOf(['archived', 'current']) })
   })
 })

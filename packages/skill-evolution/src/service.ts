@@ -1,7 +1,6 @@
 import { join } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
 import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
-import { ObservationLog, resolveLayout } from './state-root.js'
+import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
@@ -157,8 +156,7 @@ export class EvolutionService {
         jsonl.push(await repairJsonlFileUnlocked(path, { parse: isObservationValue }))
       }
     })
-    await writeFile(this.projectionCursorPath, '{}\n', 'utf8')
-    await this.refreshDerived()
+    await this.refreshDerived({ force: true })
     return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true }
   }
 
@@ -384,16 +382,16 @@ export class EvolutionService {
     })
   }
 
-  async refreshDerived(): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
-    return withLock(`${this.projectionCursorPath}.lock`, 'refresh', () => this.refreshDerivedUnlocked())
+  async refreshDerived(options: { readonly force?: boolean } = {}): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
+    return withLock(`${this.projectionCursorPath}.lock`, 'refresh', () => this.refreshDerivedUnlocked(options))
   }
 
-  private async refreshDerivedUnlocked(): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
+  private async refreshDerivedUnlocked(options: { readonly force?: boolean }): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
     const observations = await this.observations.readAll()
     const cursor = await readCursor(this.projectionCursorPath)
     const lastId = observations.at(-1)?.id
-    const fingerprint = createContentHash(observations.map(item => item.id).join('\n'))
-    if (cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint) {
+    const fingerprint = fingerprintOf(observations.map(item => item.id))
+    if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint) {
       return {
         experiences: await this.experiences.readAll(),
         failures: await this.failures.readAll(),
@@ -408,7 +406,7 @@ export class EvolutionService {
     await this.failures.replaceAll(snapshot.failures)
     await this.clusters.replaceAll(snapshot.clusters)
     await this.diagnoses.replaceAll(snapshot.diagnoses)
-    await writeFile(this.projectionCursorPath, `${JSON.stringify({ count: observations.length, lastId, fingerprint })}\n`, 'utf8')
+    await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })
     return snapshot
   }
 }
@@ -433,13 +431,4 @@ function validateEvaluationPolicy(policy: EvaluationPolicy | undefined): void {
   if (policy === undefined) return
   if (!policy.version || !Number.isFinite(policy.maxRegressionCount) || policy.maxRegressionCount < 0 || !Number.isFinite(policy.maxSecurityViolations) || policy.maxSecurityViolations < 0) throw new Error('invalid evaluation policy thresholds')
   for (const value of [policy.maxTokenIncreaseRatio, policy.maxContextIncreaseRatio]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error('evaluation cost ratios must be non-negative numbers')
-}
-
-async function readCursor(path: string): Promise<{ count: number; lastId?: string; fingerprint?: string } | undefined> {
-  try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown }
-    return typeof value.count === 'number' ? { count: value.count, ...(typeof value.lastId === 'string' ? { lastId: value.lastId } : {}), ...(typeof value.fingerprint === 'string' ? { fingerprint: value.fingerprint } : {}) } : undefined
-  } catch {
-    return undefined
-  }
 }

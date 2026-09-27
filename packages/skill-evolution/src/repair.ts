@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
@@ -106,29 +106,11 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
     } : undefined
     jsonl.push(await repairJsonlFile(path, { ...(parse === undefined ? {} : { parse }) }))
   }
-  const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
-  // Rebuild the checkpoint from the repaired observation file.
-  let projectionCursorRebuilt = false
-  try {
-    const text = await readFile(observationsPath, 'utf8')
-    const lines = text.split('\n').filter(Boolean)
-    const validIds: string[] = []
-    for (const line of lines) {
-      try { validIds.push(parseObservation(line).id) } catch { /* repairJsonlFile will quarantine this line */ }
-    }
-    const lastId = validIds.at(-1)
-    const fingerprint = createContentHash(validIds.join('\n'))
-    await atomicWrite(cursorPath, `${JSON.stringify({ count: validIds.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })}\n`)
-    projectionCursorRebuilt = true
-  } catch (error) {
-    if (!isMissing(error)) throw error
-    await rm(cursorPath, { force: true })
-  }
   const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
   const manifestIssues = await inspectManifests(root)
-  return { jsonl, projectionCursorRebuilt, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
 }
 
 async function inspectManifests(root: string): Promise<string[]> {
