@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
-import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
+import { createContentHash, redactSensitiveText } from './events.js'
 import { ObservationLog, resolveLayout } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
@@ -8,7 +8,7 @@ import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInp
 import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
-import { repairEvolutionRoot, repairJsonlFile, type EvolutionRepairReport } from './repair.js'
+import { repairEvolutionRoot, type EvolutionRepairReport } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
@@ -144,18 +144,9 @@ export class EvolutionService {
 
   async repair(): Promise<EvolutionRepairReport> {
     const paths = [this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
-    const jsonl = []
-    for (const path of paths) {
-      jsonl.push(await repairJsonlFile(path, path === this.observations.filePath ? {
-        parse: value => {
-          try { parseObservation(JSON.stringify(value)); return true } catch { return false }
-        },
-      } : undefined))
-    }
-    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: [], observationsPath: this.observations.filePath })
-    await writeFile(this.projectionCursorPath, '{}\n', 'utf8')
+    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath })
     await this.refreshDerived()
-    return { ...report, jsonl, projectionCursorRebuilt: true }
+    return report
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
