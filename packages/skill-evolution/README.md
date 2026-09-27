@@ -72,7 +72,40 @@ reviewable and cannot write production files implicitly.
 
 The JSONL writer uses per-file local-filesystem locks for reads, appends,
 repairs, rotations, and projection replacement. Locks coordinate processes on
-the same host and filesystem; network filesystems are not supported. `repair`
-only removes dead local-owner locks and preserves unknown owners. User and feedback text is redacted for common
-API keys, bearer credentials, passwords, tokens, and secrets before it becomes
-durable evidence.
+the same host and filesystem; network filesystems are not supported. `withLock`
+is the single locking API and always records the operation that owns the lock.
+
+## Lock protocol
+
+Lock files are created atomically through a temporary file and hard link. A v1
+owner record contains `v`, `token`, `pid`, `hostname`, `createdAt`, `uptimeMs`,
+and `operation`. The token is checked before release so a callback cannot remove
+a replacement lock. Older v0 records without `v`, `token`, or `uptimeMs` remain
+readable during migration; their reboot check falls back to `createdAt`.
+
+`inspectLock` classifies a lock using the following rules:
+
+| State | Classification | Reclaimed by `withLock`/`repair` |
+| --- | --- | --- |
+| `free` | Lock file is absent | N/A |
+| `unknown` | Empty, malformed, or missing required owner fields | Only after the default 10-minute mtime grace period |
+| `foreign` | Owner hostname differs from the current host | Never automatically |
+| `rebooted` | Local v1 uptime is from a previous boot, or v0 `createdAt` predates the current boot | Yes |
+| `dead` | Local owner PID no longer exists | Yes |
+| `held` | Local owner PID is live (including `EPERM`) | Never automatically |
+
+Live and foreign owners are preserved regardless of age. An unknown lock inside
+the 10-minute grace period is also preserved, protecting the write window of
+older v0 clients. `LockBusyError` reports the final state and, when an abandoned
+reclaim guard blocks progress, its guard path for manual repair.
+
+`repair` calls `sweepLocks` for root directories and explicitly shared paths.
+Its `locks` report includes every lock, reclaim guard, and temporary artifact with
+`path`, `artifact`, `state`, and `removed`; directory-sweep contention is reported
+as `skipped`. The compatibility summary arrays `orphanLocksRemoved` and
+`locksPreserved` contain lock artifact paths only. Repair removes only artifacts
+classified as reclaimable and leaves foreign, live, and grace-period unknown
+owners intact.
+
+User and feedback text is redacted for common API keys, bearer credentials,
+passwords, tokens, and secrets before it becomes durable evidence.
