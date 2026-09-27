@@ -50,7 +50,7 @@ One round, one run. Each round ends with your run ending, and the member's reply
 
 Per round:
 
-1. Write the round to a file-backed body. The adapter publishes it as an issue comment and replies in the thread you were triggered from by passing that `thread`.
+1. Write the round to a file-backed body using the selected tracker adapter's `Conventions`. The adapter publishes it as an issue comment and replies in the thread you were triggered from by passing that `thread`.
 2. Call the selected tracker adapter's `Ask a person and wait` section with the issue, the file-backed round body, the triggering `thread`, and a `next` instruction to read the reply, recompute the frontier, and ask the next round.
 
 3. End the run after the adapter operation. Follow the runtime's `## Subagents: fan out, converge before the turn ends` for fact-finding subagents; do not poll or sleep.
