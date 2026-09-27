@@ -113,6 +113,7 @@ Then write the docs files using the seed templates in this skill folder as a sta
 - [issue-tracker-local.md](./issue-tracker-local.md): local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md): label mapping (only if `triage` is installed)
 - [domain.md](./domain.md): domain doc consumer rules + layout
+- [runtime.md](./runtime.md): runtime mode, subagent convergence, and file delivery
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
 

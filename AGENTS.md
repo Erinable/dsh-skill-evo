@@ -55,6 +55,10 @@ Default five triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `re
 
 Workspace-specific decision maker, subscribers, label snapshot, and agent routing. See `docs/agents/instance.md`.
 
+### Runtime
+
+Runtime mode, subagent convergence, and file delivery. See `docs/agents/runtime.md`.
+
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
