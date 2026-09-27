@@ -131,4 +131,19 @@ describe('core maintenance operations', () => {
     await expect(promoteProposal(service, { proposalRef, evaluationPath: artifactPath, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
     await expectNoPublication(root)
   })
+
+  it('selects the latest unexpired artifact when a newer artifact is expired', async () => {
+    const { root, service, proposalRef, evaluated } = await acceptedProposal()
+    const persisted = (await service.evaluations.readAll()).find(item => item.id === evaluated.result.artifactId)
+    expect(persisted).toBeDefined()
+    await service.evaluations.append({
+      ...persisted!,
+      id: `${persisted!.id}:expired`,
+      expiresAt: '2020-01-01T00:00:00.000Z',
+      result: { ...persisted!.result, artifactId: `${persisted!.id}:expired` },
+    })
+    const dryRun = await promoteProposal(service, { proposalRef, scope: 'project', dryRun: true })
+    expect(dryRun).toMatchObject({ dryRun: true, evaluation: { id: persisted!.id } })
+    await expectNoPublication(root)
+  })
 })
