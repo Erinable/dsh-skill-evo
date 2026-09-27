@@ -63,7 +63,13 @@ async function createOwner(path: string, operation: string): Promise<{ owner: Ow
 }
 
 async function release(path: string, token: string): Promise<void> {
-  try { const value = JSON.parse(await readFile(path, 'utf8')) as { token?: string }; if (value.token !== token) return; await unlink(path).catch(error => { if (!hasCode(error, 'ENOENT')) throw error }) } catch (error) { if (hasCode(error, 'ENOENT') || error instanceof SyntaxError) return }
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8')) as { token?: string }
+    if (value.token !== token) return
+    await unlink(path)
+  } catch {
+    // Cleanup must never replace the callback result or error.
+  }
 }
 
 export async function reclaimLock(path: string, options: Pick<LockOptions, 'unknownGraceMs'> = {}): Promise<{ readonly state: LockState; readonly removed: boolean; readonly guard?: string }> {
@@ -78,6 +84,7 @@ export async function withLock<T>(path: string, operation: string, fn: () => Pro
     const attempt = await createOwner(path, operation)
     if (attempt.acquired) { try { return await fn() } finally { await release(path, attempt.owner.token) } }
     last = await inspectLock(path, options)
+    if (last.kind === 'free' && (waitMs > 0 || Date.now() < deadline)) continue
     if (reclaimable(last)) { const result = await reclaimLock(path, options); guard = result.guard; if (result.removed) continue }
     if (waitMs === 0 || Date.now() >= deadline) throw new LockBusyError(path, last, guard)
     await delay(Math.min(20, Math.max(1, deadline - Date.now())))
@@ -91,19 +98,54 @@ async function sweepArtifact(path: string, artifact: 'lock' | 'guard' | 'tmp', o
   return { path, artifact, state: finalState.kind, operation: owner?.operation, ageMs: 'ageMs' in finalState ? finalState.ageMs : undefined, removed }
 }
 
-export async function sweepLocks(target: { readonly directories: readonly string[]; readonly paths: readonly string[] }, options: Pick<LockOptions, 'unknownGraceMs'> = {}): Promise<readonly SweptLock[]> {
-  const results: SweptLock[] = []; const explicit = new Set(target.paths)
-  for (const directory of target.directories) {
-    const sweepPath = join(directory, '.lock-sweep.lock')
-    try { await withLock(sweepPath, 'sweep', async () => {
-      let entries: string[] = []; try { entries = await readdir(directory) } catch (error) { if (!hasCode(error, 'ENOENT')) throw error }
-      for (const path of entries.filter(name => name.endsWith('.reclaim')).map(name => join(directory, name))) results.push(await sweepArtifact(path, 'guard', options))
-      const locks = new Set(entries.filter(name => name.endsWith('.lock') && name !== '.lock-sweep.lock').map(name => join(directory, name))); for (const path of explicit) if (dirname(path) === directory) locks.add(path)
-      for (const path of locks) results.push(await sweepArtifact(path, 'lock', options))
-      for (const path of entries.filter(name => name.endsWith('.tmp')).map(name => join(directory, name))) results.push(await sweepArtifact(path, 'tmp', options))
-    }, { waitMs: 0 }) } catch (error) { if (!(error instanceof LockBusyError)) throw error; results.push({ path: sweepPath, artifact: 'lock', state: 'skipped', removed: false, guard: error.guard }) }
+function isGuard(name: string): boolean { return /^.+\.lock\.reclaim$/.test(name) }
+function isTmp(name: string): boolean { return /^.+\.lock\.[^.]+\.tmp$/.test(name) }
+
+async function sweepDirectory(
+  directory: string,
+  selected: readonly string[] | undefined,
+  options: Pick<LockOptions, 'unknownGraceMs'>,
+  results: SweptLock[],
+): Promise<void> {
+  const sweepPath = join(directory, '.lock-sweep.lock')
+  try {
+    await withLock(sweepPath, 'sweep', async () => {
+      let entries: string[] = []
+      try { entries = await readdir(directory) } catch (error) { if (!hasCode(error, 'ENOENT')) throw error }
+      const ownGuard = `${sweepPath}.reclaim`
+      const ownTmp = (name: string) => name.startsWith(`${sweepPath}.`) && name.endsWith('.tmp')
+      const locks = selected === undefined
+        ? entries.filter(name => name.endsWith('.lock') && name !== '.lock-sweep.lock').map(name => join(directory, name))
+        : selected
+      const lockPaths = new Set(locks)
+      const guardPaths = selected === undefined
+        ? entries.filter(name => isGuard(name) && join(directory, name) !== ownGuard).map(name => join(directory, name))
+        : [...lockPaths].map(path => `${path}.reclaim`).filter(path => entries.includes(basename(path)))
+      for (const path of guardPaths) results.push(await sweepArtifact(path, 'guard', options))
+      for (const path of lockPaths) results.push(await sweepArtifact(path, 'lock', options))
+      const tmpPaths = selected === undefined
+        ? entries.filter(name => isTmp(name) && !ownTmp(name)).map(name => join(directory, name))
+        : entries.filter(name => isTmp(name) && !ownTmp(name) && [...lockPaths].some(lock => name.startsWith(`${basename(lock)}.`))).map(name => join(directory, name))
+      for (const path of tmpPaths) results.push(await sweepArtifact(path, 'tmp', options))
+    }, { waitMs: 0 })
+  } catch (error) {
+    if (!(error instanceof LockBusyError)) throw error
+    results.push({ path: sweepPath, artifact: 'lock', state: 'skipped', removed: false, guard: error.guard })
   }
-  for (const path of explicit) if (!target.directories.includes(dirname(path))) results.push(await sweepArtifact(path, 'lock', options))
+}
+
+function basename(path: string): string { return path.slice(path.lastIndexOf('/') + 1) }
+
+export async function sweepLocks(target: { readonly directories: readonly string[]; readonly paths: readonly string[] }, options: Pick<LockOptions, 'unknownGraceMs'> = {}): Promise<readonly SweptLock[]> {
+  const results: SweptLock[] = []
+  const directories = new Set(target.directories)
+  const pathsByDirectory = new Map<string, string[]>()
+  for (const path of target.paths) {
+    const directory = dirname(path)
+    if (!directories.has(directory)) pathsByDirectory.set(directory, [...(pathsByDirectory.get(directory) ?? []), path])
+  }
+  for (const directory of target.directories) await sweepDirectory(directory, undefined, options, results)
+  for (const [directory, paths] of pathsByDirectory) await sweepDirectory(directory, paths, options, results)
   return results
 }
 
