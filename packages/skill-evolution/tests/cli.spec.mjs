@@ -37,6 +37,31 @@ async function setup() {
   return root
 }
 
+describe('CLI command help', () => {
+  it.each(['--help', 'help'])('prints usage and exits successfully for %s', async command => {
+    const result = await run(packageDir, command)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain('Usage: dsh-skill-evolution')
+    expect(result.stderr).toBe('')
+  })
+
+  it('names an unknown command before usage and exits unsuccessfully', async () => {
+    const result = await run(packageDir, 'promot')
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/^Unknown command: promot\nUsage: dsh-skill-evolution/)
+  })
+
+  it('lists version in usage and preserves its JSON response', async () => {
+    const help = await run(packageDir, 'help')
+    expect(help.stdout).toMatch(/<[^>]*\bversion\b[^>]*>/)
+
+    const version = await run(packageDir, 'version')
+    expect(version.code).toBe(0)
+    expect(JSON.parse(version.stdout)).toEqual({ name: '@dsh-skill-evo/core', version: '0.1.0', schemaVersion: 1 })
+    expect(version.stderr).toBe('')
+  })
+})
+
 describe('CLI maintenance lifecycle', () => {
   it('delegates lifecycle commands and validates promote dry-runs', async () => {
     const root = await setup()

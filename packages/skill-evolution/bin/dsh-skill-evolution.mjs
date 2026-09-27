@@ -28,6 +28,8 @@ try {
     process.exit(0)
   }
   switch (command) {
+    case '--help':
+    case 'help': usage(0); break
     case 'observe': await observe(); break
     case 'failures': await failures(); break
     case 'metrics': await metrics(); break
@@ -43,7 +45,9 @@ try {
     case 'repair': await repair(); break
     case 'worker': await worker(); break
     case 'rotate': await rotate(); break
-    default: usage(2)
+    default:
+      if (command !== undefined) console.error(`Unknown command: ${command}`)
+      usage(2)
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
@@ -195,7 +199,9 @@ async function rotate() {
 }
 
 function usage(code) {
-  console.error(`Usage: dsh-skill-evolution <observe|failures|metrics|health|feedback|propose|evaluate|accept|reject|defer|promote|rollback|repair|worker|rotate> [options]\n\nExamples:\n  dsh-skill-evolution observe --root .\n  dsh-skill-evolution failures --format markdown\n  dsh-skill-evolution metrics --root .\n  dsh-skill-evolution health --root .\n  dsh-skill-evolution feedback --session SESSION --kind incorrect --skill api-debugging --note "..."\n  dsh-skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "..."\n  dsh-skill-evolution evaluate --proposal proposal-id --cases cases.json --output evaluation.json\n  dsh-skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"\n  dsh-skill-evolution reject --proposal proposal-id --reason "Unsafe change"\n  dsh-skill-evolution defer --proposal proposal-id --reason "Need more evidence"\n  dsh-skill-evolution promote --proposal proposal-id --evaluation evaluation.json --scope project\n  dsh-skill-evolution rollback --skill api-debugging --version 1.0.0\n  dsh-skill-evolution repair --root .\n  dsh-skill-evolution worker --root . --watch --interval-ms 60000\n  dsh-skill-evolution rotate --root . --max-bytes 10485760 --retention-days 30`)
+  const message = `Usage: dsh-skill-evolution <version|observe|failures|metrics|health|feedback|propose|evaluate|accept|reject|defer|promote|rollback|repair|worker|rotate> [options]\n\nExamples:\n  dsh-skill-evolution observe --root .\n  dsh-skill-evolution failures --format markdown\n  dsh-skill-evolution metrics --root .\n  dsh-skill-evolution health --root .\n  dsh-skill-evolution feedback --session SESSION --kind incorrect --skill api-debugging --note "..."\n  dsh-skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "..."\n  dsh-skill-evolution evaluate --proposal proposal-id --cases cases.json --output evaluation.json\n  dsh-skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"\n  dsh-skill-evolution reject --proposal proposal-id --reason "Unsafe change"\n  dsh-skill-evolution defer --proposal proposal-id --reason "Need more evidence"\n  dsh-skill-evolution promote --proposal proposal-id --evaluation evaluation.json --scope project\n  dsh-skill-evolution rollback --skill api-debugging --version 1.0.0\n  dsh-skill-evolution repair --root .\n  dsh-skill-evolution worker --root . --watch --interval-ms 60000\n  dsh-skill-evolution rotate --root . --max-bytes 10485760 --retention-days 30`
+  if (code === 0) console.log(message)
+  else console.error(message)
   process.exitCode = code
 }
 
