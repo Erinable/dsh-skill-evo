@@ -68,6 +68,7 @@ export function resolveLayout(options: { readonly root: string; readonly observa
 export class ObservationLog {
   private initialized: Promise<void> | undefined
   private writeQueue: Promise<void> = Promise.resolve()
+  private readonly archiveCache = new Map<string, { readonly signature: string; readonly events: readonly RuntimeObservation[] }>()
 
   constructor(readonly filePath: string) {}
   get currentPath(): string { return this.filePath }
@@ -113,12 +114,27 @@ export class ObservationLog {
   private async readFacts(): Promise<RuntimeObservation[]> {
     const seen = new Set<string>()
     const result: RuntimeObservation[] = []
-    for (const path of await archivePaths(this.filePath)) {
-      const text = await readFile(path, 'utf8')
-      if (text.length > 0 && !text.endsWith('\n')) throw new Error(`invalid observation archive (unterminated line): ${path}`)
-      for (const line of text.split('\n').filter(Boolean)) {
-        try { addUnique(result, seen, parseObservation(line)) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
+    const paths = await archivePaths(this.filePath)
+    const activePaths = new Set(paths)
+    for (const path of this.archiveCache.keys()) {
+      if (!activePaths.has(path)) this.archiveCache.delete(path)
+    }
+    for (const path of paths) {
+      const info = await stat(path)
+      const signature = archiveSignature(info)
+      const cached = this.archiveCache.get(path)
+      let events = cached?.events
+      if (cached?.signature !== signature) {
+        const text = await readFile(path, 'utf8')
+        if (text.length > 0 && !text.endsWith('\n')) throw new Error(`invalid observation archive (unterminated line): ${path}`)
+        const parsed: RuntimeObservation[] = []
+        for (const line of text.split('\n').filter(Boolean)) {
+          try { parsed.push(parseObservation(line)) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
+        }
+        events = parsed
+        this.archiveCache.set(path, { signature, events })
       }
+      for (const event of events ?? []) addUnique(result, seen, event)
     }
     const current = await readFile(this.filePath, 'utf8')
     for (const line of completeLines(current).filter(Boolean)) addUnique(result, seen, parseObservation(line))
@@ -203,3 +219,6 @@ function completeLines(text: string): string[] {
 
 function isMissingFile(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT' }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+function archiveSignature(info: { readonly ino: number; readonly size: number; readonly mtimeMs: number }): string {
+  return `${info.ino}:${info.size}:${info.mtimeMs}`
+}
