@@ -23,6 +23,8 @@
 
 四页引导覆盖这三类情形。第二页是第一页的对照：同一条 `replayed` 先评测再 Accept 再 Promote。用 Node 抽出页面里的纯模块，跑完四页，并与 `proposal.ts` 的表做字符串对照。浏览器里点过自由试和这四页，1100px 与 390px 宽度都没有横向溢出。
 
+这个 HTML 把状态放在内存里，没有用 `ledgerRecordId`。所以「拒绝之后又回来」那一页只说明转移表放行、以及旧 Evaluation artifact 还在；它没有覆盖 ADR-0005 的记录身份。同一 root 上第二次评测写不进台账，是 Reviewer 对已构建的 `lib` 实测出来的，见下面「与 ADR-0005 冲突」。
+
 ## 实际输出
 
 对照结果是 `table matches proposal.ts: true`。没有出边的是 `rolled-back`、`reverted`。没有入边的是 `draft`、`reverted`。四页都按预期走完（`all assertions passed`）：
@@ -79,12 +81,13 @@ start status=promoted catalog=P-回滚
 
 `rejected` 只能到 `observed`，`deferred` 可以到 `observed` 或再到 `rejected`。拒绝和暂缓都不清 Evaluation artifact，而 `observed` 又能直接 Accept，于是「评测通过 → 拒绝 → observed → Accept → Promote」会用拒绝之前的那份通过记录再次发布。没有任何维护命令负责走到 `observed`，只有表上的边。
 
-采纳：
+采纳的规则与第 1 题是同一条，不在 Accept 前另加一道 Gate：
 
-- 保留 `rejected → observed` 和 `deferred → observed`。
-- 拒绝或暂缓时作废该 Proposal root 上已有的 Evaluation artifact。
-- 回流之后必须重新跑评测并且通过 Gate，才能 Accept。Promote 只认这次新 artifact。
-- 补一个显式的「重新观察」维护动作，目标是 `observed`，能否执行只问转移表。
+- 回流之后必须重新跑评测，并且 Proposal status 再次走到 `evaluated`，才能 Accept。`acceptProposal`（`packages/skill-evolution/src/service.ts:236`）继续只问转移表，不查 `passedGate`。
+- Gate 仍然只在 Promote 检查。Promote 只认回流之后新写的 artifact；这份新 artifact 没过 Gate，Promote 拒绝，Accept 仍然可以发生。
+- 提问里第 2 题的默认答案写过「重新跑评测并通过，才能同意」。这里把「通过」收成「新的 Evaluation 已经记上，状态走到 `evaluated`」；过不过 Gate 留给 Promote。这是把第 2 题收成和第 1 题同一条规则，不再另问。
+- 旧 artifact 不能再被这次 Promote 拿去用。具体怎么作废见下一节，不改已落盘的记录。
+- 成员要保留 `rejected → observed` 和 `deferred → observed`，并补一个显式的「重新观察」维护动作，目标是 `observed`，能否执行只问转移表。这两条边在现有台账里当不了「再次评测」的路，见「与 ADR-0005 冲突」。本 PR 不去掉它们，也不假装同一 root 上的第二次 `evaluated` 写得进去。
 
 ### rolled-back 保持终态，再次发布另开一条 Proposal
 
@@ -104,9 +107,24 @@ start status=promoted catalog=P-回滚
 
 1. **去掉两条边。** `proposal.ts` 的 `replayed` 改为 `['observed', 'evaluated', 'rejected', 'deferred']`，`observed` 改为 `['evaluated', 'rejected', 'deferred']`。`evaluated → accepted` 保留。
 2. **对齐评测入口。** `operations.ts` 的 `evaluateProposal` 今天把状态写死成 `proposed` 和 `evaluating`（`:125-127`）。改成与 `service.evaluate` 相同的判断：`proposed` 可以开始；否则 `canTransition(status, 'evaluated')` 才调用服务层。不要再维护第二份允许列表。
-3. **作废旧 artifact。** `rejectProposal` / `deferProposal` 把该 root 上现有 Evaluation artifact 的 `expiresAt` 写成这次决定的时间。Promote 已有的过期检查（`operations.ts:261`）就会拒绝旧记录；调用方拿旧的 `expiresAt` 来对，也过不了持久化比对。回流后的新评测会写下一份新的、未过期的 artifact，Promote 只认它。
-4. **重新观察。** 在 `operations.ts` 增加一个维护动作，转到 `observed`，合法性只调用 `assertCanTransition`。`rejected`、`deferred`、`replayed` 因此都能到 `observed`，`rolled-back` 不能。
-5. **测试。** `proposal-ledger` 覆盖去掉的两条边、保留的回流，以及 `rolled-back` / `reverted` 仍然没有出边。操作测试覆盖：从 `replayed` 评测成功；Accept 之后再评测失败；拒绝后旧 artifact 不能 Promote；重新观察并重新评测通过之后可以 Promote；Rollback 后同一 root 不能再 Promote，新 root 可以。
-6. **不在这次范围里。** 不删除 `reverted`。不把 HTML 原型提交进仓库。不新增「回滚后再发布」状态；新 Proposal 就是再次发布的路径。
+3. **旧 artifact 不再用于 Promote，且不改已落盘的记录。** `evaluations.jsonl` 走 `JsonlRecordStore`：`append` 在 id 已存在时返回 `false`（`packages/skill-evolution/src/records.ts:17`），整表修改只有 `replaceAll`（`records.ts:43`）。把旧 artifact 的 `expiresAt` 改写成决定时间必须 `replaceAll`，这和 `docs/architecture-design-zh.md:42` 的 append-only 相反，不采用。实现时二选一，都只读不改旧行：同一 root 继续用时，Promote 读 evaluations 和 decisions，只认 `createdAt` 晚于该 root 最近一次 `rejected` 或 `deferred` decision 的 artifact；若回流改为新 root（下一节选项 A），旧 artifact 留在旧 root，新 root 在自己的 Evaluation 之前没有 artifact，Promote 不会读到旧的。
+4. **重新观察。** 在 `operations.ts` 增加一个维护动作，转到 `observed`，合法性只调用 `assertCanTransition`。`rejected`、`deferred`、`replayed` 因此都能到 `observed`，`rolled-back` 不能。这个动作只解决「谁来走到 `observed`」。它不解决第二次 `evaluated` 写不进去。
+5. **测试。** 现在就能写的：去掉的两条边；`rolled-back` / `reverted` 仍然没有出边；从 `replayed` 第一次评测成功；Accept 之后再评测失败；拒绝后旧 artifact 不能 Promote；Rollback 后同一 root 不能再 Promote，新 root 可以。现在写不出来的：同一 root 上「重新观察 → 第二次评测后状态是 `evaluated` → Accept → Promote」。Reviewer 对已构建的 `lib` 实测，第二次评测后状态仍是 `observed`，artifact 有 2 份，台账 id 停在 `(root) :evaluating :evaluated :rejected :observed`，没有第二条 `:evaluated`。这条测试要等下面 A 或 B 选定之后再写，断言必须跟选定的记录身份一致。
+6. **不在这次范围里。** 不删除 `reverted`。不把 HTML 原型提交进仓库。不新增「回滚后再发布」状态；新 Proposal 就是再次发布的路径。本 PR 不选下面的 A 或 B，也不新写 ADR。
 
-实现这些改动会碰到台账契约。若那张实现票需要 ADR，编号接在 `origin/main` 已有的 `docs/adr/` 之后，并写明它收紧的是 ADR-0004 那张表的两条边，表本身仍然是唯一来源。本结论稿不另立 ADR，避免和那张表分成两处定义。
+### 与 ADR-0005 冲突
+
+_与 ADR-0005 冲突（proposal 台账的记录身份是 `root:status`，同一状态只能写一次），但值得重开，因为去掉 `observed → accepted` 之后，成员采纳的「回流后重新评测再 Accept」在现有 id 方案下走不通。_
+
+ADR-0005 规定 Ledger record 的 id 是 Proposal root 加 `:status` 后缀。`ledgerRecordId` 就是 `` `${root}:${status}` ``（`packages/skill-evolution/src/proposal.ts:75`）。`JsonlRecordStore.append` 看到已有 id 直接返回 `false`，不写（`records.ts:17`）。`service.evaluate` 仍把评测结果追加成 `ledgerRecordId(root, 'evaluated')`，并且不看 `append` 的返回值（`packages/skill-evolution/src/service.ts:231`）。第一次评测已经占用 `root:evaluated` 之后，回流再评测时这条记录被静默丢掉，再读台账，状态停在 `observed`。Evaluation artifact 的 id 带时间，所以第二份 artifact 写得进去，Proposal 状态写不进去。
+
+同一问题也落在第二次 `rejected` 和第二次 `deferred` 上：这些后缀第一次用过就不能再写。按本文去掉 `observed → accepted` 之后，一条已经 `evaluated` 又 `rejected` 再回到 `observed` 的 root，第二次评测到不了 `evaluated`，第二次拒绝也到不了 `rejected`。`observed` 上剩下的新后缀最多是还没写过的 `deferred`，写过一次之后，`deferred → observed` 同样因为 `root:observed` 已存在而写不进去。旧 root 会停住。现在表上还有 `observed → accepted`，第一次 Accept 还能写进从未用过的 `root:accepted`，所以这条死路被盖住了。
+
+Decision 的 id 已经带 `updatedAt`（`service.ts:369`），决定记录可以重复。卡住的是 Proposal 台账这一层。ADR-0004 只要求转移表一张来源，不规定记录 id，解不了这个冲突。
+
+两个选项，本 PR 不选：
+
+- **A. 回流另开一个新 root。** 和第 3 题「再次发布另开一条 Proposal」同一种做法。旧 root 停在 `rejected` 或 `deferred`，新 root 从 `draft` 走自己的第一次 `evaluated`，id 还没被占用。后果：`rejected → observed` 和 `deferred → observed` 不再承担「重新评测再 Accept」。留着它们，只表示把旧 root 标回 `observed`，不能在这条 root 上再写入第二个 `evaluated`。成员默认答案里的两半在这个选项下不能同时成立：要保留这两条边，就不要指望同一 root 再次评测；要再次评测并 Accept，就走新 root，这两条边可以不留。实现时要在这两句里收成一句，不能两句都写成已经可行。
+- **B. 修改 ADR-0005 的 record id，让同一状态可以重复进入。** 例如后缀带序号或决定时间。这是台账数据格式的改动，必须新 ADR，不能只改 `PROPOSAL_TRANSITIONS`。`proposalRootId`（`proposal.ts:66`）靠「最后一个后缀正好是状态名」剥出 root，新格式仍要剥回同一个 root，并且已经落盘的 `root:evaluated` 要继续读得出来。`latestProposalsByRoot` 今天把文件里最后一条当成最新（`proposal.ts:79`），重复进入之后「哪一条算最新」要在新 ADR 里写明。后果：同一 root 可以第二次写入 `evaluated`、`rejected`、`deferred`，成员要的「回流 → 再评测 → Accept → Promote」才写得进去。
+
+去掉 `replayed → accepted` 和 `observed → accepted` 本身仍然只改 ADR-0004 那张表，可以先做，也不让回流突然变得可发布。真正让回流后的 Accept 变得可做的，是 A 或 B，而不是再加一条转移。
