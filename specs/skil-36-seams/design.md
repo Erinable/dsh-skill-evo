@@ -1,12 +1,6 @@
-## Context and Decisions
+## Decision authority
 
-This spec implements the merged design in `docs/design/skil-36-seams.md`. The design identifies three seams whose rules were copied into unrelated skills:
-
-- **Tracker seam**: the four `issue-tracker-*.md` adapters.
-- **Runtime seam**: one-shot versus interactive execution, fan-out convergence, and file delivery.
-- **Instance seam**: this repository's member, subscriber, label, and routing facts.
-
-The confirmed decisions are D-1 through D-6 in the design: the exact ten tracker section names; `docs/agents/instance.md` as the repository-only instance file; the dependency direction; owner/member wakeup resolution; repository checkout as a prerequisite for docs; and `runtime.md` as a setup template plus installed copy.
+The tracker, runtime, and instance seam decisions are recorded in ADR-0009 through ADR-0013. This spec retains the architecture, data flow, error handling, invariants, and verification contract below.
 
 ## Architecture
 
