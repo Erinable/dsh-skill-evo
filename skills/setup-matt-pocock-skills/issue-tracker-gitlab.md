@@ -46,8 +46,11 @@ Post the question with `glab issue note <number> --message "$(cat <file>)"` and 
 
 ## Wayfinding operations
 
-- **Map:** a GitLab issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog.
-- **Child ticket:** a child issue carrying `Part of #<map>` and a `wayfinder:*` label.
-- **Blocking:** use native blocking links (`/blocked_by #<number>`); otherwise record `Blocked by: #<number>` in the child body.
-- **Frontier:** list open map children, remove assigned or blocked tickets, and take the first remaining ticket in map order.
-- **Resolve:** post the answer, close the issue, and append a context pointer to the map.
+Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+
+- **Map:** a GitLab issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog. Create it with `glab issue create --label wayfinder:map`. On GitLab tiers with native epics, an epic may be the map instead.
+- **Child ticket:** a child issue carrying `Part of #<map>` and a `wayfinder:*` label; once claimed, assign it to the driving dev.
+- **Blocking:** native blocking is available only on Premium/Ultimate: post `/blocked_by #<blocker>` as `glab issue note <child> --message "/blocked_by #<blocker>"`. On the free tier, record `Blocked by: #<number>` in the child body.
+- **Frontier:** list open map children with `glab issue list -F json`, remove assigned or blocked tickets, and use `glab api projects/:id/issues/:iid/links` to inspect native blockers; take the first remaining ticket in map order.
+- **Claim:** `glab issue update <n> --assignee @me` is the first write.
+- **Resolve:** post the answer with `glab issue note <n> --message "<answer>"`, close it, and append a context pointer to the map.

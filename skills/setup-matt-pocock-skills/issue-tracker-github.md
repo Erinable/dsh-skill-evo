@@ -46,8 +46,11 @@ Post the question with `gh issue comment <number> --body-file <file>` and wait f
 
 ## Wayfinding operations
 
-- **Map:** a GitHub issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog.
-- **Child ticket:** a linked sub-issue (or a task-list entry when sub-issues are unavailable), labelled `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task`.
-- **Blocking:** use GitHub native issue dependencies; otherwise record `Blocked by: #<number>` in the child body.
-- **Frontier:** list open map children, remove assigned or blocked tickets, and take the first remaining ticket in map order.
-- **Resolve:** post the answer, close the issue, and append a context pointer to the map.
+Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+
+- **Map:** a GitHub issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog. Create it with `gh issue create --label wayfinder:map`.
+- **Child ticket:** a linked sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues are unavailable, add the child to a task list and put `Part of #<map>` at the top. Labels are `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task`; once claimed, assign it to the driving dev.
+- **Blocking:** use GitHub native dependencies: `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`. The blocker id is the numeric database id from `gh api repos/<owner>/<repo>/issues/<n> --jq .id`, not the issue number or `node_id`. GitHub reports `issue_dependencies_summary.blocked_by` for open blockers. Where dependencies are unavailable, use `Blocked by: #<number>` in the child body.
+- **Frontier:** list open map children, scoped to sub-issues or the task list, and drop any with `issue_dependencies_summary.blocked_by > 0`, an open `Blocked by` issue, or an assignee; take the first remaining ticket in map order.
+- **Claim:** `gh issue edit <n> --add-assignee @me` is the first write.
+- **Resolve:** post the answer with `gh issue comment <n> --body "<answer>"`, close it, and append a context pointer to the map.

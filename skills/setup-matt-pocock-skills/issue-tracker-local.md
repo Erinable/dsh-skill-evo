@@ -4,13 +4,13 @@ Issues and specs for this repo live as Markdown files in `.scratch/`.
 
 ## Conventions
 
-- Use `.scratch/<feature-slug>/spec.md` for a spec and `.scratch/<feature-slug>/issues/NN-<slug>.md` for one ticket per file.
+- Use `.scratch/<feature-slug>/spec.md` for a spec and `.scratch/<feature-slug>/issues/NN-<slug>.md` for one ticket per file, numbered from `01`, never a single combined tickets file.
 - Put comments under `## Comments`; use the file itself for reads, writes, and status changes.
-- A `Status:` line near the top records lifecycle (`open`/`resolved`) and assignment (`claimed`) separately; comments append under `## Comments`.
+- A `Status:` line near the top records the issue lifecycle and assignment.
 
 ## Triage state
 
-Record the five triage roles in a `Triage:` line: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. Record lifecycle in `Status:` (`open` or `resolved`) and assignment as `Status: claimed` only while claimed. No label service exists; do not create or resolve labels. `wontfix` is a terminal triage role.
+The issue file's `Status:` line records one of the five triage roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix` (see `triage-labels.md`). No label service exists; do not create or resolve labels. `wontfix` is a terminal status.
 
 ## Pull requests as a triage surface
 
@@ -43,7 +43,7 @@ Append the question under the issue's `## Comments` heading. Interactive session
 ## Wayfinding operations
 
 - **Map:** `.scratch/<effort>/map.md` with Notes, Decisions-so-far, and Fog.
-- **Child ticket:** `.scratch/<effort>/issues/NN-<slug>.md` with a `Type:` line and a `Status:` line.
+- **Child ticket:** `.scratch/<effort>/issues/NN-<slug>.md` with a `Type:` line and a `Status:` line. For Wayfinding child tickets, `Status: claimed` means assigned and active, and `Status: resolved` means the ticket is complete.
 - **Blocking:** record `Blocked by: NN, NN`; a ticket is unblocked when every listed file is resolved.
 - **Frontier:** scan the issue directory, remove blocked or claimed files, and take the first remaining number.
 - **Resolve:** append `## Answer`, set `Status: resolved`, and add a context pointer to `map.md`.
