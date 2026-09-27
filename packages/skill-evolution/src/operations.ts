@@ -125,6 +125,10 @@ export async function evaluateProposal(service: EvolutionService, options: Evalu
   if (proposal.status === 'proposed') assertTransition(proposal, 'evaluating')
   else if (proposal.status === 'evaluating') assertTransition(proposal, 'evaluated')
   else throw new OperationError('invalid-transition', `proposal ${proposal.id} cannot be evaluated from ${proposal.status}`)
+  const current = await service.versions.readCurrent(proposal.skillName)
+  if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash) {
+    throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
+  }
   const cases = options.cases ?? await readJson<SkillEvaluationCase[]>(options.casesFile, 'evaluation cases')
   const result = await service.evaluate(proposal, cases, options.runner)
   const artifact = await findArtifact(service, result.artifactId)
@@ -185,14 +189,10 @@ async function loadPromotionArtifact(service: EvolutionService, proposal: SkillP
   if (options.evaluationPath !== undefined) {
     let value: unknown
     try { value = JSON.parse(await readFile(options.evaluationPath, 'utf8')) } catch (error) { throw new OperationError('evaluation-missing', `evaluation artifact not found: ${options.evaluationPath}`, error) }
-    return normalizeArtifact(value, proposal)
+    return verifyPersistedArtifact(service, proposal, normalizeArtifact(value, proposal))
   }
   if (options.evaluation !== undefined) {
-    if (isRecord(options.evaluation) && !('result' in options.evaluation)) {
-      const persisted = await findArtifact(service, (options.evaluation as SkillEvalResult).artifactId)
-      if (persisted !== undefined && sameEvaluation(options.evaluation as SkillEvalResult, persisted.result)) return persisted
-    }
-    return normalizeArtifact(options.evaluation, proposal)
+    return verifyPersistedArtifact(service, proposal, normalizeArtifact(options.evaluation, proposal))
   }
   const artifacts = (await service.evaluations.readAll())
     .filter(item => item.proposalId === proposalRootId(proposal.id) && Date.parse(item.expiresAt) > Date.now())
@@ -206,14 +206,43 @@ function normalizeArtifact(value: unknown, proposal: SkillProposal): EvaluationA
   const result = isRecord(value.result) ? value.result as unknown as SkillEvalResult : value as unknown as SkillEvalResult
   const artifact = isRecord(value.result)
     ? value as unknown as EvaluationArtifact
-    : { id: result.artifactId ?? '', proposalId: proposalRootId(proposal.id), candidateId: result.candidateId, baseVersion: proposal.baseVersion, baseContentHash: result.baseContentHash, candidateContentHash: result.candidateContentHash, caseIds: result.caseIds, policyVersion: result.policyVersion, passedGate: result.passedGate, createdAt: result.createdAt, expiresAt: new Date(Date.now() + 1).toISOString(), result }
+    : { id: result.artifactId ?? '', proposalId: proposalRootId(proposal.id), candidateId: result.candidateId, baseVersion: proposal.baseVersion, baseContentHash: result.baseContentHash, candidateContentHash: result.candidateContentHash, caseIds: result.caseIds, policyVersion: result.policyVersion, passedGate: result.passedGate, createdAt: result.createdAt, expiresAt: '', result }
   if (!artifact.id || !artifact.result || !artifact.proposalId) throw new OperationError('evaluation-mismatch', 'evaluation artifact is incomplete')
   return artifact
 }
 
-function sameEvaluation(left: SkillEvalResult, right: SkillEvalResult): boolean {
-  return left.artifactId === right.artifactId
+async function verifyPersistedArtifact(service: EvolutionService, proposal: SkillProposal, supplied: EvaluationArtifact): Promise<EvaluationArtifact> {
+  const persisted = await findArtifact(service, supplied.id)
+  if (persisted === undefined) throw new OperationError('evaluation-missing', `evaluation artifact not found: ${supplied.id}`)
+  const matches = supplied.expiresAt === ''
+    ? persisted.proposalId === proposalRootId(proposal.id) && sameResultEvidence(supplied.result, persisted.result)
+    : sameArtifactEvidence(supplied, persisted)
+  if (!matches) {
+    throw new OperationError('evaluation-mismatch', `evaluation artifact does not match persisted evidence: ${supplied.id}`)
+  }
+  return persisted
+}
+
+function sameArtifactEvidence(left: EvaluationArtifact, right: EvaluationArtifact): boolean {
+  return left.proposalId === right.proposalId
     && left.candidateId === right.candidateId
+    && left.baseVersion === right.baseVersion
+    && left.baseContentHash === right.baseContentHash
+    && left.candidateContentHash === right.candidateContentHash
+    && left.policyVersion === right.policyVersion
+    && left.passedGate === right.passedGate
+    && left.expiresAt === right.expiresAt
+    && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds])
+    && left.result.candidateId === right.result.candidateId
+    && left.result.baseContentHash === right.result.baseContentHash
+    && left.result.candidateContentHash === right.result.candidateContentHash
+    && left.result.passedGate === right.result.passedGate
+    && left.result.policyVersion === right.result.policyVersion
+    && JSON.stringify([...left.result.caseIds]) === JSON.stringify([...right.result.caseIds])
+}
+
+function sameResultEvidence(left: SkillEvalResult, right: SkillEvalResult): boolean {
+  return left.candidateId === right.candidateId
     && left.baseContentHash === right.baseContentHash
     && left.candidateContentHash === right.candidateContentHash
     && left.passedGate === right.passedGate
@@ -228,7 +257,7 @@ async function precheckPromotion(service: EvolutionService, proposal: SkillPropo
   if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash || artifact.baseContentHash !== proposal.expectedBase.contentHash) throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
   const candidateHash = createContentHash(proposal.candidateContent)
   if (artifact.candidateContentHash !== candidateHash || artifact.result.candidateContentHash !== candidateHash) throw new OperationError('evaluation-mismatch', 'evaluation artifact candidate does not match the proposal')
-  const policy = serviceEvaluationPolicy(service)
+  const policy = service.evaluationPolicy ?? DEFAULT_EVALUATION_POLICY
   if (artifact.policyVersion !== policy.version || artifact.result.policyVersion !== policy.version) throw new OperationError('evaluation-mismatch', 'evaluation policy does not match the current policy')
   if (Date.parse(artifact.expiresAt) <= Date.now()) throw new OperationError('evaluation-mismatch', 'evaluation artifact has expired')
   if (JSON.stringify([...proposal.comparisonCaseIds]) !== JSON.stringify([...artifact.caseIds])) throw new OperationError('evaluation-mismatch', 'evaluation cases do not match the proposal')
@@ -275,11 +304,7 @@ async function writeText(path: string, text: string): Promise<void> {
 }
 
 function serviceRoot(service: EvolutionService): string {
-  return (service as unknown as { options: { root: string } }).options.root
-}
-
-function serviceEvaluationPolicy(service: EvolutionService): EvaluationPolicy {
-  return (service as unknown as { options: { evaluationPolicy?: EvaluationPolicy } }).options.evaluationPolicy ?? DEFAULT_EVALUATION_POLICY
+  return service.layout.root
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

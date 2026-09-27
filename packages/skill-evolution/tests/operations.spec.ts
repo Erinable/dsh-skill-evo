@@ -25,6 +25,19 @@ async function setup(): Promise<{ root: string; service: EvolutionService }> {
   return { root, service: new EvolutionService({ root }) }
 }
 
+async function acceptedProposal(): Promise<{ root: string; service: EvolutionService; proposalRef: string; evaluated: Awaited<ReturnType<typeof evaluateProposal>> }> {
+  const { root, service } = await setup()
+  const proposed = await proposeSkillChange(service, { root, skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'Improve diagnostics' })
+  const evaluated = await evaluateProposal(service, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
+  const accepted = await reviewProposal(service, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })
+  return { root, service, proposalRef: accepted.recordId, evaluated }
+}
+
+async function expectNoPublication(root: string): Promise<void> {
+  await expect(stat(join(root, 'api-debugging', 'versions'))).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(stat(join(root, 'api-debugging', 'manifest.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+}
+
 describe('core maintenance operations', () => {
   it('rejects a stale base before staging a candidate or report', async () => {
     const { root, service } = await setup()
@@ -70,20 +83,52 @@ describe('core maintenance operations', () => {
     const accepted = await reviewProposal(service, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'gate passed' })
     const dryRun = await promoteProposal(service, { proposalRef: accepted.recordId, evaluation: evaluated.result, scope: 'project', dryRun: true })
     expect(dryRun).toMatchObject({ dryRun: true })
-    await expect(stat(join(root, 'api-debugging', 'versions', '1.1.0'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expectNoPublication(root)
     const published = await promoteProposal(service, { proposalRef: accepted.recordId, scope: 'project' })
     expect(published).toMatchObject({ promoted: true, version: '1.1.0', scope: 'project' })
-    await expect(promoteProposal(service, { proposalRef: accepted.recordId, scope: 'bogus', dryRun: true })).rejects.toMatchObject({ code: 'invalid-option' })
+    expect((await service.observations.readAll()).some(item => item.id === `adoption:${proposed.proposal.id}`)).toBe(true)
+    expect((await service.proposals.readAll()).some(item => item.id === `${proposed.proposal.id}:promoted`)).toBe(true)
   })
 
-  it('reports missing artifacts, invalid transitions, and failed gates with typed codes', async () => {
+  it.each([true, false])('rejects an unaccepted proposal in %s mode without publication', async dryRun => {
     const { root, service } = await setup()
     const proposed = await proposeSkillChange(service, { root, skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'Improve diagnostics' })
-    await expect(promoteProposal(service, { proposalRef: proposed.proposal.id, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'invalid-transition' })
-    const evaluated = await evaluateProposal(service, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
+    await expect(promoteProposal(service, { proposalRef: proposed.proposal.id, scope: 'project', dryRun })).rejects.toMatchObject({ code: 'invalid-transition' })
+    await expectNoPublication(root)
+  })
+
+  it.each([true, false])('rejects a missing or forged artifact in %s mode', async dryRun => {
+    const { root, service, proposalRef, evaluated } = await acceptedProposal()
+    const artifactPath = join(root, 'forged.json')
+    const artifact = JSON.parse(await readFile(evaluated.evaluationPath, 'utf8')) as Record<string, unknown>
+    artifact.id = 'evaluation:forged'
+    await writeFile(artifactPath, `${JSON.stringify(artifact)}\n`, 'utf8')
+    await expect(promoteProposal(service, { proposalRef, evaluationPath: artifactPath, scope: 'project', dryRun })).rejects.toMatchObject({ code: 'evaluation-missing' })
+    await expectNoPublication(root)
+  })
+
+  it.each([true, false])('rejects a failed gate in %s mode', async dryRun => {
+    const { root, service } = await setup()
+    const proposed = await proposeSkillChange(service, { root, skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'Improve diagnostics' })
+    const evaluated = await evaluateProposal(service, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['text that is absent'] } }] })
     const accepted = await reviewProposal(service, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })
-    await expect(promoteProposal(service, { proposalRef: accepted.recordId, evaluationPath: join(root, 'missing.json'), scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-missing' })
-    const failed = { ...evaluated.result, passedGate: false, gateReasons: ['failed'] }
-    await expect(promoteProposal(service, { proposalRef: accepted.recordId, evaluation: failed, scope: 'project', dryRun: true })).rejects.toBeInstanceOf(OperationError)
+    await expect(promoteProposal(service, { proposalRef: accepted.recordId, scope: 'project', dryRun })).rejects.toMatchObject({ code: 'gate-failed' })
+    await expectNoPublication(root)
+  })
+
+  it.each([true, false])('rejects an invalid scope in %s mode without publication', async dryRun => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    await expect(promoteProposal(service, { proposalRef, scope: 'bogus', dryRun })).rejects.toMatchObject({ code: 'invalid-option' })
+    await expectNoPublication(root)
+  })
+
+  it('rejects a forged artifact with changed evidence under the persisted id', async () => {
+    const { root, service, proposalRef, evaluated } = await acceptedProposal()
+    const artifactPath = join(root, 'forged-evidence.json')
+    const artifact = JSON.parse(await readFile(evaluated.evaluationPath, 'utf8')) as Record<string, unknown>
+    artifact.passedGate = false
+    await writeFile(artifactPath, `${JSON.stringify(artifact)}\n`, 'utf8')
+    await expect(promoteProposal(service, { proposalRef, evaluationPath: artifactPath, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
+    await expectNoPublication(root)
   })
 })

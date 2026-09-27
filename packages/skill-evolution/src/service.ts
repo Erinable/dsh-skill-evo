@@ -51,10 +51,12 @@ export class EvolutionService {
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
+  readonly evaluationPolicy: EvaluationPolicy | undefined
   private readonly projectionCursorPath: string
   readonly layout: ReturnType<typeof resolveLayout>
 
   constructor(private readonly options: EvolutionServiceOptions) {
+    this.evaluationPolicy = options.evaluationPolicy
     this.layout = resolveLayout({ root: options.root, observationStore: options.store })
     this.projectionCursorPath = this.layout.cursorPath
     const path = (name: string) => this.layout.stores.find(store => store.name === name)!.path
