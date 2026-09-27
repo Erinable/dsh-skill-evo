@@ -122,8 +122,9 @@ export class ObservationLog {
     for (const path of paths) {
       const info = await stat(path)
       const signature = archiveSignature(info)
-      let events = this.archiveCache.get(path)?.events
-      if (this.archiveCache.get(path)?.signature !== signature) {
+      const cached = this.archiveCache.get(path)
+      let events = cached?.events
+      if (cached?.signature !== signature) {
         const text = await readFile(path, 'utf8')
         if (text.length > 0 && !text.endsWith('\n')) throw new Error(`invalid observation archive (unterminated line): ${path}`)
         const parsed: RuntimeObservation[] = []
