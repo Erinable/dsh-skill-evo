@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +7,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   JsonlEventStore,
+  EvolutionService,
+  ObservationLog,
   StaleAdoptionBaseError,
   buildExposureView,
   createContentHash,
@@ -149,6 +151,117 @@ describe('JsonlEventStore', () => {
     const result = await rotateJsonl(observations, { maxBytes: 1, retentionDays: 30 })
     expect(result.rotated).toBeDefined()
     expect(await readFile(join(dir, 'archive', 'feedback.jsonl.old.jsonl'), 'utf8')).toBe('feedback')
+  })
+})
+
+describe('ObservationLog state root', () => {
+  function archivePath(path: string): string {
+    return join(path.replace(/[^/]+$/, 'archive'), `${path.split('/').at(-1)}.2026-09-25T00-00-00.000Z.1.jsonl`)
+  }
+
+  it('keeps all derived projections stable when observations rotate', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-projection-'))
+    dirs.push(dir)
+    const service = new EvolutionService({ root: dir })
+    await service.observations.appendMany([
+      observation('loaded', 'skill-loaded'),
+      observation('follow-up', 'user-follow-up', skill(), { text: 'Please correct this.' }),
+      observation('failure-1', 'skill-load-failed', skill(), { error: 'same failure' }),
+      observation('failure-2', 'skill-load-failed', skill(), { error: 'same failure' }),
+    ])
+    const before = await service.refreshDerived()
+    const result = await service.observations.rotate({ maxBytes: 1 })
+    const after = await service.refreshDerived()
+    expect(result.rotated).toBeDefined()
+    expect(after).toEqual(before)
+    expect(after.clusters.map(item => item.id)).toEqual(before.clusters.map(item => item.id))
+    expect(after.diagnoses.map(item => item.id)).toEqual(before.diagnoses.map(item => item.id))
+  })
+
+  it('deduplicates archived IDs, ignores foreign basenames, and locates override archives beside the store', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-archive-'))
+    dirs.push(dir)
+    const path = join(dir, 'custom-events.jsonl')
+    const event = observation('archived', 'agent-step')
+    const store = new ObservationLog(path)
+    await store.append(event)
+    await store.rotate({ maxBytes: 1 })
+    const foreign = join(dir, 'archive', 'feedback.jsonl.2026-09-25T00-00-00.000Z.1.jsonl')
+    await writeFile(foreign, `${JSON.stringify(observation('foreign', 'agent-step'))}\n`, 'utf8')
+    const reopened = new ObservationLog(path)
+    expect((await reopened.readAll()).map(item => item.id)).toEqual(['archived'])
+    expect(await reopened.append(event)).toBe(false)
+    expect((await readdir(join(dir, 'archive'))).some(name => name.startsWith('custom-events.jsonl.'))).toBe(true)
+  })
+
+  it.each([
+    ['bad JSON', 'not-json'],
+    ['invalid schema', JSON.stringify({ id: 'bad', schemaVersion: 99 })],
+    ['unterminated tail', `${JSON.stringify(observation('bad', 'agent-step'))}x`],
+  ])('rejects %s in an archive for read and append', async (_label, content) => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bad-archive-'))
+    dirs.push(dir)
+    const path = join(dir, 'observations.jsonl')
+    await mkdir(join(dir, 'archive'), { recursive: true })
+    const segment = archivePath(path)
+    await writeFile(segment, content, 'utf8')
+    const store = new ObservationLog(path)
+    await expect(store.readAll()).rejects.toThrow(segment)
+    await expect(store.append(observation('new', 'agent-step'))).rejects.toThrow(segment)
+  })
+
+  it('quarantines an unterminated tail while retaining complete facts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-tail-'))
+    dirs.push(dir)
+    const path = join(dir, 'observations.jsonl')
+    const complete = observation('complete', 'agent-step')
+    const tail = Buffer.from('partial-tail')
+    await writeFile(path, `${JSON.stringify(complete)}\n`)
+    await writeFile(path, Buffer.concat([await readFile(path), tail]))
+    const result = await new ObservationLog(path).rotate({ maxBytes: 1 })
+    expect(result.invalidQuarantine).toBeDefined()
+    expect(await readFile(result.invalidQuarantine!, 'utf8')).toBe(tail.toString())
+    expect((await readFile(result.rotated!, 'utf8')).endsWith('\n')).toBe(true)
+    expect((await readFile(result.rotated!, 'utf8')).split('\n').filter(Boolean)).toHaveLength(1)
+    const store = new ObservationLog(path)
+    expect((await store.readAll()).map(item => item.id)).toEqual(['complete'])
+    expect(await store.append(observation('new', 'agent-step'))).toBe(true)
+  })
+
+  it('rotates only a residual tail into an empty archive', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-only-tail-'))
+    dirs.push(dir)
+    const path = join(dir, 'observations.jsonl')
+    await writeFile(path, 'partial-tail', 'utf8')
+    const result = await new ObservationLog(path).rotate({ maxBytes: 1 })
+    expect(result.invalidQuarantine).toBeDefined()
+    expect(await readFile(result.rotated!, 'utf8')).toBe('')
+    expect(await new ObservationLog(path).append(observation('new', 'agent-step'))).toBe(true)
+  })
+
+  it('leaves current bytes and archives untouched when quarantine fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-quarantine-failure-'))
+    dirs.push(dir)
+    const path = join(dir, `${'o'.repeat(240)}`)
+    await mkdir(join(dir, 'archive'), { recursive: true })
+    const original = `${JSON.stringify(observation('complete', 'agent-step'))}\npartial`
+    await writeFile(path, original, 'utf8')
+    await expect(new ObservationLog(path).rotate({ maxBytes: 1 })).rejects.toMatchObject({ code: 'ENAMETOOLONG' })
+    expect(await readFile(path, 'utf8')).toBe(original)
+    expect((await readdir(join(dir, 'archive')))).toEqual([])
+  })
+
+  it('keeps the legacy thirty-day default retention', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-retention-'))
+    dirs.push(dir)
+    const path = join(dir, 'observations.jsonl')
+    await writeFile(path, 'x', 'utf8')
+    const archive = join(dir, 'archive', 'observations.jsonl.2000-01-01T00-00-00.000Z.1.jsonl')
+    await mkdir(join(dir, 'archive'), { recursive: true })
+    await writeFile(archive, '', 'utf8')
+    await utimes(archive, new Date('2000-01-01'), new Date('2000-01-01'))
+    const result = await rotateJsonl(path, { maxBytes: 2 })
+    expect(result.deleted).toContain(archive)
   })
 })
 
