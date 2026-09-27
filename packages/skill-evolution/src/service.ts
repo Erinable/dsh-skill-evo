@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
-import { createContentHash, redactSensitiveText } from './events.js'
+import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
 import { ObservationLog, resolveLayout } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
@@ -8,7 +8,7 @@ import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInp
 import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
-import { repairEvolutionRoot, repairJsonlFileUnlocked, type EvolutionRepairReport } from './repair.js'
+import { repairEvolutionRoot, repairJsonlFileUnlocked, type EvolutionRepairReport, type JsonlRepairResult } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
@@ -149,7 +149,7 @@ export class EvolutionService {
 
   async repair(): Promise<EvolutionRepairReport> {
     const paths = [this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
-    const jsonl = []
+    const jsonl: JsonlRepairResult[] = []
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath })
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
