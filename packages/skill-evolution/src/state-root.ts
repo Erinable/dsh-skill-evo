@@ -2,7 +2,7 @@ import { appendFile, mkdir, readdir, readFile, stat, writeFile, unlink } from 'n
 import { rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
-import { parseObservation, serializeObservation } from './events.js'
+import { createContentHash, parseObservation, serializeObservation } from './events.js'
 import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
@@ -15,6 +15,12 @@ export interface StoreDescriptor {
   readonly path: string
   readonly role: StoreRole
   readonly projectionInput: boolean
+}
+
+export interface ProjectionCursor {
+  readonly count: number
+  readonly lastId?: string
+  readonly fingerprint: string
 }
 
 export interface EvolutionLayout {
@@ -63,6 +69,31 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     observations: stores[0],
     skillVersionsDir: (skillName: string) => join(options.root, skillName, 'versions'),
   }
+}
+
+export async function readCursor(path: string): Promise<ProjectionCursor | undefined> {
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown }
+    if (typeof value.count !== 'number' || !Number.isFinite(value.count) || typeof value.fingerprint !== 'string') return undefined
+    return {
+      count: value.count,
+      ...(typeof value.lastId === 'string' ? { lastId: value.lastId } : {}),
+      fingerprint: value.fingerprint,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+export async function writeCursor(path: string, cursor: ProjectionCursor): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
+  await writeFile(temporary, `${JSON.stringify(cursor)}\n`, 'utf8')
+  await rename(temporary, path)
+}
+
+export function fingerprintOf(ids: readonly string[]): string {
+  return createContentHash(ids.join('\n'))
 }
 
 export class ObservationLog {

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
-import { EvolutionService, createObservation, type RuntimeObservation } from '../src/index.js'
+import { EvolutionService, createObservation, fingerprintOf, readCursor, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
 import { withLock } from '../src/locking.js'
 
 const dirs: string[] = []
@@ -94,5 +94,40 @@ describe('observation archive health and repair', () => {
     const service = new EvolutionService({ root })
     expect(await service.health()).toHaveLength(9)
     expect((await service.repair()).jsonl).toHaveLength(9)
+  })
+
+  it('forces projection repair and keeps standalone repair from changing the cursor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-cursor-repair-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.appendMany([observation('first'), observation('second')])
+    const fresh = await service.refreshDerived()
+    const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
+    const failuresPath = join(root, '.skill-evolution', 'failures.jsonl')
+    await writeFile(failuresPath, '', 'utf8')
+    const beforeStandalone = await readFile(cursorPath, 'utf8')
+
+    const standalone = await repairEvolutionRoot(root, { jsonlPaths: [], observationsPath: service.observations.filePath })
+    expect(standalone.projectionCursorRebuilt).toBe(false)
+    expect(await readFile(cursorPath, 'utf8')).toBe(beforeStandalone)
+
+    const report = await service.repair()
+    expect(report.projectionCursorRebuilt).toBe(true)
+    expect(await service.failures.readAll()).toEqual(fresh.failures)
+    expect(await readCursor(cursorPath)).toEqual({ count: 2, lastId: 'second', fingerprint: fingerprintOf(['first', 'second']) })
+  })
+
+  it('does not parse an observation tail when standalone repair leaves the cursor alone', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-cursor-tail-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.append(observation('complete'))
+    await service.refreshDerived()
+    const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
+    const before = await readFile(cursorPath, 'utf8')
+    await writeFile(service.observations.filePath, `${await readFile(service.observations.filePath, 'utf8')}partial`, 'utf8')
+
+    await expect(repairEvolutionRoot(root, { jsonlPaths: [], observationsPath: service.observations.filePath })).resolves.toMatchObject({ projectionCursorRebuilt: false })
+    expect(await readFile(cursorPath, 'utf8')).toBe(before)
   })
 })

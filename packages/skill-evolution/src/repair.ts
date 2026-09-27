@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createContentHash } from './events.js'
 import { withLock, removeDeadLock } from './locking.js'
@@ -94,24 +94,9 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
 export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string }): Promise<EvolutionRepairReport> {
   const jsonl = []
   for (const path of options.jsonlPaths) jsonl.push(await repairJsonlFile(path))
-  const cursorPath = join(root, '.skill-evolution', 'projection-cursor.json')
-  // Rebuild the checkpoint from the repaired observation file.
-  let projectionCursorRebuilt = false
-  const observationsPath = options.observationsPath ?? join(root, '.skill-evolution', 'observations.jsonl')
-  try {
-    const text = await readFile(observationsPath, 'utf8')
-    const lines = text.split('\n').filter(Boolean)
-    const lastId = lines.length === 0 ? undefined : recordId(JSON.parse(lines.at(-1)!))
-    const fingerprint = createContentHash(lines.map(line => recordId(JSON.parse(line)) ?? '').join('\n'))
-    await atomicWrite(cursorPath, `${JSON.stringify({ count: lines.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })}\n`)
-    projectionCursorRebuilt = true
-  } catch (error) {
-    if (!isMissing(error)) throw error
-    await rm(cursorPath, { force: true })
-  }
   const { removed, preserved } = await removeOrphanLocks(root)
   const manifestIssues = await inspectManifests(root)
-  return { jsonl, projectionCursorRebuilt, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues }
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues }
 }
 
 async function removeOrphanLocks(root: string): Promise<{ removed: string[]; preserved: string[] }> {
