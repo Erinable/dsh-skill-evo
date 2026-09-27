@@ -15,7 +15,7 @@ Turn something the user can't answer alone into a **questionnaire**: a Markdown 
 
 3. **Write the questionnaire.** Draft questions aimed at the gap from steps 1–2, following the Document structure below. Write it to `to-questionnaire-<slug>.md` in the current directory (slug from the topic). Done when the file exists and every item the user named in step 2 is covered by a question.
 
-   **Then hand it over, don't report where it is.** In an interactive session sharing the user's filesystem, the path is the hand-over — report it. Under a one-shot run (`MULTICA_TASK_ID` set in the environment, or the runtime brief says the task reaches a terminal state when the turn exits) the path reaches nobody: deliver the document on the surface this run answers on, per the tracker doc's "report the path" rules. The questionnaire exists to be forwarded to the recipient, so it has to arrive as something the user can forward.
+   **Then hand it over, don't report where it is.** Follow `docs/agents/runtime.md`'s `## Which mode am I in` and `## Delivering a file` sections. In interactive mode, report the path; in one-shot mode, deliver the document through the selected tracker adapter.
 
 ## Document structure
 

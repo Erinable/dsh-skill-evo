@@ -73,43 +73,17 @@ An issue title already renders as its H1 — start the description with prose or
 
 `multica issue get <id> --output json`, then catch up on the discussion with the two-step comment read above. The issue body alone is usually not the whole instruction; earlier comments often carry the constraints.
 
-## When a skill says "report the path" — deliver the artifact instead
+## Deliver an artifact
 
-A skill written for an interactive session ends by telling the user where a file landed, because the user is sitting at the same machine. Under Multica the working directory exists only on the machine running this turn, and the reader is somewhere else. **A runtime-local path is never a deliverable.** Reporting one means the run produced nothing anyone can open — the same outcome as not writing the file at all.
+When a file must reach a reader, use the first matching delivery:
 
-Check these conditions in order and take the first that matches:
-
-1. **The artifact belongs in the repo** (spec, ADR, research note, `CONTEXT.md`) → commit it and open a PR. It survives every later run because the repo does, so the delivery is the PR link, not the path.
+1. **The artifact belongs in the repo** (spec, ADR, research note, `CONTEXT.md`) → commit it and open a PR.
 2. **The artifact is a one-off for a reader** (report, questionnaire, handoff doc, screenshot) → attach it to the surface this run answers on:
-   - **On an issue**: `multica issue comment add <issue-id> --content-file ./reply.md --attachment ./report.html`. `--attachment` is repeatable, and the path must sit inside the working directory — so write the artifact there, not to `$TMPDIR`.
-   - **In a chat task**: `multica attachment upload ./report.html`. The server binds it to this task's reply; the command returns a markdown snippet (`!file[name](url)`, or `![name](url)` for an image) you may paste on its own line to place it inline.
-3. **The artifact is short enough to read inline** (under a page or two of Markdown) → skip the file and put the content in the comment body. An attachment the reader has to download to read one paragraph is worse than the paragraph.
+   - **On an issue**: `multica issue comment add <issue-id> --content-file ./reply.md --attachment ./report.html`. `--attachment` is repeatable, and the path must sit inside the working directory, not `$TMPDIR`.
+   - **In a chat task**: `multica attachment upload ./report.html`. The server binds it to this task's reply and returns a markdown snippet you may paste on its own line.
+3. **The artifact is short enough to read inline** → put the content in the comment body.
 
-Whichever branch you take:
-
-- Do not write an absolute path or a `file://` URL as a clickable link, and do not embed a local path as an image — it renders as a broken link and implies a delivery that did not happen. Cite code locations as inline code (`src/foo.ts:42`), which is a reference, not a link.
-- Do not try to open the artifact for the user. There is no browser, no display, and no one watching this machine: `open` / `xdg-open` / `start` either fail or succeed invisibly.
-- If a surface has no attachment mechanism, say so in words and inline what you can. Never link the path as a substitute.
-
-Skills that produce a file for a reader should point here rather than restating these delivery rules.
-
-## Subagents: fan out, then converge inside the turn
-
-A skill written for an interactive session can dispatch a subagent and carry on, because the session outlives the dispatch. Under Multica the task reaches a terminal state the moment the top-level turn exits, and anything still running is orphaned — its result is not delayed, it is gone.
-
-The rule:
-
-> **Dispatch subagents in parallel; collect every report before the turn ends.** Never finish a turn waiting on one.
-
-The distinction that matters, because getting it backwards costs either correctness or speed:
-
-- **Fan out and converge (correct):** dispatch N subagents in one batch, block until all N report, then write up. Costs the wall-clock of one, not N.
-- **Background and yield (broken):** dispatch, stop waiting, end the turn. The report never arrives and you will have claimed work that does not exist.
-- **Serialize out of caution (wasteful):** one subagent at a time because parallelism sounds like backgrounding. It isn't. The constraint is *collect before you exit*, not *dispatch one at a time*.
-
-Work that genuinely cannot finish inside the turn is not a candidate for a subagent at all — it is either a follow-up issue or an `issue wakeup`, both of which persist. And do not poll or sleep waiting for something a turn cannot contain.
-
-Skills that dispatch subagents should point here rather than restating these convergence rules.
+Do not open the artifact for the reader. Do not write an absolute path or a `file://` URL as a clickable link or embedded image. If a surface has no attachment mechanism, say so in words and inline what you can.
 
 ## Mentions are side-effecting
 
