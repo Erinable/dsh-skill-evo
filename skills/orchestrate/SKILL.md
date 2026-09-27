@@ -131,7 +131,7 @@ multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（De
 | 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 在 spec 所在的 stage 追加一张 Spec Writer 修订票（`--stage <该 stage> --status todo`），描述里写原子 issue 的 KEY 和它报的问题。修订合并后该 stage 再次完成、唤醒你，按「放行」第 2 步把原子 issue 置回 `todo` |
 | Reviewer 第 3 次 BLOCK、run 失败、stage 唤醒丢失、PR 被关闭不合 | 由每日巡检发现、进摘要，见 `PATROL.md` |
 | 已交付的 PR 与 main 冲突（评审前或 PASS 后） | 每日巡检「PR 冲突查」发现，在子 issue 上 @ 原执行 agent，执行 agent 按 `delivery-contract`「PR 冲突时」解冲突并交回 Reviewer 复核，见 `PATROL.md`。巡检依赖「每日巡检」autopilot 真实存在 |
-| 成员把修改意见留在 GitHub 上 | 没有 agent 会被触发，这是平台缺口；靠每个 PR 末尾「修改意见请评论在 <KEY> 上」的提示预防（见 `delivery-contract`） |
+| 成员把修改意见留在 GitHub 上 | 平台不会触发任何 agent，Multica 也不同步 PR 评论。每日巡检「GitHub 意见查」把 `OPEN` PR 上的成员意见转到对应 issue 并 @ 执行 agent，最迟一天，见 `PATROL.md`。PR 末尾「修改意见请评论在 <KEY> 上」的提示保留，走 issue 是即时的。巡检依赖「每日巡检」autopilot 真实存在 |
 
 ## 自动任务
 

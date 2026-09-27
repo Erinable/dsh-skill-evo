@@ -30,13 +30,14 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），并显式 @Reviewer（见「交接」）。
    完成判据：评论已发出；发出前对正文文件执行 `grep -cE 'mention://(agent|squad)/' <正文文件>` 输出 `1`，这一个就是给 Reviewer 的 `mention://agent/<Reviewer 的 id>`（见「贴原始输出前清理 mention」）。
 
-修改意见的唯一来源是 Multica issue 上的评论；GitHub 上的评论不会触发任何 agent，所以 PR 末尾那句提示是必需的。
+修改意见以 Multica issue 上的评论为准。GitHub 上的评论不会触发任何 agent，只能等每日巡检转到 issue 上，最迟隔一天，所以 PR 末尾那句提示仍是必需的。
 
 ## 被评审之后
 
 - **PASS**：Reviewer 已把 PR 转为正式 PR，issue 上会有「等待合并」的评论。你的工作到此为止，等成员合并。
 - **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
+- **GitHub 意见**：issue 上出现以 `GitHub 意见：#<n>` 开头、@ 你的评论，是每日巡检把成员留在 GitHub PR 上的意见转了过来。把引用的每条意见当作成员在 issue 上的评论处理：要改就回原任务分支返工、推送，再按交付步骤 5、6 置 `in_review`、发交接评论并 @Reviewer，交接评论里逐条写每个意见链接怎么处理的；只是提问就在 issue 上回答，不改状态。不要去 GitHub 上回复。
 - **PR 冲突**：每日巡检或成员在 issue 上 @ 你说 PR 与 main 冲突时，按「PR 冲突时」处理。PASS 之后也可能发生。
 
 ## 评审契约（Reviewer）
