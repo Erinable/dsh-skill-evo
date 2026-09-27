@@ -1,7 +1,10 @@
 # @dsh-skill-evo/dsh-bundle
 
 Installable DSH observer bundle. It records committed `session/event` facts to
-`$DSH_HOME/skill-evolution/events.jsonl`.
+`$DSH_HOME/skill-evolution/events.jsonl` by default. Set the bundle
+`storePath` to override that observation store; its archive remains beside the
+configured file. Maintenance commands use the same root layout as core, so a
+bundle override is not replaced by the root's default `.skill-evolution` path.
 
 ## Local development
 
@@ -81,3 +84,8 @@ uses the same root-based defaults:
 /skill-evolution promote --proposal proposal-id --scope project --dry-run true
 /skill-evolution promote --proposal proposal-id --scope project
 ```
+
+The bundle exposes the same public maintenance operations and publication
+scopes as the core CLI. It does not move Skill versions or publication locks:
+those remain under the Skill root and the centralized `.skill-evolution`
+directory resolved by core.
