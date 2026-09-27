@@ -40,6 +40,9 @@ async function setup() {
 describe('CLI maintenance lifecycle', () => {
   it('delegates lifecycle commands and validates promote dry-runs', async () => {
     const root = await setup()
+    const feedback = await run(root, 'feedback', '--session', 's1', '--kind', 'incorrect', '--skill', 'api-debugging', '--note', 'n', '--attribution', 'content')
+    expect(feedback.code).toBe(0)
+    expect(JSON.parse(feedback.stdout)).toMatchObject({ kind: 'incorrect', attribution: 'content' })
     const proposed = await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'candidate.md', '--proposed-version', '1.1.0', '--intent', 'Improve diagnostics')
     expect(proposed.code).toBe(0)
     const proposedRecord = JSON.parse(proposed.stdout).proposal
@@ -67,8 +70,14 @@ describe('CLI maintenance lifecycle', () => {
     await run(root, 'evaluate', '--proposal', proposed.id, '--cases', 'cases.json')
     const accepted = JSON.parse((await run(root, 'accept', '--proposal', `${proposed.id}:evaluated`, '--reason', 'Reviewed')).stdout)
     const missingArtifact = await run(root, 'promote', '--proposal', accepted.id, '--evaluation', 'missing.json', '--dry-run')
+    expect(missingArtifact.code).toBe(1)
     expect(missingArtifact.stderr).toContain('evaluation-missing')
+    await writeFile(join(root, 'fake.json'), JSON.stringify({ passedGate: true }))
+    const fakeArtifact = await run(root, 'promote', '--proposal', accepted.id, '--evaluation', 'fake.json', '--dry-run')
+    expect(fakeArtifact.code).toBe(1)
+    expect(fakeArtifact.stderr).toContain('evaluation-mismatch')
     const invalidScope = await run(root, 'promote', '--proposal', accepted.id, '--scope', 'bogus', '--dry-run')
+    expect(invalidScope.code).toBe(1)
     expect(invalidScope.stderr).toContain('invalid-option')
 
     const badCandidate = `${base}Use a different response phrase.\n`

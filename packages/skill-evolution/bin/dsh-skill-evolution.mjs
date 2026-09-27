@@ -199,6 +199,11 @@ function hasFlag(name) {
   return true
 }
 
+function assertOneOf(value, allowed, flag) {
+  if (!allowed.includes(value)) throw new Error(`${flag} must be one of: ${allowed.join(', ')}`)
+  return value
+}
+
 function assertPositiveNumber(value, flag) {
   const number = Number(value)
   if (!Number.isFinite(number) || number <= 0) throw new Error(`${flag} must be a positive number`)
