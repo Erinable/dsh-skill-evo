@@ -70,21 +70,9 @@ dsh plugin --profile web add \
 /skill-evolution rollback --skill api-debugging --version 1.0.0
 ```
 
-等价的 CLI 形式（session 外运行，需显式指定项目根）：
+上面每条斜杠命令都有等价的 CLI 形式 `dsh-skill-evolution <cmd> --root <path>`，可在 session 外运行 —— 逐条命令与参数见 [`packages/dsh-bundle/README.md`](./packages/dsh-bundle/README.md)。
 
-```bash
-dsh-skill-evolution observe  --root /path/to/project
-dsh-skill-evolution failures --root /path/to/project --format markdown
-dsh-skill-evolution propose  --root /path/to/project --skill api-debugging \
-  --base-file SKILL.md --candidate-file candidate.md \
-  --proposed-version 1.1.0 --intent "Add timeout diagnosis"
-dsh-skill-evolution evaluate --root /path/to/project --proposal <proposal-id> --cases cases.json
-dsh-skill-evolution accept   --root /path/to/project --proposal <proposal-id> --reason "Reviewed evaluation"
-dsh-skill-evolution promote  --root /path/to/project --proposal <proposal-id> --scope project
-dsh-skill-evolution rollback --root /path/to/project --skill api-debugging --version 1.0.0
-```
-
-其余命令：`metrics`（运营指标）、`health`（只读就绪探针）、`repair`（校验并隔离损坏的 JSONL）、`rotate`（轮转事件文件）、`feedback`（显式反馈）、`reject` / `defer`（审阅决策）。完整参数见各命令 `--help`。
+其余命令：`metrics`（运营指标）、`health`（只读就绪探针）、`repair`（校验并隔离损坏的 JSONL）、`feedback`（显式反馈）、`reject` / `defer`（审阅决策）同样两种形式都有；`rotate`（轮转事件文件）目前仅 CLI 支持。完整参数见各命令 `--help`。
 
 ## 配置
 
@@ -132,4 +120,4 @@ dsh-skill-evolution rollback --root /path/to/project --skill api-debugging --ver
 
 ## License
 
-[MIT](./packages/skill-evolution/package.json)
+MIT（见各包 `package.json`）。
