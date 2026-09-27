@@ -17,12 +17,27 @@
 
 1. **stage 已全部 done，下一阶段还没建或仍是 `backlog`**：唤醒丢了。对这个父 issue 执行一次 `SKILL.md` 的「放行」。
 2. **PR 已合并但子 issue 不是 `done`**（漏写 `Closes`）：在该子 issue 上说明，并列入摘要。
-3. **子 issue 处于 `in_review`，PR 仍是 draft 且 `createdAt` 早于 1 天前**：Reviewer 没被触发。在该子 issue 上补一次 @Reviewer（写法见 `delivery-contract` 的「交接」）。
+3. **交接没接上**：按下面「交接漏查」处理。
 4. **`blocked` 超过 2 天，或提问后成员没有回复**：只在当天摘要里列一次，不在 issue 上评论。
    **第 3 次 BLOCK 例外，不等 2 天**：子 issue 为 `blocked`、且最新一条 `评审结论：BLOCK` 评论是第 3 条时，当天就列入摘要，写「第 3 次 BLOCK：<Reviewer 要你决定的事>」。
 5. **PR 与 main 冲突**：按下面「PR 冲突查」处理。
 
 另外一种要列入摘要的情况：**PR 已关闭未合并，issue 仍未决**，且成员没在 issue 上评论原因。列为「PR 已关闭、issue 未决」。
+
+## 交接漏查
+
+执行 agent 交付后没 @Reviewer、或 @ 错了人，Reviewer 就不会起 run，issue 停在 `in_review` 没人动。不看 PR 是不是 draft：漏 @ 的交付往往连 draft 也没开（SKIL-55/61/62/66/67），有的交付根本没有 PR（SKIL-56）。
+
+对象：状态为 `in_review` 的子 issue。
+
+1. **取两个时间**：
+   - 执行 agent 最后一条评论的时间：`multica issue comment list <child-id> --compact --output json` 中 `author_id` 等于该 issue `assignee_id` 的最后一条的 `created_at`。
+   - Reviewer 最后一次 run 的时间：`multica issue runs <child-id> --output json` 中 `agent_id` 等于 Reviewer id 的最新一条的 `created_at`，没有就当作无。
+2. **判定**：执行 agent 最后一条评论早于 1 小时前，且晚于 Reviewer 最后一次 run（或 Reviewer 从没跑过），就是交接漏了。Reviewer 打回之后还没返工的，Reviewer 的 run 晚于执行 agent 的评论，自然不算。
+3. **补交接**：用 `delivery-contract`「交接」一节的交接命令（Mika 没装这个 skill，从仓库 `skills/delivery-contract/SKILL.md` 读），`TO=Reviewer`、`PARENT` 留空，正文写「巡检补交接：<执行 agent 名> 的交付评论没有触发 Reviewer」加那条评论的链接。命令输出 `handoff ok` 才算补上。
+4. 列入当天摘要：「<KEY> 交接漏了，已补 @Reviewer」。同一张 issue 连续两天都漏，说明执行 agent 没按交接命令交付，摘要里写明是哪个 agent。
+
+完成判据：每张 `in_review` 子 issue，要么 Reviewer 最后一次 run 晚于执行 agent 最后一条评论，要么今天已有一条 `handoff ok` 的巡检补交接。
 
 ## PR 冲突查
 
