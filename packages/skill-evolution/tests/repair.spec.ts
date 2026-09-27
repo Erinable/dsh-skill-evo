@@ -83,6 +83,16 @@ describe('repair lock sweep', () => {
     expect((await service.refreshDerived()).failures.length).toBe(before.failures.length)
   })
 
+  it('repairs malformed lines in the current observation file before rebuilding projections', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-observation-'))
+    roots.push(root)
+    const service = new EvolutionService({ root })
+    await service.recordObservation(observation('valid-observation', 'skill-loaded'))
+    await writeFile(service.observations.filePath, `${await readFile(service.observations.filePath, 'utf8')}partial-tail`, 'utf8')
+    await expect(service.repair()).resolves.toMatchObject({ jsonl: expect.arrayContaining([expect.objectContaining({ path: service.observations.filePath, removedInvalidLines: 1 })]) })
+    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['valid-observation'])
+  })
+
   it('reports lock, guard, tmp states and excludes skipped directory locks from legacy arrays', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-report-'))
     roots.push(root)

@@ -112,9 +112,13 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   try {
     const text = await readFile(observationsPath, 'utf8')
     const lines = text.split('\n').filter(Boolean)
-    const lastId = lines.length === 0 ? undefined : recordId(JSON.parse(lines.at(-1)!))
-    const fingerprint = createContentHash(lines.map(line => recordId(JSON.parse(line)) ?? '').join('\n'))
-    await atomicWrite(cursorPath, `${JSON.stringify({ count: lines.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })}\n`)
+    const validIds: string[] = []
+    for (const line of lines) {
+      try { validIds.push(parseObservation(line).id) } catch { /* repairJsonlFile will quarantine this line */ }
+    }
+    const lastId = validIds.at(-1)
+    const fingerprint = createContentHash(validIds.join('\n'))
+    await atomicWrite(cursorPath, `${JSON.stringify({ count: validIds.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })}\n`)
     projectionCursorRebuilt = true
   } catch (error) {
     if (!isMissing(error)) throw error
