@@ -57,8 +57,8 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     cursorPath: join(stateDir, 'projection-cursor.json'),
     locksDir: join(stateDir, 'locks'),
     candidatesDir: join(stateDir, 'candidates'),
-    proposalReportsDir: join(stateDir, 'reports', 'proposals'),
-    evaluationReportsDir: join(stateDir, 'reports', 'evaluations'),
+    proposalReportsDir: join(stateDir, 'proposals'),
+    evaluationReportsDir: join(stateDir, 'evaluations'),
     stores,
     observations: stores[0],
     skillVersionsDir: (skillName: string) => join(options.root, skillName, 'versions'),
@@ -194,8 +194,8 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
     await writeFile(path, '')
   }
   const deleted: string[] = []
-  {
-    const cutoff = Date.now() - (options.retentionDays ?? 30) * 86_400_000
+  if (options.retentionDays !== undefined) {
+    const cutoff = Date.now() - options.retentionDays * 86_400_000
     for (const archive of await archivePaths(path)) {
       const info = await stat(archive)
       if (info.isFile() && info.mtimeMs < cutoff) { await unlink(archive); deleted.push(archive) }

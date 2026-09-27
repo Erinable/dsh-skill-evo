@@ -6,6 +6,7 @@ import {
   renderFailuresMarkdown,
   MaintenanceWorker,
   rotateJsonl,
+  resolveLayout,
   assertFeedbackKind,
   proposeSkillChange,
   evaluateProposal,
@@ -183,8 +184,14 @@ async function worker() {
 }
 
 async function rotate() {
-  const file = resolve(value('--file') ?? `${root}/.skill-evolution/observations.jsonl`)
-  console.log(JSON.stringify(await rotateJsonl(file, { maxBytes: assertPositiveNumber(required('--max-bytes'), '--max-bytes'), retentionDays: assertPositiveNumber(value('--retention-days') ?? '30', '--retention-days') }), null, 2))
+  const fileFlag = value('--file')
+  const storeFlag = storePath
+  const file = fileFlag === undefined
+    ? resolveLayout({ root, ...(storeFlag === undefined ? {} : { observationStore: resolve(storeFlag) }) }).observations.path
+    : resolve(fileFlag)
+  const retentionFlag = value('--retention-days')
+  const options = { maxBytes: assertPositiveNumber(required('--max-bytes'), '--max-bytes'), ...(retentionFlag === undefined ? {} : { retentionDays: assertPositiveNumber(retentionFlag, '--retention-days') }) }
+  console.log(JSON.stringify(await rotateJsonl(file, options), null, 2))
 }
 
 function usage(code) {
