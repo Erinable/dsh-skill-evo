@@ -37,16 +37,39 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 - **PASS**：Reviewer 已把 PR 转为正式 PR，issue 上会有「等待合并」的评论。你的工作到此为止，等成员合并。
 - **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
+- **PR 冲突**：每日巡检或成员在 issue 上 @ 你说 PR 与 main 冲突时，按「PR 冲突时」处理。PASS 之后也可能发生。
 
 ## 评审契约（Reviewer）
 
 1. **只读检出**：`git fetch origin` 后执行 `git diff origin/main...origin/<分支>`，工作区保持无提交。
-2. **PASS**：`gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论；再在子 issue 上评论，写明「等待合并」。
+2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论；再在子 issue 上评论，写明「等待合并」。
 3. **BLOCK**：在子 issue 上评论，写清哪条验收标准没过、在哪个位置、要改什么，并 @ 原执行 agent。
 4. **ADR 检查**：PR 引入的不可逆决策（数据格式、公开接口、依赖方向）有没有对应的 `docs/adr/` 文件；PR 与已有 ADR 冲突时，有没有按 `docs/agents/domain.md` 的「Flag ADR conflicts」显式标出；新 ADR 的编号是否与 `origin/main` 上已有的编号冲突，冲突时后合并的 PR 改号。任何一项没满足就判 BLOCK，理由写明缺的是哪一项。
-5. **轮次**：发 BLOCK 前先数这张 issue 上已有几条 BLOCK。本次是第 3 次时，改为把 issue 置为 `blocked`，评论里写明需要成员做什么决定，这一次不 @ 执行 agent。
+5. **冲突复核**：执行 agent 解完冲突后 @ 你，交接评论第一行是 `冲突已解决：#<n>`。按「PR 冲突时」的复核规则只核对合并本身。
+6. **轮次**：发 BLOCK 前先数这张 issue 上已有几条 BLOCK。本次是第 3 次时，改为把 issue 置为 `blocked`，评论里写明需要成员做什么决定，这一次不 @ 执行 agent。
 
-为了让轮次可数，每条评审评论的第一行固定写 `评审结论：PASS` 或 `评审结论：BLOCK`。
+为了让轮次可数（冲突复核的 BLOCK 也计入），每条评审评论的第一行固定写 `评审结论：PASS` 或 `评审结论：BLOCK`。
+
+## PR 冲突时
+
+PR 已交付（`in_review`，不管是 draft 待评审还是已 PASS 等合并）后 main 前进，PR 变成 `mergeable: CONFLICTING`。发现方是每日巡检（`orchestrate` 的 `PATROL.md`「PR 冲突查」）或成员，都会在子 issue 上评论并 @ 你。
+
+1. **原分支**：回到原任务分支，不新建分支、不开新 PR、不 rebase、不 force push。`git fetch origin && git merge origin/main`。
+2. **解冲突**：按 `resolving-merge-conflicts` 解。两边意图都保留；main 已经用别的方式实现了本票内容时，保留 main 的实现，把本 PR 收窄为仍然缺的部分，并在交接评论里写明收窄了什么。
+3. **重跑测试**：跑本票涉及的每个包的 build 和 test，贴实际命令和实际输出。
+   完成判据：`git merge-base --is-ancestor origin/main HEAD` 退出码 0；推送后 `gh pr view <n> --json mergeable` 为 `MERGEABLE`（`UNKNOWN` 等 10 秒再查）。
+4. **推送**：按交付步骤 3 推送到原分支，同一个 PR 自动更新。PR 描述里写的范围变了（第 2 步收窄）就同步改描述。
+5. **状态与交接**：状态保持或改回 `in_review`，再发交接评论并 @Reviewer（交付步骤 5、6）。评论第一行写 `冲突已解决：#<n>`，正文写合并提交、冲突文件、每处怎么取舍、测试输出。
+
+**是否重新评审**：一律 @Reviewer，范围按下表。
+
+| 冲突前状态 | 复核范围 | 结论 |
+|---|---|---|
+| draft，还没评审 | 正常评审（评审契约第 1–4 步） | PASS / BLOCK |
+| 已 PASS | 只看合并本身：本 PR 相对 main 的净改动（`git diff origin/main...origin/<分支>`）与上次 PASS 时一致，冲突文件里 main 的改动没被丢掉 | 一致：`评审结论：PASS`，写「第 N 轮 PASS 保持」；PR 已是正式 PR，不用再 `gh pr ready` |
+| 已 PASS，但第 2 步收窄或改动了实现 | 按净改动重新完整评审 | PASS / BLOCK |
+
+完成判据：PR 为 `MERGEABLE`，子 issue 上有一条 `冲突已解决：#<n>` 交接评论 @Reviewer，之后有一条 Reviewer 的 `评审结论：` 评论。
 
 ## 提问（需要成员拍板时）
 
