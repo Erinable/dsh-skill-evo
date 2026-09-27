@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createContentHash } from './events.js'
-import { withFileLock, removeDeadLock } from './locking.js'
+import { withLock, removeDeadLock } from './locking.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -25,7 +25,7 @@ export async function repairJsonlFile(
   path: string,
   options: { readonly parse?: (value: unknown) => boolean } = {},
 ): Promise<JsonlRepairResult> {
-  return withFileLock(`${path}.lock`, () => repairJsonlUnlocked(path, options))
+  return withLock(`${path}.lock`, 'repair', () => repairJsonlUnlocked(path, options))
 }
 
 async function repairJsonlUnlocked(path: string, options: { readonly parse?: (value: unknown) => boolean }): Promise<JsonlRepairResult> {
