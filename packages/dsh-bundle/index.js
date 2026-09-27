@@ -272,25 +272,26 @@ function parseFlags(words) {
   return flags
 }
 
-function tokenize(input) {
+export function tokenize(input) {
   const words = []
   let word = ''
   let quote = undefined
-  let escaped = false
-  for (const character of String(input ?? '').trim()) {
-    if (escaped) { word += character; escaped = false; continue }
-    if (character === '\\' && quote !== "'") { escaped = true; continue }
+  const source = String(input ?? '').trim()
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    const next = source[index + 1]
     if (quote !== undefined) {
       if (character === quote) quote = undefined
+      else if (character === '\\' && quote === '"' && (next === '"' || next === '\\')) { word += next; index += 1 }
       else word += character
       continue
     }
+    if (character === '\\' && (next === '"' || next === "'" || next === '\\')) { word += next; index += 1; continue }
     if (character === '"' || character === "'") { quote = character; continue }
     if (/\s/.test(character)) {
       if (word.length > 0) { words.push(word); word = '' }
     } else word += character
   }
-  if (escaped) word += '\\'
   if (word.length > 0) words.push(word)
   return words
 }
