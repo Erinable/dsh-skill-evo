@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { LockBusyError, withLock } from './locking.js'
@@ -103,9 +103,9 @@ export class SkillVersionStore {
     if (!validation.valid) throw new Error(`candidate Skill is invalid: ${validation.errors.join('; ')}`)
     const changeValidation = validateSkillCandidate(current?.content ?? '', proposal.candidateContent, proposal.skillName)
     if (!changeValidation.valid) throw new Error(`candidate Skill change is invalid: ${changeValidation.errors.join('; ')}`)
-    await this.writeCandidate(proposal)
 
     if (options.scope === 'explicit-only') {
+      await this.writeCandidate(proposal)
       return {
         manifest: this.manifestFor(proposal, options.scope, 'observed'),
         path: join(this.layout().candidateDir(proposal.id), 'SKILL.md'),
@@ -114,7 +114,6 @@ export class SkillVersionStore {
 
     const directory = skillDirectory(this.root, proposal.skillName)
     const versionsDirectory = this.layout().skillVersionsDir(proposal.skillName)
-    await mkdir(versionsDirectory, { recursive: true })
     const versionDirectory = join(versionsDirectory, proposal.proposedVersion)
     const existingVersion = await readVersionIfPresent(versionDirectory)
     if (existingVersion !== undefined) {
@@ -123,18 +122,23 @@ export class SkillVersionStore {
       }
       return { manifest: existingVersion.manifest, path: join(versionDirectory, 'SKILL.md') }
     }
-    await writeAtomic(join(directory, '.publish.json'), `${JSON.stringify({ proposalId: proposal.id, version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) })}\n`)
-    await mkdir(versionDirectory, { recursive: false })
+    let previous: { readonly contentHash: string; readonly manifest: SkillManifest } | undefined
     if (current !== undefined && current.manifest.version !== 'unversioned') {
       const previousDirectory = join(versionsDirectory, current.manifest.version)
-      const previous = await readVersionIfPresent(previousDirectory)
-      if (previous === undefined) {
-        await mkdir(previousDirectory, { recursive: true })
-        await writeAtomic(join(previousDirectory, 'SKILL.md'), current.content)
-        await writeAtomic(join(previousDirectory, 'manifest.json'), `${JSON.stringify(current.manifest, null, 2)}\n`)
-      } else if (previous.contentHash !== createContentHash(current.content)) {
+      previous = await readVersionIfPresent(previousDirectory)
+      if (previous !== undefined && previous.contentHash !== createContentHash(current.content)) {
         throw new Error(`historical Skill version is inconsistent: ${proposal.skillName}@${current.manifest.version}`)
       }
+    }
+    await this.writeCandidate(proposal)
+    await mkdir(versionsDirectory, { recursive: true })
+    await writeAtomic(join(directory, '.publish.json'), `${JSON.stringify({ proposalId: proposal.id, version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) })}\n`)
+    await mkdir(versionDirectory, { recursive: false })
+    if (current !== undefined && current.manifest.version !== 'unversioned' && previous === undefined) {
+      const previousDirectory = join(versionsDirectory, current.manifest.version)
+      await mkdir(previousDirectory, { recursive: true })
+      await writeAtomic(join(previousDirectory, 'SKILL.md'), current.content)
+      await writeAtomic(join(previousDirectory, 'manifest.json'), `${JSON.stringify(current.manifest, null, 2)}\n`)
     }
     const manifest = this.manifestFor(proposal, options.scope, 'stable')
     await writeAtomic(join(versionDirectory, 'SKILL.md'), proposal.candidateContent)
@@ -306,12 +310,26 @@ async function recoverPublication(
   versionsDirectory: string,
   invalidate?: SkillVersionStoreOptions['invalidate'],
 ): Promise<void> {
-  const journal = await readJsonIfPresent<{ readonly version?: string; readonly contentHash?: string }>(join(directory, '.publish.json'))
-  if (journal?.version === undefined || journal.contentHash === undefined) return
+  const journalPath = join(directory, '.publish.json')
+  const journal = await readJsonIfPresent<{ readonly version?: string; readonly contentHash?: string }>(journalPath)
+  if (typeof journal?.version !== 'string' || journal.contentHash === undefined) return
+  try {
+    assertVersion(journal.version)
+  } catch {
+    return
+  }
   const versionDirectory = join(versionsDirectory, journal.version)
-  const version = await readVersionIfPresent(versionDirectory).catch(() => undefined)
-  if (version === undefined || version.contentHash !== journal.contentHash) return
-  await writeAtomic(join(directory, 'SKILL.md'), await readFile(join(versionDirectory, 'SKILL.md'), 'utf8'))
+  if (dirname(resolve(versionDirectory)) !== resolve(versionsDirectory)) return
+  const content = await readTextIfPresent(join(versionDirectory, 'SKILL.md'))
+  const manifest = await readJsonIfPresent<SkillManifest>(join(versionDirectory, 'manifest.json'))
+  if (content === undefined || manifest === undefined) {
+    await rm(versionDirectory, { recursive: true, force: true })
+    await unlink(journalPath).catch(() => undefined)
+    return
+  }
+  const version = { contentHash: createContentHash(content), manifest }
+  if (version.contentHash !== journal.contentHash) return
+  await writeAtomic(join(directory, 'SKILL.md'), content)
   await writeAtomic(join(directory, 'manifest.json'), `${JSON.stringify(version.manifest, null, 2)}\n`)
   await writeAtomic(join(directory, 'current.json'), `${JSON.stringify({ version: version.manifest.version, contentHash: version.manifest.contentHash }, null, 2)}\n`)
   if (version.manifest.scope !== 'explicit-only') await invalidate?.(version.manifest.name, version.manifest.scope)
