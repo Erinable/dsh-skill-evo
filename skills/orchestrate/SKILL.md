@@ -8,6 +8,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 向成员提问使用所选 tracker adapter 的 `Ask a person and wait` 一节。
 
 - **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
+- **建票前查重**：本 skill 里每一次 `multica issue create`（父 issue、stage 子 issue、拆票、修订票）之前，先按 `delivery-contract` 的「建票前查重」查，只有同一问题、同一来源的票才复用，不新建。
 
 先判断本次 run 属于哪个入口，只执行对应一节：
 
@@ -25,11 +26,14 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 1. 只需要一个答案的，直接在聊天里回答，不开票，到此结束。
 2. 其余需求只建父 issue，别的都留给父 issue 上的 run：
    ```bash
-   multica issue create --title "<需求一句话>" --description-file ./parent.md --assignee Mika --status todo
+   multica issue create --title "<需求一句话>" --description-file ./parent.md --assignee Mika --status backlog
+   # 查重第 6 步复查：没有更早的同源父 issue
+   multica issue status <parent-id> todo
    ```
-   `parent.md` 写成员原话和你理解的目标。
+   `parent.md` 写成员原话和你理解的目标。成员点名了现有 issue 的，照样建父 issue，在 `parent.md` 里写出它的 KEY，让父 issue 的首次路由 run 去复用它（查重第 2 步：建父 issue 时点名的 KEY 不跳步）。
+3. 聊天回合到此为止：不建子 issue，不改现有 issue 的父 issue、stage、负责人。这些是父 issue 首次路由 run 的事；聊天 run 也做，就是两个 run 同时对一件事建票（SKIL-80 的聊天 run 和首次路由 run 并发，聊天 run 另建了重复的 SKIL-81）。
 
-完成判据：父 issue 存在，负责人 Mika，状态 `todo`。成员订阅在首次仓库路由 run 中完成。
+完成判据：父 issue 存在，负责人 Mika，状态 `todo`；本次聊天 run 没有建子 issue。成员订阅在首次仓库路由 run 中完成。
 
 ## 路由并建 Stage 1
 
@@ -46,9 +50,9 @@ multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（D
    同一张 issue 被多跑一次也不会建出第二套子 issue，也不会留下没有负责人的父 issue。
 1. 按路由表判断类型。判断不了时，按所选 tracker adapter 的 `Ask a person and wait` 一节问成员**一个**问题（带默认答案），传入父 issue、问题正文、触发线程（如有）及回复后路由的 next 指令；本次 run 结束。成员回复后按回复路由，不再追问。
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
-3. 按「stage 模板」建 Stage 1 的子 issue，父 issue 置 `in_progress`。
+3. 按「stage 模板」建 Stage 1 的子 issue（先查重；父 issue 描述里点名的现有 KEY 是同一种票，直接复用），父 issue 置 `in_progress`。
 
-完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；父 issue 和 Stage 1 子 issue 已订阅 `docs/agents/instance.md` 的 `Subscribers`。
+完成判据：Stage 1 子 issue 全部存在、状态 `todo`、已指派；路由评论写了查重关键词和结论；父 issue 和 Stage 1 子 issue 已订阅 `docs/agents/instance.md` 的 `Subscribers`。
 
 ### 路由表
 
@@ -67,11 +71,13 @@ multica issue subscriber add <parent-id> --user-id <Subscribers 指定的人（D
 
 ### stage 模板
 
-每个 stage 只在放行时才建，建出来就是 `todo`，所以子 issue 一建立即开工：
+每个 stage 只在放行时才建。每张子 issue 先按 `delivery-contract`「建票前查重」第 1–5 步查，同源重复的就复用那张（改父 issue 和 stage），不走下面的 `create`。没有同源重复才建，先建成 `backlog`，复查（第 6 步）通过后再置 `todo`，置 `todo` 后立即开工：
 
 ```bash
-multica issue create --parent <parent-id> --stage <N> --status todo \
+multica issue create --parent <parent-id> --stage <N> --status backlog \
   --assignee "<agent 名>" --title "<一句话>" --description-file ./child.md
+# 查重第 6 步复查：没有更早的同源票
+multica issue status <child-id> todo
 multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（Decision maker 的 user_id）>
 ```
 
@@ -98,9 +104,9 @@ multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（De
 实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆：
 
 1. `git fetch origin` 后读 `origin/main` 上的 `specs/<slug>/tasks.md`。文件不在 `origin/main` 上说明 spec PR 还没合，在父 issue 上说明，本次 run 结束。
-2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。
+2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。查重时问题关键词用 task 编号，来源锚点用 `specs/<slug>/`：只有描述里也写着同一个 `specs/<slug>/` 的同号 task 票才复用，别的 spec 的 `Task N` 是同号不同源，照建。
 
-完成判据：子 issue 张数等于 `tasks.md` 的 task 条数。
+完成判据：子 issue 张数等于 `tasks.md` 的 task 条数；每条 task 在 `specs/<slug>/` 下恰好一张（新建或复用同源票），没有一张是从别的 spec 挪过来的。
 
 ## 收口
 
@@ -118,17 +124,17 @@ multica issue subscriber add <child-id> --user-id <Subscribers 指定的人（De
 
 - **Triager @Mika**：原 issue 就是父 issue，不另建。本次 run 按顺序做完（Mika 在这次 run 里把 issue 指派给自己，不会取消当前 run，也不会另起新 run，所以接手不能留给指派去触发）：
   1. 按 `docs/agents/instance.md` 的 `Subscribers` 订阅原 issue；
-  2. 按「路由并建 Stage 1」路由（Triager 的 brief 在评论里）：发路由评论，建 Stage 1 子 issue；
+  2. 按「路由并建 Stage 1」路由（Triager 的 brief 在评论里）：发路由评论，建 Stage 1 子 issue（先按「建票前查重」查：原 issue 本身可能就是别处已建的跟踪票，或者同一问题已有另一张父 issue）；
   3. **最后一步**：`multica issue assign <原 issue id> --to-id <Mika 的 id>`，再 `multica issue status <原 issue id> in_progress`。
 
   指派放在最后：指派不会起新 run，前面几步做完 issue 才有负责人，stage 完成后也才能唤醒到 Mika。
-- **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。
+- **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。建之前查重：问题关键词用编号，来源锚点用架构扫描 issue 的 KEY，两者都对上的已有父 issue 才不再建。
 
 ## 故障
 
 | 情况 | 处理 |
 |---|---|
-| 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 在 spec 所在的 stage 追加一张 Spec Writer 修订票（`--stage <该 stage> --status todo`），描述里写原子 issue 的 KEY 和它报的问题。修订合并后该 stage 再次完成、唤醒你，按「放行」第 2 步把原子 issue 置回 `todo` |
+| 执行 agent 报 spec 有问题（子 issue `blocked` 并 @Mika） | 先按「建票前查重」查（来源锚点是原子 issue 的 KEY），描述里点名同一原子 issue 的未完成修订票已存在就不再追加；否则在 spec 所在的 stage 追加一张 Spec Writer 修订票（`--stage <该 stage> --status backlog`，复查后置 `todo`），描述里写原子 issue 的 KEY 和它报的问题。修订合并后该 stage 再次完成、唤醒你，按「放行」第 2 步把原子 issue 置回 `todo` |
 | Reviewer 第 3 次 BLOCK、run 失败、stage 唤醒丢失、PR 被关闭不合 | 由每日巡检发现、进摘要，见 `PATROL.md` |
 | 已交付的 PR 与 main 冲突（评审前或 PASS 后） | 每日巡检「PR 冲突查」发现，在子 issue 上 @ 原执行 agent，执行 agent 按 `delivery-contract`「PR 冲突时」解冲突并交回 Reviewer 复核，见 `PATROL.md`。巡检依赖「每日巡检」autopilot 真实存在 |
 | 成员把修改意见留在 GitHub 上 | 没有 agent 会被触发，这是平台缺口；靠每个 PR 末尾「修改意见请评论在 <KEY> 上」的提示预防（见 `delivery-contract`） |
