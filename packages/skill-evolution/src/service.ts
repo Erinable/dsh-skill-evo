@@ -5,7 +5,7 @@ import { JsonlEventStore } from './store.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
-import { transitionProposal } from './proposal.js'
+import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
 import { repairEvolutionRoot, repairJsonlFile, type EvolutionRepairReport } from './repair.js'
@@ -178,13 +178,12 @@ export class EvolutionService {
     cases: readonly SkillEvaluationCase[],
     runner?: EvaluationRunner,
   ): Promise<SkillEvalResult> {
-    if (!['proposed', 'evaluating', 'replayed', 'observed'].includes(proposal.status)) {
-      throw new Error(`proposal ${proposal.id} is not ready for evaluation from status ${proposal.status}`)
-    }
-    const evaluating = proposal.status === 'proposed' ? transitionProposal(proposal, 'evaluating') : proposal
+    const targetStatus = proposal.status === 'proposed' ? 'evaluating' : 'evaluated'
+    assertCanTransition(proposal.status, targetStatus)
+    const evaluating = targetStatus === 'evaluating' ? transitionProposal(proposal, 'evaluating') : proposal
     const proposalId = proposalRootId(proposal.id)
     if (evaluating !== proposal) {
-      await this.proposals.append({ ...evaluating, id: `${proposalId}:evaluating` })
+      await this.proposals.append({ ...evaluating, id: ledgerRecordId(proposalId, 'evaluating') })
       await this.recordDecision(evaluating, 'evaluating', proposal.status, 'evaluating', 'evaluation started')
     }
     const current = await this.versions.readCurrent(proposal.skillName)
@@ -220,38 +219,17 @@ export class EvolutionService {
       result: persistedResult,
     })
     const evaluated = { ...transitionProposal(evaluating, 'evaluated'), comparisonCaseIds: [...result.caseIds] }
-    await this.proposals.append({ ...evaluated, id: `${proposalId}:evaluated` })
-    await this.recordDecision(evaluated, 'evaluated', 'evaluating', 'evaluated', 'evaluation completed', result.policyVersion)
-    await this.decisions.append({
-      id: `decision:evaluate:${proposalId}:${result.policyVersion}`,
-      proposalId,
-      skillName: proposal.skillName,
-      action: 'evaluated',
-      reason: result.gateReasons.join('; ') || 'evaluation policy passed',
-      evidenceIds: result.caseResults.map(item => item.caseId),
-      createdAt: new Date().toISOString(),
-      actor: this.options.operator ?? 'evaluator',
-      policyVersion: result.policyVersion,
-    })
+    await this.proposals.append({ ...evaluated, id: ledgerRecordId(proposalId, 'evaluated') })
+    await this.recordDecision(evaluated, 'evaluated', evaluating.status, 'evaluated', 'evaluation completed', result.policyVersion, result.caseResults.map(item => item.caseId))
     return persistedResult
   }
 
   async acceptProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
-    if (proposal.status !== 'evaluated') throw new Error(`proposal ${proposal.id} requires evaluation before acceptance`)
+    assertCanTransition(proposal.status, 'accepted')
     const accepted = transitionProposal(proposal, 'accepted')
     const proposalId = proposalRootId(proposal.id)
-    await this.proposals.append({ ...accepted, id: `${proposalId}:accepted` })
-    await this.recordDecision(accepted, 'accepted', 'evaluated', 'accepted', reason, undefined, evidenceIds)
-    await this.decisions.append({
-      id: `decision:accept:${proposalId}:${Date.now()}`,
-      proposalId,
-      skillName: proposal.skillName,
-      action: 'accepted',
-      reason,
-      evidenceIds: [...evidenceIds],
-      createdAt: new Date().toISOString(),
-      actor: this.options.operator ?? 'maintainer',
-    })
+    await this.proposals.append({ ...accepted, id: ledgerRecordId(proposalId, 'accepted') })
+    await this.recordDecision(accepted, 'accepted', proposal.status, 'accepted', reason, undefined, evidenceIds)
     return accepted
   }
 
@@ -261,7 +239,7 @@ export class EvolutionService {
     scope: 'explicit-only' | 'project' | 'user' | 'stable',
     reason = 'evaluation gate passed',
   ): Promise<void> {
-    if (proposal.status !== 'accepted') throw new Error(`proposal ${proposal.id} requires an accepted review before promotion`)
+    assertCanTransition(proposal.status, 'promoted')
     const artifact = await this.requireEvaluationArtifact(proposal, evaluation)
     const verifiedEvaluation = artifact.result
     if (!verifiedEvaluation.passedGate) throw new Error(`proposal ${proposal.id} failed evaluation gate: ${verifiedEvaluation.gateReasons.join('; ')}`)
@@ -284,23 +262,8 @@ export class EvolutionService {
       source: 'maintenance',
     })
     const promoted = transitionProposal(proposal, 'promoted')
-    await this.proposals.append({ ...promoted, id: `${proposalId}:promoted` })
+    await this.proposals.append({ ...promoted, id: ledgerRecordId(proposalId, 'promoted') })
     await this.recordDecision(promoted, 'promoted', 'accepted', 'promoted', reason, verifiedEvaluation.policyVersion, verifiedEvaluation.caseResults.map(result => result.caseId))
-    await this.decisions.append({
-      id: `decision:promote:${proposalId}`,
-      proposalId,
-      skillName: proposal.skillName,
-      action: 'promoted',
-      reason,
-      evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId),
-      createdAt: new Date().toISOString(),
-      actor: this.options.operator ?? 'maintainer',
-      fromStatus: 'accepted',
-      toStatus: 'promoted',
-      baseContentHash: proposal.expectedBase.contentHash,
-      candidateContentHash: createContentHash(proposal.candidateContent),
-      policyVersion: verifiedEvaluation.policyVersion,
-    })
   }
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
@@ -329,8 +292,7 @@ export class EvolutionService {
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {
     const before = await this.versions.readCurrent(skillName)
     const published = await this.versions.rollback(skillName, version, { scope: 'project' })
-    const latestStates = new Map<string, SkillProposal>()
-    for (const item of await this.proposals.readAll()) latestStates.set(proposalRootId(item.id), item)
+    const latestStates = latestProposalsByRoot(await this.proposals.readAll())
     const latestPromoted = [...latestStates.values()].filter(item => item.skillName === skillName && item.status === 'promoted' && item.proposedVersion === before?.manifest.version).at(-1)
     const targetProposal = [...latestStates.values()].find(item => item.skillName === skillName && item.proposedVersion === version)
     await this.observations.append({
@@ -361,25 +323,25 @@ export class EvolutionService {
     })
     if (latestPromoted !== undefined) {
       const rolledBack = transitionProposal(latestPromoted, 'rolled-back')
-      await this.proposals.append({ ...rolledBack, id: `${proposalRootId(latestPromoted.id)}:rolled-back` })
+      await this.proposals.append({ ...rolledBack, id: ledgerRecordId(proposalRootId(latestPromoted.id), 'rolled-back') })
       await this.recordDecision(rolledBack, 'rollback', 'promoted', 'rolled-back', reason)
     }
   }
 
   async rejectProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
-    if (!['proposed', 'evaluating', 'evaluated', 'observed', 'replayed', 'deferred'].includes(proposal.status)) throw new Error(`proposal ${proposal.id} cannot be rejected from ${proposal.status}`)
+    assertCanTransition(proposal.status, 'rejected')
     const rejected = transitionProposal(proposal, 'rejected')
     const rootId = proposalRootId(proposal.id)
-    await this.proposals.append({ ...rejected, id: `${rootId}:rejected` })
+    await this.proposals.append({ ...rejected, id: ledgerRecordId(rootId, 'rejected') })
     await this.recordDecision(rejected, 'rejected', proposal.status, 'rejected', reason, undefined, evidenceIds)
     return rejected
   }
 
   async deferProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
-    if (!['proposed', 'evaluating', 'evaluated', 'observed', 'replayed'].includes(proposal.status)) throw new Error(`proposal ${proposal.id} cannot be deferred from ${proposal.status}`)
+    assertCanTransition(proposal.status, 'deferred')
     const deferred = transitionProposal(proposal, 'deferred')
     const rootId = proposalRootId(proposal.id)
-    await this.proposals.append({ ...deferred, id: `${rootId}:deferred` })
+    await this.proposals.append({ ...deferred, id: ledgerRecordId(rootId, 'deferred') })
     await this.recordDecision(deferred, 'deferred', proposal.status, 'deferred', reason, undefined, evidenceIds)
     return deferred
   }
@@ -439,11 +401,6 @@ export class EvolutionService {
   }
 }
 
-
-/** Return the stable logical ID for a proposal lifecycle record. */
-function proposalRootId(id: string): string {
-  return id.replace(/(?::(?:evaluating|evaluated|accepted|promoted|rolled-back|replayed|observed|rejected|deferred))+$/, '')
-}
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')

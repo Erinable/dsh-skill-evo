@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -249,6 +249,45 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
 })
 
 describe('phase workflow orchestration', () => {
+  it('uses the ledger transition table for review guards', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-service-guards-'))
+    dirs.push(dir)
+    const service = new EvolutionService({ root: dir })
+    const base = createProposal({ id: 'guard-draft', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: 'base', proposedVersion: '1.1.0', candidateContent: 'candidate', intent: 'Improve' })
+
+    expect((await service.rejectProposal(base, 'unsafe')).status).toBe('rejected')
+
+    const deferredDraft = createProposal({ id: 'guard-deferred', skillName: base.skillName, baseVersion: base.baseVersion, baseContent: 'base', proposedVersion: base.proposedVersion, candidateContent: 'candidate', intent: base.intent })
+    expect((await service.deferProposal(deferredDraft, 'later')).status).toBe('deferred')
+
+    const accepted = transitionProposal(
+      transitionProposal(
+        transitionProposal(createProposal({ id: 'guard-accepted', skillName: base.skillName, baseVersion: base.baseVersion, baseContent: 'base', proposedVersion: base.proposedVersion, candidateContent: 'candidate', intent: base.intent }), 'proposed'),
+        'evaluating',
+      ),
+      'evaluated',
+    )
+    const acceptedRecord = transitionProposal(accepted, 'accepted')
+    expect((await service.rejectProposal(acceptedRecord, 'new evidence')).status).toBe('rejected')
+    await expect(service.deferProposal(acceptedRecord, 'x')).rejects.toMatchObject({ code: 'invalid-transition' })
+  })
+
+  it('retries evaluation from an evaluating record and audits the actual transition edge', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-service-evaluating-'))
+    dirs.push(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const candidate = base.replace('Base.', 'Improved.')
+    await mkdir(join(dir, 'api-debugging'), { recursive: true })
+    await writeFile(join(dir, 'api-debugging', 'SKILL.md'), base)
+    const service = new EvolutionService({ root: dir })
+    const proposal = transitionProposal(createProposal({ id: 'retry-evaluation', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' }), 'proposed')
+    const evaluating = transitionProposal(proposal, 'evaluating')
+    const result = await service.evaluate(evaluating, [{ id: 'retry', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
+    expect(result.passedGate).toBe(true)
+    const decision = (await service.decisions.readAll()).find(item => item.toStatus === 'evaluated')
+    expect(decision).toMatchObject({ fromStatus: 'evaluating', toStatus: 'evaluated', evidenceIds: ['retry'] })
+  })
+
   it('requires repeated or high-severity evidence before invoking a Designer', async () => {
     const workflow = new EvolutionWorkflow()
     workflow.add([

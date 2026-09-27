@@ -1,4 +1,5 @@
 import type { DecisionRecord, RuntimeObservation, SkillProposal } from './types.js'
+import { latestProposalsByRoot } from './proposal.js'
 
 export interface SkillUsageMetric {
   readonly skillName: string
@@ -56,11 +57,10 @@ export function aggregateMetrics(
     loadFailureRate: rate(metric.failed.size, metric.requested.size),
     followUpRate: rate(metric.followUps.size, metric.succeeded.size),
   }))
-  const latestProposals = new Map<string, SkillProposal>()
-  for (const proposal of proposals) latestProposals.set(proposalRootId(proposal.id), proposal)
-  const promoted = new Set(decisions.filter(decision => decision.action === 'promoted').map(decision => decision.proposalId ?? decision.id))
-  const rejected = new Set(decisions.filter(decision => decision.action === 'rejected').map(decision => decision.proposalId ?? decision.id))
-  const rolledBack = new Set(decisions.filter(decision => decision.action === 'rollback' || decision.action === 'reverted').map(decision => decision.proposalId ?? decision.id))
+  const latestProposals = latestProposalsByRoot(proposals)
+  const promoted = new Set(decisions.filter(decision => decision.toStatus === 'promoted' || decision.action === 'promoted').map(decision => decision.proposalId ?? decision.id))
+  const rejected = new Set(decisions.filter(decision => decision.toStatus === 'rejected' || decision.action === 'rejected').map(decision => decision.proposalId ?? decision.id))
+  const rolledBack = new Set(decisions.filter(decision => decision.toStatus === 'rolled-back' || decision.action === 'rollback' || decision.action === 'reverted').map(decision => decision.proposalId ?? decision.id))
   return {
     observations: events.length,
     sessions: sessions.size,
@@ -73,10 +73,6 @@ export function aggregateMetrics(
     },
     contextCost,
   }
-}
-
-function proposalRootId(id: string): string {
-  return id.replace(/(?::(?:evaluating|evaluated|accepted|promoted|rolled-back|replayed|observed|rejected|deferred))+$/, '')
 }
 
 function rate(numerator: number, denominator: number): number {
