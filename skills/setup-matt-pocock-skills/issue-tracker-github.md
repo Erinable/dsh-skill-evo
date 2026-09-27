@@ -16,6 +16,10 @@ The five triage roles are GitHub labels: `needs-triage`, `needs-info`, `ready-fo
 
 **PRs as a request surface: no.** PRs are implementation artifacts, not feature requests for triage. If a repository enables this surface, use the corresponding `gh pr` commands and the same labels.
 
+When this flag is `yes`, list external PRs with `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments`; retain only `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` authors and drop `OWNER`, `MEMBER`, and `COLLABORATOR`. Read with `gh pr view <number> --comments` and `gh pr diff <number>`. Comment, label, or close with `gh pr comment`, `gh pr edit --add-label` / `--remove-label`, and `gh pr close`.
+
+GitHub shares one number space across issues and PRs. Resolve a bare `#42` with `gh pr view 42`, falling back to `gh issue view 42` when it is not a PR.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a GitHub issue with `gh issue create --title "..." --body-file <file>` (or an inline body for short text).

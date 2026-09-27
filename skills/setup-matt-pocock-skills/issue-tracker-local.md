@@ -6,11 +6,11 @@ Issues and specs for this repo live as Markdown files in `.scratch/`.
 
 - Use `.scratch/<feature-slug>/spec.md` for a spec and `.scratch/<feature-slug>/issues/NN-<slug>.md` for one ticket per file.
 - Put comments under `## Comments`; use the file itself for reads, writes, and status changes.
-- A `Status:` line near the top records the issue lifecycle and assignment.
+- A `Status:` line near the top records lifecycle (`open`/`resolved`) and assignment (`claimed`) separately; comments append under `## Comments`.
 
 ## Triage state
 
-Record the five roles as the `Status:` value: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. No label service exists; do not create or resolve labels. `wontfix` is a terminal status.
+Record the five triage roles in a `Triage:` line: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. Record lifecycle in `Status:` (`open` or `resolved`) and assignment as `Status: claimed` only while claimed. No label service exists; do not create or resolve labels. `wontfix` is a terminal triage role.
 
 ## Pull requests as a triage surface
 

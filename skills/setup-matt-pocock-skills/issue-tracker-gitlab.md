@@ -16,6 +16,10 @@ The five triage roles are GitLab labels: `needs-triage`, `needs-info`, `ready-fo
 
 **Merge requests as a request surface: no.** Merge requests are implementation artifacts, not feature requests for triage. If a repository enables this surface, use the corresponding `glab mr` commands and the same labels.
 
+When this flag is `yes`, list external merge requests with `glab mr list -F json` and retain only requests whose author is not a project member or owner. Read with `glab mr view <number> --comments` and `glab mr diff <number>`. Comment, label, or close with `glab mr note`, `glab mr update --label` / `--unlabel`, and `glab mr close`.
+
+GitLab numbers issues and merge requests separately, so `#42` is unambiguous once the surface is known. Use `glab mr` for merge requests and `glab issue` for issues.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a GitLab issue with `glab issue create --title "..." --description-file <file>`.
@@ -38,7 +42,7 @@ GitLab `@user` and `@group` mentions notify recipients in issue and merge reques
 
 ## Ask a person and wait
 
-Post the question with `glab issue note <number> --message-file <file>` and wait for a reply in the issue thread. Interactive sessions can continue in place; one-shot runs have no tracker wakeup operation (`n/a`).
+Post the question with `glab issue note <number> --message "$(cat <file>)"` and wait for a reply in the issue thread. Interactive sessions can continue in place; one-shot runs have no tracker wakeup operation (`n/a`).
 
 ## Wayfinding operations
 

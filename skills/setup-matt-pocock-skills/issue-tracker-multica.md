@@ -11,9 +11,11 @@ Issues are addressed by UUID (`<issue-uuid>`) and carry a human identifier (`ABC
 - Add comments with `multica issue comment add <issue-id> --content-file <path>` and use `--parent <comment-id>` for replies. Read comments with a roots summary followed by a bounded thread read.
 - Change lifecycle with `multica issue status <id> <status>` and assign with `multica issue assign <id> --to <name>` or `--to-id <uuid>`. Multica has no close verb; use `done` or `cancelled`.
 
+An issue title already renders as its H1; descriptions start with prose or `##`, never a Markdown `# ` heading.
+
 ### Long bodies always go through a file
 
-Write long descriptions and comments to UTF-8 files inside the working directory, then pass `--description-file` or `--content-file`. Do not use inline `--content` or a heredoc alongside other flags.
+Write long descriptions and comments to UTF-8 files inside the working directory, then pass `--description-file` or `--content-file`. Do not use inline `--content` or a heredoc alongside other flags: inline `--content` decodes escape sequences and mangles the body. Delete a temporary file only after a successful post, gated with `&&`; avoid `--allow-external-file`.
 
 ### Never merge stderr into parsed output
 
@@ -21,7 +23,7 @@ Keep stderr separate from `--output json`; otherwise a successful write can look
 
 ## Triage state
 
-Labels carry the triage role and lifecycle status carries the board state. The canonical mapping is `needs-triage` → `todo`, `needs-info` → `blocked`, `ready-for-agent` → `todo`, `ready-for-human` → `todo`, and `wontfix` → `cancelled`. Apply both axes and remove the previous role label when changing roles. Resolve a label by name with `multica label list --output json`; create it with `multica label create`, then use `multica issue label add` or `remove`. An agent that finishes work sets `in_review`; `done` is a human decision.
+Labels carry the triage role and lifecycle status carries the board state. The canonical mapping is `needs-triage` → `todo`, `needs-info` → `blocked`, `ready-for-agent` → `todo`, `ready-for-human` → `todo`, and `wontfix` → `cancelled`. Apply both axes and remove the previous role label when changing roles. Resolve a label by name with `multica label list --output json`; create it with `multica label create`, then use `multica issue label add` or `remove`. Label add/remove takes a label UUID, not a label name. An agent that finishes work sets `in_review`; `done` is a human decision.
 
 ## Pull requests as a triage surface
 
@@ -40,14 +42,15 @@ Run `multica issue get <id> --output json`, then scan comments with `multica iss
 When a file must reach a reader, use the first matching delivery:
 
 1. A repository artifact belongs in the repo: commit it and open a PR.
-2. A one-off artifact can be attached to the issue comment: `multica issue comment add <issue-id> --content-file ./reply.md --attachment ./report.html` (repeat `--attachment` as needed).
+2. A one-off artifact can be attached to the issue comment: `multica issue comment add <issue-id> --content-file ./reply.md --attachment ./report.html` (repeat `--attachment` as needed; zip several files first).
 3. A short artifact can be included inline in the comment body.
+4. In a chat task, upload with `multica attachment upload ./report.html` and include the returned snippet.
 
-The attachment path must be inside the working directory. A runtime-local path is not delivery.
+The attachment path must be inside the working directory. Do not write an absolute path or `file://` URL as a link or embedded image; when a surface has no attachment mechanism, say so in words. A runtime-local path is not delivery.
 
 ## Concurrent writes
 
-Assignment is the claim: assign the issue before changing it. Comments are append-only and safe from any run; issue descriptions and fields are owned by the assignee, and parent issue lifecycle is owned by its owner. A child reports upward by comment rather than changing the parent.
+Multica has no locking and `multica issue update` replaces fields wholesale. Assignment is the claim: assign the issue and set it `in_progress` as the first writes of the run. Comments are append-only and safe from any run; before rewriting a description, immediately re-read the current body and write the complete body back. Parent issue lifecycle is owned by its owner; a child run never changes the parent issue's status, including `done`. An agent finishes its own issue at `in_review`; `done` is a human decision.
 
 ## Mentions
 
@@ -55,12 +58,18 @@ Assignment is the claim: assign the issue before changing it. Comments are appen
 
 ## Ask a person and wait
 
-Write the question to a file and publish it with `multica issue comment add <issue> --content-file <body-file>`, preserving `--parent <thread>` when replying. If the issue is assigned to this agent, a member reply wakes it directly. Otherwise register one event wakeup for the workspace member's `user_id` with `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <member-user-id>`. Resume by reading the reply and following the supplied next instruction.
+1. Write the question body to a UTF-8 file inside the working directory. Publish it with `multica issue comment add <issue> --content-file <body-file>`; if replying to a thread, pass the triggering `thread` as `--parent <thread>`.
+2. Read the issue assignee. If the issue is assigned to this agent, register no wakeup: a member reply wakes that assignee directly.
+3. Otherwise use the triggering comment's `author_id` when `author_type == member`. If there is no member author, read `docs/agents/instance.md`'s `Decision maker` section, run `multica workspace member list --output json`, and use the matching owner's `user_id`. Never use a membership `id`, `creator_id`, or `assignee_id`.
+4. Register exactly one one-shot event wakeup: `multica issue wakeup create <issue> --kind event --event comment.created --mode once --filter-actor-type member --filter-actor-id <member-user-id>`. Pass the triggering `thread` as wakeup `--parent <thread>` and the continuation as `--instruction <next>`.
+5. End the run after registering the wakeup. Do not poll or sleep. On the next run, read the member reply and follow the `next` instruction.
 
 ## Wayfinding operations
 
 - **Map:** one issue labelled `wayfinder:map`, holding Notes, Decisions-so-far, and Fog; keep it `in_progress` while live.
 - **Child ticket:** create with `multica issue create --parent <map-id> --title "..." --description-file <path> --stage N`; use `backlog` until its stage opens and assign it to the driving agent.
-- **Blocking:** use stage barriers; for cross-stage dependencies record `Blocked by: ABC-<n>` and wait for a terminal blocker.
-- **Frontier:** read `multica issue children <map-id> --output json`, choose the first unfinished, promoted, unassigned, unblocked child in stage order.
-- **Resolve:** research and prototype children are delivered as PRs; grilling is resolved by the member's acceptance; task children are set `done` by their implementer. Append a context pointer to the map description.
+- **Blocking:** use stage barriers; for cross-stage dependencies record `Blocked by: ABC-<n>` and treat it as satisfied only when the blocker is `done` or `cancelled`.
+- **Frontier:** read `multica issue children <map-id> --output json`, choose the first unfinished, promoted, unassigned child in stage order, dropping `backlog`, `blocked`, and children with unsatisfied `Blocked by:` entries.
+- **Research routing:** assign research tickets according to `docs/agents/instance.md`'s `Agent routing`; the map owner does not dispatch a second research subagent.
+- **Resolve:** research and prototype children are delivered as PRs; grilling is resolved by the member's acceptance, then the map owner posts the resolution and sets that ticket `done`; task children are set `done` by their implementer. A ticket left `in_review` never closes its stage, so later stages remain locked.
+- Before appending a context pointer, run `multica issue get <map-id> --output json`, append to the existing description, and write the complete body with `multica issue update <map-id> --description-file <path>`; update replaces the description wholesale.
