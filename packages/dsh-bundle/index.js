@@ -1,7 +1,7 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { createContentHash, createProposal, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, renderProposalMarkdown } from '@dsh-skill-evo/core'
+import { assertFeedbackKind, assertPublicationScope, createContentHash, createProposal, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, renderProposalMarkdown } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -244,8 +244,9 @@ async function executeMaintenanceCommand(invocation, config) {
     const flags = parseFlags(words)
     const proposal = await findProposal(service, requiredFlag(flags, 'proposal'))
     const evaluation = JSON.parse(await readFile(resolve(requiredFlag(flags, 'evaluation')), 'utf8'))
-    if (flags['dry-run'] === 'true') return { kind: 'success', text: JSON.stringify({ dryRun: true, proposal, evaluation }, null, 2) }
-    await service.promote(proposal, evaluation, flags.scope ?? 'project')
+    const scope = assertPublicationScope(flags.scope ?? 'project')
+    if (flags['dry-run'] === 'true') return { kind: 'success', text: JSON.stringify({ dryRun: true, proposal, evaluation, scope }, null, 2) }
+    await service.promote(proposal, evaluation, scope)
     return { kind: 'success', text: JSON.stringify({ proposalId: proposal.id, status: 'promoted' }, null, 2) }
   }
   if (action === 'rollback') {
@@ -255,7 +256,7 @@ async function executeMaintenanceCommand(invocation, config) {
   }
   if (action === 'feedback') {
     const flags = parseFlags(words)
-    const record = await service.recordFeedback({ sessionId: flags.session ?? String(invocation.agent.session.id), skillName: flags.skill, kind: flags.kind ?? 'other', note: flags.note ?? words.join(' '), source: 'user' })
+    const record = await service.recordFeedback({ sessionId: flags.session ?? String(invocation.agent.session.id), skillName: flags.skill, kind: assertFeedbackKind(flags.kind ?? 'other'), note: flags.note ?? words.join(' '), source: 'user' })
     return { kind: 'success', text: `Feedback recorded: ${record.id}` }
   }
   return { kind: 'error', text: 'Usage: /skill-evolution observe | failures | metrics | health | repair | feedback | propose | evaluate | accept | reject | defer | promote | rollback' }

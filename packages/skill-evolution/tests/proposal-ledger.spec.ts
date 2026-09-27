@@ -11,6 +11,10 @@ import {
   ledgerRecordId,
   proposalRootId,
   transitionProposal,
+  FEEDBACK_KINDS,
+  PUBLICATION_SCOPES,
+  assertFeedbackKind,
+  assertPublicationScope,
   type ProposalStatus,
   type SkillProposal,
 } from '../src/index.js'
@@ -29,6 +33,15 @@ function draft(id: string): SkillProposal {
 }
 
 describe('proposal ledger', () => {
+  it('centralizes publication scopes and feedback kinds with typed invalid-option errors', () => {
+    expect(PUBLICATION_SCOPES).toEqual(['explicit-only', 'project', 'user', 'stable'])
+    expect(FEEDBACK_KINDS).toContain('other')
+    for (const scope of PUBLICATION_SCOPES) expect(assertPublicationScope(scope)).toBe(scope)
+    for (const kind of FEEDBACK_KINDS) expect(assertFeedbackKind(kind)).toBe(kind)
+    expect(() => assertPublicationScope('bogus')).toThrowError(expect.objectContaining({ code: 'invalid-option' }))
+    expect(() => assertFeedbackKind('bogus')).toThrowError(expect.objectContaining({ code: 'invalid-option' }))
+  })
+
   it('transitions, records, groups, and resolves a proposal through evaluation', () => {
     const root = 'proposal:123'
     const initial = draft(root)

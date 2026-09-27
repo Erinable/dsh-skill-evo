@@ -9,6 +9,8 @@ import {
   createProposal,
   MaintenanceWorker,
   rotateJsonl,
+  assertFeedbackKind,
+  assertPublicationScope,
 } from '../lib/index.js'
 
 const args = process.argv.slice(2)
@@ -81,7 +83,7 @@ async function health() {
 }
 
 async function feedback() {
-  const kind = assertOneOf(required('--kind'), ['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'other'], '--kind')
+  const kind = assertFeedbackKind(required('--kind'))
   const attribution = value('--attribution')
   const record = await service.recordFeedback({
     sessionId: required('--session'),
@@ -138,7 +140,7 @@ async function evaluate() {
 async function promote() {
   const proposal = await findProposal(required('--proposal'))
   const evaluation = JSON.parse(await readFile(resolve(required('--evaluation')), 'utf8'))
-  const scope = assertOneOf(value('--scope') ?? 'project', ['explicit-only', 'project', 'user', 'stable'], '--scope')
+  const scope = assertPublicationScope(value('--scope') ?? 'project')
   if (hasFlag('--dry-run')) {
     await service.verifyEvaluation(proposal, evaluation)
     console.log(JSON.stringify({ dryRun: true, proposal, evaluation }, null, 2))

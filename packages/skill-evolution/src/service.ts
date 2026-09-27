@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
-import { JsonlEventStore } from './store.js'
+import { ObservationLog, resolveLayout } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
@@ -11,6 +11,7 @@ import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
 import { repairEvolutionRoot, repairJsonlFile, type EvolutionRepairReport } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withFileLock } from './locking.js'
+import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import type {
   DecisionRecord,
   FeedbackKind,
@@ -26,12 +27,13 @@ import type {
   EvaluationPolicy,
   Attribution,
   EvaluationArtifact,
+  PublicationScope,
 } from './types.js'
 
 export interface EvolutionServiceOptions {
   readonly root: string
   readonly store?: string
-  readonly invalidate?: (skillName: string, scope: 'project' | 'user' | 'stable') => void | Promise<void>
+  readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
   readonly evaluationPolicy?: EvaluationPolicy
   readonly operator?: string
   readonly evaluationTtlMs?: number
@@ -39,7 +41,7 @@ export interface EvolutionServiceOptions {
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
 export class EvolutionService {
-  readonly observations: JsonlEventStore
+  readonly observations: ObservationLog
   readonly proposals: JsonlRecordStore<SkillProposal>
   readonly decisions: JsonlRecordStore<DecisionRecord>
   readonly experiences: JsonlRecordStore<Experience>
@@ -50,19 +52,21 @@ export class EvolutionService {
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
   private readonly projectionCursorPath: string
+  readonly layout: ReturnType<typeof resolveLayout>
 
   constructor(private readonly options: EvolutionServiceOptions) {
-    const state = join(options.root, '.skill-evolution')
-    this.projectionCursorPath = join(state, 'projection-cursor.json')
-    this.observations = new JsonlEventStore(options.store ?? join(state, 'observations.jsonl'))
-    this.proposals = new JsonlRecordStore(join(state, 'proposals.jsonl'))
-    this.decisions = new JsonlRecordStore(join(state, 'decisions.jsonl'))
-    this.experiences = new JsonlRecordStore(join(state, 'experiences.jsonl'))
-    this.failures = new JsonlRecordStore(join(state, 'failures.jsonl'))
-    this.clusters = new JsonlRecordStore(join(state, 'clusters.jsonl'))
-    this.diagnoses = new JsonlRecordStore(join(state, 'diagnoses.jsonl'))
-    this.feedback = new JsonlRecordStore(join(state, 'feedback.jsonl'))
-    this.evaluations = new JsonlRecordStore(join(state, 'evaluations.jsonl'))
+    this.layout = resolveLayout({ root: options.root, observationStore: options.store })
+    this.projectionCursorPath = this.layout.cursorPath
+    const path = (name: string) => this.layout.stores.find(store => store.name === name)!.path
+    this.observations = new ObservationLog(this.layout.observations.path)
+    this.proposals = new JsonlRecordStore(path('proposals'))
+    this.decisions = new JsonlRecordStore(path('decisions'))
+    this.experiences = new JsonlRecordStore(path('experiences'))
+    this.failures = new JsonlRecordStore(path('failures'))
+    this.clusters = new JsonlRecordStore(path('clusters'))
+    this.diagnoses = new JsonlRecordStore(path('diagnoses'))
+    this.feedback = new JsonlRecordStore(path('feedback'))
+    this.evaluations = new JsonlRecordStore(path('evaluations'))
     this.versions = new SkillVersionStore(options.root, { invalidate: options.invalidate })
   }
 
@@ -85,6 +89,7 @@ export class EvolutionService {
     readonly note: string
     readonly source?: 'user' | 'maintainer'
   }): Promise<FeedbackRecord> {
+    const kind = assertFeedbackKind(input.kind)
     const note = redactSensitiveText(input.note.trim())
     if (note.length === 0) throw new Error('feedback note must not be empty')
     const record: FeedbackRecord = {
@@ -95,7 +100,7 @@ export class EvolutionService {
       correlationIds: [...input.correlationIds ?? []],
       ...(input.stepId === undefined ? {} : { stepId: input.stepId }),
       ...(input.toolCallId === undefined ? {} : { toolCallId: input.toolCallId }),
-      kind: input.kind,
+      kind,
       ...(input.attribution === undefined ? {} : { attribution: input.attribution }),
       attributionStatus: input.attributionStatus ?? (input.attribution === undefined ? 'pending' : 'accepted'),
       attributedBy: input.attributedBy ?? (input.source === 'user' ? 'rule' : 'human'),
@@ -236,9 +241,10 @@ export class EvolutionService {
   async promote(
     proposal: SkillProposal,
     evaluation: SkillEvalResult,
-    scope: 'explicit-only' | 'project' | 'user' | 'stable',
+    scope: PublicationScope,
     reason = 'evaluation gate passed',
   ): Promise<void> {
+    assertPublicationScope(scope)
     assertCanTransition(proposal.status, 'promoted')
     const artifact = await this.requireEvaluationArtifact(proposal, evaluation)
     const verifiedEvaluation = artifact.result
