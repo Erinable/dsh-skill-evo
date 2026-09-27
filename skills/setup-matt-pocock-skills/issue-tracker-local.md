@@ -1,34 +1,49 @@
 # Issue tracker: Local Markdown
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Issues and specs for this repo live as Markdown files in `.scratch/`.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- Use `.scratch/<feature-slug>/spec.md` for a spec and `.scratch/<feature-slug>/issues/NN-<slug>.md` for one ticket per file.
+- Put comments under `## Comments`; use the file itself for reads, writes, and status changes.
+- A `Status:` line near the top records the issue lifecycle and assignment.
+
+## Triage state
+
+Record the five roles as the `Status:` value: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. No label service exists; do not create or resolve labels. `wontfix` is a terminal status.
+
+## Pull requests as a triage surface
+
+n/a: local Markdown has no pull request or merge request tracker.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Create the feature directory and write a spec or issue file under `.scratch/`.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Read the referenced `.scratch/<feature-slug>/issues/<NN>-<slug>.md` file and its `## Comments` section.
+
+## Deliver an artifact
+
+Write the artifact into the repository, normally under `.scratch/<feature-slug>/`, and reference it from the issue file. That committed file is the delivery; a runtime-local path is not.
+
+## Concurrent writes
+
+Set `Status: claimed` before editing a ticket. This tracker is intended for one writer per ticket; concurrent writes are unsupported (`n/a`), while appending comments is safe when coordinated.
+
+## Mentions
+
+n/a: local Markdown has no notification or mention service.
 
 ## Ask a person and wait
 
-In an interactive session, ask the person and wait for the reply in-session. A one-shot run has no asynchronous recall mechanism (`n/a`); record the question for a later run.
+Append the question under the issue's `## Comments` heading. Interactive sessions can continue in place; one-shot runs have no file watcher or wakeup operation (`n/a`).
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
-
-- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Map:** `.scratch/<effort>/map.md` with Notes, Decisions-so-far, and Fog.
+- **Child ticket:** `.scratch/<effort>/issues/NN-<slug>.md` with a `Type:` line and a `Status:` line.
+- **Blocking:** record `Blocked by: NN, NN`; a ticket is unblocked when every listed file is resolved.
+- **Frontier:** scan the issue directory, remove blocked or claimed files, and take the first remaining number.
+- **Resolve:** append `## Answer`, set `Status: resolved`, and add a context pointer to `map.md`.
