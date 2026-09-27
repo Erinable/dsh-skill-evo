@@ -49,7 +49,11 @@ Issues are tracked in the Multica workspace via the `multica` CLI. See `docs/age
 
 ### Triage labels
 
-Default five triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), plus `wayfinder:*` labels; resolve UUIDs by name. See `docs/agents/triage-labels.md`.
+Default five triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`); resolve UUIDs by name. Workspace labels, including `wayfinder:*`, are listed in `docs/agents/instance.md` under `Labels in this workspace`.
+
+### Workspace instance
+
+Workspace-specific decision maker, subscribers, label snapshot, and agent routing. See `docs/agents/instance.md`.
 
 ### Domain docs
 

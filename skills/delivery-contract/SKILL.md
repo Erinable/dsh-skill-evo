@@ -5,7 +5,9 @@ description: "交付契约。在被指派的子 issue 上交付 PR、提交或�
 
 执行 agent 在一张子 issue 上交付一个 PR 的完整契约：怎么交付、怎么被评审、怎么提问、怎么交接。Reviewer 按「评审契约」一节执行。
 
-本文用到的两个标识：
+拍板人见 `docs/agents/instance.md` 的 `Decision maker`；该文件记录工作区实例事实。
+
+本文用到的标识：
 
 - `<KEY>`：本 issue 的编号，如 `SKIL-18`，取自 `multica issue get <issue> --output json` 的 `identifier`。
 
