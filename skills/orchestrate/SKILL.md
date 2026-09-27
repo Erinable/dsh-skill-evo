@@ -37,7 +37,7 @@ Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成
 
 ## 路由并建 Stage 1
 
-开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的提出人解析顺序读取父 issue 描述。tracker 来源票若尚无 `需求提出人 user_id` 行，先用已验证的 `creator_type == member` / 触发评论作者解析，重读完整描述后追加该行并用 `multica issue update <parent-id> --description-file <file>` 写回；仍解析不出就写 `unresolved`。再按 `Subscribers` 补齐父 issue 订阅，最后检查子 issue；此前在聊天入口不订阅。已有提出人元数据优先于本次触发来源，避免把路由 agent 或子 issue 上的评论作者误认成提出人。
+开始仓库检出后的首次路由时，先按 `docs/agents/instance.md` 的提出人解析顺序读取父 issue 描述。tracker 来源票若尚无 `需求提出人 user_id` 行，先用触发评论的 member 作者，再用已验证的 `creator_type == member` / `creator_id` 解析，重读完整描述后追加该行并用 `multica issue update <parent-id> --description-file <file>` 写回；仍解析不出就写 `unresolved`。再按 `Subscribers` 补齐父 issue 订阅，最后检查子 issue；此前在聊天入口不订阅。已有提出人元数据优先于本次触发来源，避免把路由 agent 或子 issue 上的评论作者误认成提出人。
 
 ```bash
 # Repeat once for each resolved `user_id` in `instance.md`'s `Subscribers` set.

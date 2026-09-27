@@ -75,7 +75,7 @@ PR 已交付（`in_review`，不管是 draft 待评审还是已 PASS 等合并�
 ## 提问（需要成员拍板时）
 
 1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案，成员可以只回「默认」。每个问题写出固定字段 `提问目标 user_id`、`提问类别`、`默认答案`、`提问时间` 和 `resume status: <todo|in_progress>`；类别取 `business judgment` 或 `irreversible / permission / spending`，然后把 issue 置为 `blocked`。
-2. 目标规则：先读 issue 描述里的 `需求提出人 user_id`（子 issue 继承父 issue）；没有有效记录时再用触发评论的 member 作者，再用 `creator_id`（仅 `creator_type == member`），最后回退 Decision maker。业务判断问需求提出人；不可逆决策、权限或花费问 Decision maker。需求提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
+2. 目标规则：先读 issue 描述里的 `需求提出人 user_id`（子 issue 继承父 issue）；显式写 `unresolved` 时立即回退 Decision maker；没有记录时再用触发评论的 member 作者，再用 `creator_id`（仅 `creator_type == member`），最后回退 Decision maker。业务判断问需求提出人；不可逆决策、权限或花费问 Decision maker。需求提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
 3. 使用所选 tracker adapter 的 `Ask a person and wait` 一节，传入 `issue`、文件中的 `body`，以及触发线程 `thread` 和回复后的 `next`（如有）。由 adapter 负责发布、收件人解析、只过滤目标成员的一次性唤醒和结束本次 run；调用方不得复制 tracker 命令。其他成员的回复只作上下文，不算回答。
 4. 目标成员无回复时按 `orchestrate/PATROL.md` 的固定标记升级表处理。每个提醒、转交、超时标记都带原提问评论 id：2 天提醒一次；4 天停旧目标 wakeup、转 Decision maker（负责人不是原提问 agent 时按 adapter 注册替代 wakeup），原目标迟到回复只作上下文；7 天停掉仍挂着的 wakeup，再按记录的 `resume status` 恢复可逆业务问题并在评论中采用默认答案、通知原提出人和原执行 agent；不可逆、权限或花费问题置 `backlog` 并通知 Decision maker。巡检覆盖有待回答提问的父 issue、子 issue 和无父 issue 的票。
 
