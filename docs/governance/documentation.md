@@ -236,7 +236,7 @@ _Avoid_: adopt, 采用, deploy
 **Rollback**:
 把 Skill 的当前版本恢复到先前一个已发布版本。
 _Avoid_: revert
-（lifecycle.ts:150；operations.ts:169）⚠3
+（lifecycle.ts:154；operations.ts:169）⚠3
 
 **Publication scope**:
 Promote 之后新版本在哪个范围生效：explicit-only、project、user、stable。
