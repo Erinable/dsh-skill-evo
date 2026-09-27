@@ -73,6 +73,18 @@ An issue title already renders as its H1 — start the description with prose or
 
 `multica issue get <id> --output json`, then catch up on the discussion with the two-step comment read above. The issue body alone is usually not the whole instruction; earlier comments often carry the constraints.
 
+## Deliver an artifact
+
+When a file must reach a reader, use the first matching delivery:
+
+1. **The artifact belongs in the repo** (spec, ADR, research note, `CONTEXT.md`) → commit it and open a PR.
+2. **The artifact is a one-off for a reader** (report, questionnaire, handoff doc, screenshot) → attach it to the surface this run answers on:
+   - **On an issue**: `multica issue comment add <issue-id> --content-file ./reply.md --attachment ./report.html`. `--attachment` is repeatable, and the path must sit inside the working directory, not `$TMPDIR`.
+   - **In a chat task**: `multica attachment upload ./report.html`. The server binds it to this task's reply and returns a markdown snippet you may paste on its own line.
+3. **The artifact is short enough to read inline** → put the content in the comment body.
+
+Do not open the artifact for the reader. Do not write an absolute path or a `file://` URL as a clickable link or embedded image. If a surface has no attachment mechanism, say so in words and inline what you can.
+
 ## Mentions are side-effecting
 
 Inside an issue body or comment, these link forms **act**, they do not merely render:
