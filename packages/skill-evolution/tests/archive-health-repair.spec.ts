@@ -1,8 +1,10 @@
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EvolutionService, createObservation, type RuntimeObservation } from '../src/index.js'
+import { withLock } from '../src/locking.js'
 
 const dirs: string[] = []
 
@@ -46,13 +48,51 @@ describe('observation archive health and repair', () => {
     expect(health.find(item => item.path === badSchemaPath)).toMatchObject({ readable: false })
     expect(health.find(item => item.path === tailPath)).toMatchObject({ readable: false, trailingPartial: true })
     await expect(service.observations.readAll()).rejects.toThrow(badJsonPath)
+    await expect(service.observations.append(observation('new'))).rejects.toThrow(badJsonPath)
 
     const report = await service.repair()
     expect(report.jsonl.map(item => item.path)).toEqual(expect.arrayContaining([badJsonPath, badSchemaPath, tailPath]))
     expect(report.jsonl.find(item => item.path === badJsonPath)).toMatchObject({ validRecords: 1, removedInvalidLines: 1 })
     expect(report.jsonl.find(item => item.path === badSchemaPath)).toMatchObject({ validRecords: 0, removedInvalidLines: 1 })
     expect(report.jsonl.find(item => item.path === badJsonPath)?.invalidQuarantine).toBeDefined()
+    expect(report.jsonl.find(item => item.path === badSchemaPath)?.invalidQuarantine).toBeDefined()
     expect((await service.observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept', 'tail'])
     expect(await readFile(foreignPath, 'utf8')).toBe('leave-this-byte-stream-alone')
+    expect((await new EvolutionService({ root }).observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept', 'tail'])
+  })
+
+  it('waits for the observation lock before changing archive bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-archive-lock-'))
+    dirs.push(root)
+    const path = join(root, '.skill-evolution', 'observations.jsonl')
+    const archive = join(root, '.skill-evolution', 'archive')
+    await mkdir(archive, { recursive: true })
+    const segment = join(archive, 'observations.jsonl.2026-09-25T00-00-00.000Z.1.jsonl')
+    await writeFile(segment, 'not-json\n', 'utf8')
+    const before = await readFile(segment)
+    const service = new EvolutionService({ root })
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const lock = withLock(`${path}.lock`, 'test-hold', () => held)
+    await delay(30)
+    const repair = service.repair()
+    await delay(40)
+    expect(await readFile(segment)).toEqual(before)
+    let completed = false
+    void repair.then(() => { completed = true })
+    await delay(20)
+    expect(completed).toBe(false)
+    release()
+    await lock
+    await repair
+    expect(await readFile(segment)).toEqual(Buffer.alloc(0))
+  })
+
+  it('handles health and repair without an archive directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-no-archive-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    expect(await service.health()).toHaveLength(9)
+    expect((await service.repair()).jsonl).toHaveLength(9)
   })
 })
