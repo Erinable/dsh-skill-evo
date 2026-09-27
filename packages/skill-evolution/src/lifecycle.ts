@@ -1,5 +1,5 @@
 import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { LockBusyError, withLock } from './locking.js'
@@ -312,8 +312,14 @@ async function recoverPublication(
 ): Promise<void> {
   const journalPath = join(directory, '.publish.json')
   const journal = await readJsonIfPresent<{ readonly version?: string; readonly contentHash?: string }>(journalPath)
-  if (journal?.version === undefined || journal.contentHash === undefined) return
+  if (typeof journal?.version !== 'string' || journal.contentHash === undefined) return
+  try {
+    assertVersion(journal.version)
+  } catch {
+    return
+  }
   const versionDirectory = join(versionsDirectory, journal.version)
+  if (dirname(resolve(versionDirectory)) !== resolve(versionsDirectory)) return
   const content = await readTextIfPresent(join(versionDirectory, 'SKILL.md'))
   const manifest = await readJsonIfPresent<SkillManifest>(join(versionDirectory, 'manifest.json'))
   if (content === undefined || manifest === undefined) {

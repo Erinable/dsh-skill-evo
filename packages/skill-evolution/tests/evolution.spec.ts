@@ -210,6 +210,29 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     await expect(store.promote(next, { scope: 'project' })).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
   })
 
+  it('does not delete data for an untrusted journal version', async () => {
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    for (const version of ['', '.', '..', '../x', '../../outside']) {
+      const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-journal-guard-'))
+      dirs.push(dir)
+      const root = join(dir, 'api-debugging')
+      const store = new SkillVersionStore(dir)
+      await mkdir(root, { recursive: true })
+      await writeFile(join(root, 'SKILL.md'), base)
+      const initial = createProposal({ id: `journal-guard-${version || 'empty'}`, skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: base, proposedVersion: '1.0.0', candidateContent: base, intent: 'Initial' })
+      await store.promote(initial, { scope: 'project' })
+      const sibling = join(dir, 'outside', 'sibling.txt')
+      await mkdir(join(dir, 'outside'), { recursive: true })
+      await writeFile(sibling, 'keep')
+      await writeFile(join(root, '.publish.json'), `${JSON.stringify({ proposalId: initial.id, version, contentHash: createContentHash(base) })}\n`)
+
+      await expect(store.readCurrent('api-debugging')).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
+      await expect(readdir(join(root, 'versions'))).resolves.toContain('1.0.0')
+      await expect(readFile(sibling, 'utf8')).resolves.toBe('keep')
+      await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('contentHash')
+    }
+  })
+
   it('promotes atomically, preserves prior versions, and rolls back by hash', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-'))
     dirs.push(dir)
