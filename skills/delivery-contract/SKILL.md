@@ -1,6 +1,6 @@
 ---
 name: delivery-contract
-description: "交付契约。接到指派的子 issue 就先读，开 PR、发交付或交接评论之前必须读过；回应评审（PASS / BLOCK）、需要成员拍板提问、发现 spec 有问题时也用。"
+description: "交付契约。接到指派的子 issue 就先读，开 PR、发交付或交接评论之前必须读过；回应评审（PASS / BLOCK）、需要成员拍板提问、发现 spec 有问题、建任何 issue（含「另建跟踪票」）之前查重时也用。"
 ---
 
 执行 agent 在一张子 issue 上交付一个 PR 的完整契约：怎么交付、怎么被评审、怎么提问、怎么交接。Reviewer 按「评审契约」一节执行。
@@ -128,6 +128,39 @@ perl -pi -e 's#\[@?([^\]]*)\]\(mention://(agent|squad)/[^)]*\)#\@$1#g; s#mention
 第一段把 `[@名字](mention://agent/<id>)`、`[@名字](mention://squad/<id>)` 换成纯文本 `@名字`；第二段把剩下裸露的 `mention://agent/`、`mention://squad/` 前缀改成 `mention:‹agent›/`、`mention:‹squad›/`，不再被解析。这条命令对交接 mention 一视同仁，所以交接用的那一行放在清理之后再追加——「交接」一节的交接命令已经按这个顺序做了，交接评论不用再单独跑。
 
 完成判据：发出前执行 `grep -cE 'mention://(agent|squad)/' <正文文件>`，输出等于这条评论**有意**交接的次数：交接评论是 `1`，其余是 `0`。`grep -c` 数的是行，交接 mention 单独占一行。
+
+## 建票前查重
+
+任何 `multica issue create` 之前都先查重：票面要求「另建跟踪票」、Mika 建父 issue 或子 issue、追加修订票都算。`orchestrate` 的「已有子 issue 就不再建」只看一个父 issue，防不住同一问题从两条路径各建一张（SKIL-81：新父 SKIL-80 下还没有子 issue，但同一个 D6 已经有挂在 SKIL-77 下的 SKIL-79，结果两张都开工、各出一个 PR）。
+
+1. **分清要建哪一种票**：父 issue，还是执行票或跟踪票（stage 子 issue、拆票、修订票、「另建跟踪票」都算后一种）。
+2. **定两组关键词**：
+   - **问题关键词**：问题编号（`D6`、`Task 3`）或一句话里的核心名词。它只在同一份来源文档里唯一，换一份文档，`D6`、`Task 1` 就会撞号，所以不能单独作为判据。
+   - **来源锚点**：本票指向的来源，至少取一个：spec 路径 `specs/<slug>/`、代码位置（`state-root.ts:72`）或函数名、来源 issue 的 KEY、设计稿路径。
+
+   请求或描述里点名了现有 KEY（「把 SKIL-79 指派给…」）时，如果要建的票和点名的票**是同一种**（都是执行票或跟踪票），点名的那张就是要用的票，跳到第 5 步复用。建父 issue 时不跳：点名的 KEY 写进父 issue 描述，照常走第 3、4 步，交给父 issue 的首次路由 run 去复用。
+3. **搜**：两组关键词各跑一次，必须带 `--include-closed`（不带时已完成的票搜不出来）：
+   ```bash
+   multica issue search "<关键词>" --include-closed --limit 20 --output json
+   multica issue children <目标父 issue> --output json
+   multica issue children <来源 issue> --output json   # 跟踪票通常挂在来源 issue 下
+   ```
+4. **判定**：从结果里去掉本 issue、目标父 issue、来源 issue。剩下的票，同时满足下面两条才算**重复**：
+   - (a) 标题含问题关键词，或者和要建的票标题说的是同一件事；
+   - (b) 描述里有同一个来源锚点，也就是同一个 `specs/<slug>/`、同一个代码位置或函数，或者同一个来源 KEY。
+
+   只满足一条的（比如别的 spec 的 `Task 1`、别的文档的 `D6`）**不算重复**，在评论里列出来，写明「同号不同源」。建父 issue 时，只和已有的**父 issue**（`parent_issue_id` 为空）比；搜到的执行票、跟踪票不算重复，把它的 KEY 写进父 issue 描述。(a)(b) 看不出来时不自己猜，按所选 tracker adapter 的 `Ask a person and wait` 问成员一个问题，默认答案是「不算重复，新建」。
+5. **处理**（只对第 4 步判定为重复、也就是来源相同的票）：
+
+   | 重复票的状态 | 做法 |
+   |---|---|
+   | 未完成（不是 `done` / `cancelled`） | 复用，不新建：`multica issue update <KEY> --parent <目标父> --stage <N> --description-file ./child.md`，再按需 `assign`、`status todo` |
+   | `done` | 不新建。在本 issue 上写明已由 `<KEY>` 完成；确有遗留时才新建，描述第一行写「续 `<KEY>`」，只写遗留部分 |
+   | `cancelled` | 可以新建，描述里写「替代已取消的 `<KEY>`」 |
+
+6. **建后复查**：所有新票（包括父 issue 和修订票）都先建成 `backlog`，这时不会起 run。建完把第 3 步的搜索再跑一遍：如果出现一张 `created_at` 早于新票、状态不是 `cancelled`、按第 4 步判定为重复的票（并发的另一个 run 刚建的），就把新票置 `cancelled`，按第 5 步复用那张；否则按原计划置 `todo`。已经起了 run 的重复票，只置 `cancelled` 停不下来（SKIL-81 置 `cancelled` 后，Sleuth 的 run 照跑，又把它改回了 `in_review`）。要先用 `multica issue runs <KEY> --active` 找到进行中的 run，执行 `multica issue cancel-task <run-id> --issue <KEY>`，再置 `cancelled`。
+
+完成判据：本次 run 的评论里写了用过的问题关键词、来源锚点和结论（「无重复，新建 `<KEY>`」「复用 `<KEY>`」或「同号不同源：`<KEY>`」）；新建的票在复查时没有更早的同源票；同一个问题关键词加同一个来源锚点下，未取消、未完成的票只有一张。
 
 ## spec 有问题时
 
