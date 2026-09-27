@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
-import { EvolutionService, createContentHash, createObservation, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
+import { EvolutionService, SkillVersionStore, createContentHash, createObservation, createProposal, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
 
 const roots: string[] = []
 
@@ -30,6 +30,23 @@ async function old(path: string): Promise<void> {
 }
 
 describe('repair lock sweep', () => {
+  it('reclaims a stale publication lock so the following promote succeeds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-promote-'))
+    roots.push(root)
+    const content = '---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n'
+    await mkdir(join(root, 'api-debugging'), { recursive: true })
+    await writeFile(join(root, 'api-debugging', 'SKILL.md'), content)
+    const lock = join(root, '.skill-evolution', 'locks', 'api-debugging.lock')
+    await mkdir(join(root, '.skill-evolution', 'locks'), { recursive: true })
+    await writeFile(lock, '')
+    await old(lock)
+    const service = new EvolutionService({ root })
+    const report = await service.repair()
+    expect(report.orphanLocksRemoved).toContain(lock)
+    const proposal = createProposal({ id: 'repair-promote', skillName: 'api-debugging', baseVersion: 'unversioned', baseContent: content, proposedVersion: '1.0.0', candidateContent: content.replace('Base.', 'Recovered.'), intent: 'Recover publication' })
+    await expect(new SkillVersionStore(root).promote(proposal, { scope: 'project' })).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
+  })
+
   it('preserves unrelated project lockfiles while reclaiming explicit JSONL locks', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-root-'))
     roots.push(root)
@@ -114,5 +131,31 @@ describe('repair lock sweep', () => {
     expect(report.locks).toContainEqual(expect.objectContaining({ path: sweep, artifact: 'lock', state: 'skipped', guard, removed: false }))
     expect(report.orphanLocksRemoved).not.toContain(sweep)
     expect(report.locksPreserved).not.toContain(sweep)
+  })
+
+  it('coordinates concurrent repairs sharing an observation directory and removes one stale guard', async () => {
+    const rootA = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-concurrent-a-'))
+    const rootB = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-concurrent-b-'))
+    const shared = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-concurrent-shared-'))
+    roots.push(rootA, rootB, shared)
+    const observationPath = join(shared, 'observations.jsonl')
+    const lock = `${observationPath}.lock`
+    const guard = `${lock}.reclaim`
+    await writeFile(observationPath, '')
+    await writeFile(lock, '')
+    await writeFile(guard, '')
+    await old(lock)
+    await old(guard)
+    const results = await Promise.allSettled([
+      repairEvolutionRoot(rootA, { jsonlPaths: [observationPath], observationsPath: observationPath }),
+      repairEvolutionRoot(rootB, { jsonlPaths: [observationPath], observationsPath: observationPath }),
+    ])
+    expect(results.every(result => result.status === 'fulfilled')).toBe(true)
+    const reports = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+    const guardRemoved = reports.flatMap(report => report.locks).filter(item => item.artifact === 'guard' && item.path === guard && item.removed)
+    const directoryOutcomes = reports.flatMap(report => report.locks).filter(item => item.path === join(shared, '.lock-sweep.lock'))
+    expect(guardRemoved).toHaveLength(1)
+    expect(directoryOutcomes.every(item => item.state === 'skipped' || item.removed === false)).toBe(true)
+    await expect(readFile(guard, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
