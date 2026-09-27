@@ -25,6 +25,6 @@ The two branches produce very different artifacts, so getting this wrong wastes 
 5. **Surface the state.** After every action (logic) or on every variant switch (UI), print or render the full relevant state so the user can see what changed.
 6. **Capture it when done.** Fold any validated decision into the real code, and keep the prototype itself as a **primary source** out of main. How depends on where you run:
    - **Interactive session**: commit it to a throwaway branch and leave a context pointer to that branch on the implementation issue.
-   - **One-shot run** (`MULTICA_TASK_ID` set, or the runtime brief says the task goes terminal when the turn exits): attach the prototype files to an issue comment (`multica issue comment add --attachment`, zip several files first). A task run delivers onto its own task branch only, so a second throwaway branch is not available; the attachment is the primary source.
+   - **One-shot mode** (as defined by `docs/agents/runtime.md`'s `## Which mode am I in`): attach the prototype files to an issue comment (`multica issue comment add --attachment`, zip several files first). A task run delivers onto its own task branch only, so a second throwaway branch is not available; the attachment is the primary source.
 
    Capture the answer too (the verdict and the question it settled) in the issue or a commit. The main branch keeps only the validated decision.

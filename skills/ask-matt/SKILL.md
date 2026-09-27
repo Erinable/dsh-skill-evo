@@ -72,7 +72,7 @@ A **phase** is a chunk of work inside a session: the grilling, the implementatio
 
 - **Continue**: stay put. Costs nothing, loses nothing. **Available under Multica** — within one run this is just carrying on, and it stays the option to rule out first.
 - **`/clear`**: empty the window, when nothing here matters to what's next. **No Multica equivalent.** There is no window to empty: the run ends whole. What replaces it is finishing the turn once the record is on the issue — the next run already starts from nothing.
-- **`/handoff`** writes a portable markdown file. Narrow: only for a **new harness**, a **new directory**, a **colleague**, or forking a side task **mid-phase**. What it buys is portability. **Available, reshaped**: the file is no longer the deliverable, since a runtime-local path reaches nobody. Deliver it as a comment or attachment — see the tracker doc's "report the path" rule.
+- **`/handoff`** writes a portable markdown file. Narrow: only for a **new harness**, a **new directory**, a **colleague**, or forking a side task **mid-phase**. What it buys is portability. **Available, reshaped**: follow `docs/agents/runtime.md`'s `## Delivering a file` section for delivery.
 - **Subagent**: send a tightly-scoped task to its own window and get a report back. **Available under Multica**, and the main lever left. Dispatch in parallel, collect every report **before the turn exits**; one still running when the run ends is orphaned and its work lost.
 - **`/compact`** compresses this context and seeds a fresh session with it. **No Multica equivalent.** Nothing carries a compressed summary into the next run — the issue does that job, and only for what you wrote there.
 
