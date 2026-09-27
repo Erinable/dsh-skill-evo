@@ -154,5 +154,3 @@ export async function sweepLocks(target: { readonly directories: readonly string
 }
 
 export function hasCode(error: unknown, code: string): boolean { return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code }
-export function withFileLock<T>(path: string, operation: () => Promise<T>, waitMs = 5_000): Promise<T> { return withLock(path, 'legacy', operation, { waitMs }) }
-export async function removeDeadLock(path: string): Promise<boolean> { return (await reclaimLock(path)).removed }
