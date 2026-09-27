@@ -3,7 +3,7 @@ import { rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { parseObservation, serializeObservation } from './events.js'
-import { withFileLock } from './locking.js'
+import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
@@ -73,7 +73,7 @@ export class ObservationLog {
   get currentPath(): string { return this.filePath }
 
   async append(event: RuntimeObservation): Promise<boolean> {
-    return this.enqueue(() => withFileLock(`${this.filePath}.lock`, async () => {
+    return this.enqueue(() => withLock(`${this.filePath}.lock`, 'append', async () => {
       await this.ensureInitialized()
       const events = await this.readFacts()
       if (events.some(item => item.id === event.id)) return false
@@ -89,7 +89,7 @@ export class ObservationLog {
   }
 
   async readAll(): Promise<RuntimeObservation[]> {
-    return withFileLock(`${this.filePath}.lock`, async () => {
+    return withLock(`${this.filePath}.lock`, 'read', async () => {
       await this.ensureInitialized()
       return this.readFacts()
     })
@@ -107,7 +107,7 @@ export class ObservationLog {
   }
 
   async rotate(options: { readonly maxBytes: number; readonly retentionDays?: number }): Promise<RetentionResult> {
-    return withFileLock(`${this.filePath}.lock`, async () => rotateFile(this.filePath, options))
+    return withLock(`${this.filePath}.lock`, 'rotate', async () => rotateFile(this.filePath, options))
   }
 
   private async readFacts(): Promise<RuntimeObservation[]> {

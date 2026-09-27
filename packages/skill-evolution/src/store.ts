@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseObservation, serializeObservation } from './events.js'
-import { withFileLock } from './locking.js'
+import { withLock } from './locking.js'
 import type { RuntimeObservation } from './types.js'
 
 export interface ObservationQuery {
@@ -23,7 +23,7 @@ export class JsonlEventStore {
 
   /** Append an observation once; duplicate event IDs are idempotent. */
   async append(event: RuntimeObservation): Promise<boolean> {
-    return this.enqueue(() => withFileLock(`${this.filePath}.lock`, async () => {
+    return this.enqueue(() => withLock(`${this.filePath}.lock`, 'append', async () => {
       await this.ensureInitialized()
       await this.refreshKnownIds()
       if (this.knownIds.has(event.id)) return false
@@ -42,7 +42,7 @@ export class JsonlEventStore {
 
   /** Read all valid observations in file order. */
   async readAll(): Promise<RuntimeObservation[]> {
-    return withFileLock(`${this.filePath}.lock`, async () => {
+    return withLock(`${this.filePath}.lock`, 'read', async () => {
       await this.ensureInitialized()
       const text = await readFile(this.filePath, 'utf8')
       return parseLines(text, parseObservation)
