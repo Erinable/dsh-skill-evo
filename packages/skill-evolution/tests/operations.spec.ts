@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -6,6 +6,7 @@ import {
   EvolutionService,
   OperationError,
   evaluateProposal,
+  proposalRootId,
   promoteProposal,
   proposeSkillChange,
   reviewProposal,
@@ -88,6 +89,14 @@ describe('core maintenance operations', () => {
     expect(published).toMatchObject({ promoted: true, version: '1.1.0', scope: 'project' })
     expect((await service.observations.readAll()).some(item => item.id === `adoption:${proposed.proposal.id}`)).toBe(true)
     expect((await service.proposals.readAll()).some(item => item.id === `${proposed.proposal.id}:promoted`)).toBe(true)
+  })
+
+  it('keeps one root-keyed candidate directory when promoting a ledger record', async () => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    await promoteProposal(service, { proposalRef, scope: 'project' })
+
+    const candidateNames = await readdir(join(root, '.skill-evolution', 'candidates'))
+    expect(candidateNames).toEqual([proposalRootId(proposalRef)])
   })
 
   it.each([true, false])('rejects an unaccepted proposal in %s mode without publication', async dryRun => {

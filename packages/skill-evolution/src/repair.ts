@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
+import { TERMINAL_STATUS_SUFFIXES } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 
 export interface JsonlRepairResult {
@@ -20,6 +21,7 @@ export interface EvolutionRepairReport {
   readonly manifestIssues: readonly string[]
   readonly locksPreserved: readonly string[]
   readonly locks: readonly SweptLock[]
+  readonly legacyCandidateDirectories: readonly string[]
 }
 
 /** Repair append-only files while preserving invalid input in a quarantine file. */
@@ -110,7 +112,23 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
   const manifestIssues = await inspectManifests(root, layout)
-  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
+  const legacyCandidateDirectories = await inspectLegacyCandidateDirectories(layout)
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks, legacyCandidateDirectories }
+}
+
+async function inspectLegacyCandidateDirectories(layout: EvolutionLayout): Promise<string[]> {
+  let entries
+  try {
+    entries = await readdir(layout.candidatesDir, { withFileTypes: true })
+  } catch (error) {
+    if (isMissing(error)) return []
+    throw error
+  }
+  const suffixes = new Set<string>(TERMINAL_STATUS_SUFFIXES)
+  return entries
+    .filter(entry => entry.isDirectory() && suffixes.has(entry.name.slice(entry.name.lastIndexOf(':') + 1)) && entry.name.includes(':'))
+    .map(entry => join(layout.candidatesDir, entry.name))
+    .sort()
 }
 
 async function inspectManifests(root: string, layout: EvolutionLayout): Promise<string[]> {
