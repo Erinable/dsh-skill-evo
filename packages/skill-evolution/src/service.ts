@@ -145,6 +145,7 @@ export class EvolutionService {
   async repair(): Promise<EvolutionRepairReport> {
     const paths = [this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath })
+    await writeFile(this.projectionCursorPath, '{}\n', 'utf8')
     await this.refreshDerived()
     return report
   }

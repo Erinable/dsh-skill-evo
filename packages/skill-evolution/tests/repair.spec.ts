@@ -1,0 +1,118 @@
+import { hostname } from 'node:os'
+import { join } from 'node:path'
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { afterEach, describe, expect, it } from 'vitest'
+import { EvolutionService, createContentHash, createObservation, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
+
+const roots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true })))
+})
+
+function observation(id: string, kind: RuntimeObservation['kind'], payload: Record<string, unknown> = {}): RuntimeObservation {
+  return createObservation({
+    id,
+    kind,
+    occurredAt: '2026-09-25T00:00:00.000Z',
+    sessionId: 'repair-session',
+    taskId: 'repair-task',
+    skill: { name: 'api-debugging', provider: 'filesystem', source: 'project-dsh', contentHash: createContentHash('skill') },
+    correlationIds: [],
+    payload,
+    source: 'runtime',
+  })
+}
+
+async function old(path: string): Promise<void> {
+  await utimes(path, new Date(0), new Date(0))
+}
+
+describe('repair lock sweep', () => {
+  it('preserves unrelated project lockfiles while reclaiming explicit JSONL locks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-root-'))
+    roots.push(root)
+    const projectLocks = ['yarn.lock', 'Cargo.lock', 'Gemfile.lock', 'poetry.lock', 'flake.lock']
+    for (const name of projectLocks) { const path = join(root, name); await writeFile(path, 'not a skill evolution lock'); await old(path) }
+    const jsonl = join(root, 'events.jsonl')
+    const outside = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-outside-'))
+    roots.push(outside)
+    const observationPath = join(outside, 'observations.jsonl')
+    const jsonlLock = `${jsonl}.lock`
+    await writeFile(jsonl, '')
+    await writeFile(jsonlLock, '')
+    await old(jsonlLock)
+    const observationLock = `${observationPath}.lock`
+    await writeFile(observationPath, '')
+    await writeFile(observationLock, '')
+    await old(observationLock)
+    const report = await repairEvolutionRoot(root, { jsonlPaths: [jsonl], observationsPath: observationPath })
+    expect(await Promise.all(projectLocks.map(async name => (await readFile(join(root, name), 'utf8'))))).toHaveLength(5)
+    expect(report.orphanLocksRemoved).toContain(jsonlLock)
+    expect(report.orphanLocksRemoved).toContain(observationLock)
+  })
+
+  it('rebuilds derived records after quarantining a bad derived line', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-derived-'))
+    roots.push(root)
+    const service = new EvolutionService({ root })
+    await service.recordObservation(observation('failure-1', 'skill-load-failed', { error: 'same failure' }))
+    await service.recordObservation(observation('failure-2', 'skill-load-failed', { error: 'same failure' }))
+    const before = await service.refreshDerived()
+    expect(before.failures.length).toBeGreaterThan(0)
+    await writeFile(service.failures.filePath, 'bad-json\n', 'utf8')
+    await service.repair()
+    expect((await service.refreshDerived()).failures.length).toBe(before.failures.length)
+  })
+
+  it('reports lock, guard, tmp states and excludes skipped directory locks from legacy arrays', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-report-'))
+    roots.push(root)
+    const state = join(root, '.skill-evolution')
+    const locks = join(state, 'locks')
+    await mkdir(locks, { recursive: true })
+    const dead = join(locks, 'dead.lock')
+    const live = join(locks, 'live.lock')
+    const foreign = join(locks, 'foreign.lock')
+    const unknown = join(locks, 'unknown.lock')
+    const guard = `${dead}.reclaim`
+    const tmp = `${dead}.token.tmp`
+    await writeFile(dead, '')
+    await old(dead)
+    await writeFile(live, JSON.stringify({ v: 1, token: 'live', pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(process.uptime() * 1000), operation: 'test' }))
+    await writeFile(foreign, JSON.stringify({ v: 1, token: 'foreign', pid: 999999, hostname: 'foreign-host', createdAt: new Date().toISOString(), uptimeMs: 1, operation: 'foreign' }))
+    await writeFile(unknown, '')
+    await writeFile(guard, '')
+    await writeFile(tmp, '')
+    await old(guard)
+    await old(tmp)
+    const report = await repairEvolutionRoot(root, { jsonlPaths: [] })
+    expect(report.locks.some(item => item.artifact === 'lock' && item.path === dead && item.removed)).toBe(true)
+    expect(report.locks.some(item => item.artifact === 'guard' && item.path === guard && item.removed)).toBe(true)
+    expect(report.locks.some(item => item.artifact === 'tmp' && item.path === tmp && item.removed)).toBe(true)
+    expect(report.locks.some(item => item.path === live && item.state === 'held' && !item.removed)).toBe(true)
+    expect(report.locks.some(item => item.path === foreign && item.state === 'foreign' && !item.removed)).toBe(true)
+    expect(report.locks.some(item => item.path === unknown && item.state === 'unknown' && !item.removed)).toBe(true)
+    expect(report.locks.every(item => 'path' in item && 'state' in item && 'removed' in item)).toBe(true)
+    expect(report.orphanLocksRemoved.every(path => report.locks.some(item => item.artifact === 'lock' && item.path === path))).toBe(true)
+    expect(report.locksPreserved.every(path => report.locks.some(item => item.artifact === 'lock' && item.path === path))).toBe(true)
+  })
+
+  it('surfaces a stale directory-lock guard as skipped without treating it as an ordinary lock', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-repair-skip-'))
+    roots.push(root)
+    const state = join(root, '.skill-evolution')
+    await mkdir(state, { recursive: true })
+    const sweep = join(state, '.lock-sweep.lock')
+    const guard = `${sweep}.reclaim`
+    await writeFile(sweep, '')
+    await writeFile(guard, '')
+    await old(sweep)
+    await old(guard)
+    const report = await repairEvolutionRoot(root, { jsonlPaths: [] })
+    expect(report.locks).toContainEqual(expect.objectContaining({ path: sweep, artifact: 'lock', state: 'skipped', guard, removed: false }))
+    expect(report.orphanLocksRemoved).not.toContain(sweep)
+    expect(report.locksPreserved).not.toContain(sweep)
+  })
+})

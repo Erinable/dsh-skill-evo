@@ -89,7 +89,7 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const lockPaths = [...new Set([...options.jsonlPaths, observationsPath].map(path => `${path}.lock`))]
   const stateDir = join(root, '.skill-evolution')
   const locksDir = join(stateDir, 'locks')
-  const directories = [...new Set([root, stateDir, locksDir])]
+  const directories = [...new Set([stateDir, locksDir])]
   const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
   for (const path of options.jsonlPaths) {
@@ -112,7 +112,7 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
     if (!isMissing(error)) throw error
     await rm(cursorPath, { force: true })
   }
-  const lockArtifacts = locks.filter(item => item.artifact === 'lock')
+  const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
   const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
   const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
   const manifestIssues = await inspectManifests(root)
