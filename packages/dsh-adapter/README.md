@@ -31,6 +31,12 @@ The caller must provide stable event IDs. Retrying the same DSH callback with th
 
 `JsonlEventStore` remains available for legacy generic JSONL use, but it only reads the current file and does not provide the archive-aware observation stream. New observation integrations should use `ObservationLog`.
 
+The adapter's public compatibility surface is limited to translating
+`DshObservationInput` into core observations. It accepts any explicit
+`ObservationLog` path, including a user-level store override, and does not
+assume per-Skill `evolution/` directories or a particular core maintenance
+layout.
+
 `runDshComparison()` is the DSH evaluation boundary. It runs base and
 candidate Skill contents in separate temporary workspaces, aborts timed-out
 cases, and preserves tool-call count, token cost, side effects, security

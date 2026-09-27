@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import { join, dirname } from 'node:path'
 import { createContentHash, parseObservation } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
+import { resolveLayout, type EvolutionLayout } from './state-root.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -92,12 +93,11 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
 }
 
 /** Repair projections, stale locks, and skill manifests under an evolution root. */
-export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string }): Promise<EvolutionRepairReport> {
-  const observationsPath = options.observationsPath ?? join(root, '.skill-evolution', 'observations.jsonl')
+export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string; readonly layout?: EvolutionLayout }): Promise<EvolutionRepairReport> {
+  const layout = options.layout ?? resolveLayout({ root, ...(options.observationsPath === undefined ? {} : { observationStore: options.observationsPath }) })
+  const observationsPath = options.observationsPath ?? layout.observations.path
   const lockPaths = [...new Set([...options.jsonlPaths, observationsPath].map(path => `${path}.lock`))]
-  const stateDir = join(root, '.skill-evolution')
-  const locksDir = join(stateDir, 'locks')
-  const directories = [...new Set([stateDir, locksDir])]
+  const directories = [...new Set([layout.stateDir, layout.locksDir])]
   const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
   for (const path of options.jsonlPaths) {

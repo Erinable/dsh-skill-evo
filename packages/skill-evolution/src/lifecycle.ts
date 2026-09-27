@@ -3,11 +3,13 @@ import { join } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { LockBusyError, withLock } from './locking.js'
+import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
 
 export interface SkillVersionStoreOptions {
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
   readonly now?: () => string
+  readonly layout?: EvolutionLayout
 }
 
 export interface CurrentSkill {
@@ -64,7 +66,7 @@ export class SkillVersionStore {
   async writeCandidate(proposal: SkillProposal): Promise<string> {
     assertSkillName(proposal.skillName)
     assertVersion(proposal.proposedVersion)
-    const directory = join(this.root, '.skill-evolution', 'candidates', proposal.id)
+    const directory = this.layout().candidateDir(proposal.id)
     await mkdir(directory, { recursive: true })
     await writeAtomic(join(directory, 'SKILL.md'), proposal.candidateContent)
     await writeAtomic(join(directory, 'proposal.json'), `${JSON.stringify(proposal, null, 2)}\n`)
@@ -106,13 +108,14 @@ export class SkillVersionStore {
     if (options.scope === 'explicit-only') {
       return {
         manifest: this.manifestFor(proposal, options.scope, 'observed'),
-        path: join(this.root, '.skill-evolution', 'candidates', proposal.id, 'SKILL.md'),
+        path: join(this.layout().candidateDir(proposal.id), 'SKILL.md'),
       }
     }
 
     const directory = skillDirectory(this.root, proposal.skillName)
-    await mkdir(join(directory, 'versions'), { recursive: true })
-    const versionDirectory = join(directory, 'versions', proposal.proposedVersion)
+    const versionsDirectory = this.layout().skillVersionsDir(proposal.skillName)
+    await mkdir(versionsDirectory, { recursive: true })
+    const versionDirectory = join(versionsDirectory, proposal.proposedVersion)
     const existingVersion = await readVersionIfPresent(versionDirectory)
     if (existingVersion !== undefined) {
       if (existingVersion.contentHash !== createContentHash(proposal.candidateContent) || current?.manifest.version !== proposal.proposedVersion) {
@@ -123,7 +126,7 @@ export class SkillVersionStore {
     await writeAtomic(join(directory, '.publish.json'), `${JSON.stringify({ proposalId: proposal.id, version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) })}\n`)
     await mkdir(versionDirectory, { recursive: false })
     if (current !== undefined && current.manifest.version !== 'unversioned') {
-      const previousDirectory = join(directory, 'versions', current.manifest.version)
+      const previousDirectory = join(versionsDirectory, current.manifest.version)
       const previous = await readVersionIfPresent(previousDirectory)
       if (previous === undefined) {
         await mkdir(previousDirectory, { recursive: true })
@@ -167,7 +170,7 @@ export class SkillVersionStore {
     })
     if (expected !== undefined) assertExpectedBase(expected, current)
     const directory = skillDirectory(this.root, skillName)
-    const sourceDirectory = join(directory, 'versions', version)
+    const sourceDirectory = join(this.layout().skillVersionsDir(skillName), version)
     const content = await readFile(join(sourceDirectory, 'SKILL.md'), 'utf8')
     const sourceManifest = await readJsonIfPresent<SkillManifest>(join(sourceDirectory, 'manifest.json'))
     if (sourceManifest === undefined) throw new Error(`missing manifest for Skill version ${version}`)
@@ -187,7 +190,7 @@ export class SkillVersionStore {
   async listVersions(skillName: string): Promise<string[]> {
     assertSkillName(skillName)
     try {
-      const entries = await readdir(join(skillDirectory(this.root, skillName), 'versions'), { withFileTypes: true })
+      const entries = await readdir(this.layout().skillVersionsDir(skillName), { withFileTypes: true })
       return entries.filter(entry => entry.isDirectory()).map(entry => entry.name).sort()
     } catch (error) {
       if (isMissingFile(error)) return []
@@ -208,8 +211,9 @@ export class SkillVersionStore {
       if (await readTextIfPresent(join(directory, '.publish.json')) !== undefined) issues.push(join(directory, '.publish.json'))
       if (pointer?.version !== current.manifest.version || pointer?.contentHash !== current.manifest.contentHash) issues.push(join(directory, 'current.json'))
       for (const version of await this.listVersions(entry.name)) {
-        const record = await readVersionIfPresent(join(directory, 'versions', version)).catch(() => undefined)
-        if (record === undefined || record.manifest.contentHash !== record.contentHash) issues.push(join(directory, 'versions', version))
+        const versionPath = join(this.layout().skillVersionsDir(entry.name), version)
+        const record = await readVersionIfPresent(versionPath).catch(() => undefined)
+        if (record === undefined || record.manifest.contentHash !== record.contentHash) issues.push(versionPath)
       }
     }
     return issues
@@ -217,7 +221,7 @@ export class SkillVersionStore {
 
   private withMutationLock<T>(skillName: string, operationName: 'read-current' | 'promote' | 'rollback', operation: () => Promise<T>): Promise<T> {
     const run = this.mutationQueue.then(async () => {
-      const lockPath = join(this.root, '.skill-evolution', 'locks', `${skillName}.lock`)
+      const lockPath = this.layout().publicationLockPath(skillName)
       try {
         return await withLock(lockPath, operationName, operation, { waitMs: 0 })
       } catch (error) {
@@ -249,6 +253,10 @@ export class SkillVersionStore {
 
   private clock(): string {
     return this.options.now?.() ?? new Date().toISOString()
+  }
+
+  private layout(): EvolutionLayout {
+    return this.options.layout ?? resolveLayout({ root: this.root })
   }
 }
 

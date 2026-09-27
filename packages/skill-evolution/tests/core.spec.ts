@@ -19,6 +19,7 @@ import {
   type SkillRef,
   repairJsonlFile,
   rotateJsonl,
+  resolveLayout,
 } from '../src/index.js'
 
 const dirs: string[] = []
@@ -50,6 +51,19 @@ function observation(
     source: 'runtime',
   })
 }
+
+describe('EvolutionLayout', () => {
+  it('preserves the established centralized state layout', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-layout-'))
+    dirs.push(root)
+    const layout = resolveLayout({ root })
+    expect(layout.stateDir).toBe(join(root, '.skill-evolution'))
+    expect(layout.candidateDir('proposal-1')).toBe(join(root, '.skill-evolution', 'candidates', 'proposal-1'))
+    expect(layout.publicationLockPath('api-debugging')).toBe(join(root, '.skill-evolution', 'locks', 'api-debugging.lock'))
+    expect(layout.skillVersionsDir('api-debugging')).toBe(join(root, 'api-debugging', 'versions'))
+    expect(layout.observations.path).toBe(join(root, '.skill-evolution', 'observations.jsonl'))
+  })
+})
 
 describe('JsonlEventStore', () => {
   it('creates an append-only file and ignores duplicate event IDs', async () => {

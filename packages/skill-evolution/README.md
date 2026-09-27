@@ -57,7 +57,10 @@ Operational reporting:
   Markdown proposal artifacts under `.skill-evolution/proposals/` by default.
 - `repair` validates JSONL IDs, quarantines malformed lines, rebuilds the
   projection checkpoint, preserves live publication locks, and reports manifest
-  hash mismatches. `rotate` archives oversized JSONL files with retention.
+  hash mismatches. `repair` and cursor rebuild only see archive segments that
+  still exist; archives removed by explicit retention cannot be recovered.
+  `rotate` archives oversized JSONL files and leaves retention disabled unless
+  `retentionDays` is explicitly supplied.
 - `health` is a read-only readiness probe for file existence, permissions,
   malformed records, byte size, and trailing partial lines.
 - Proposal transitions are recorded with actor, status pair, evidence, hashes,
