@@ -35,27 +35,49 @@ a `DshObservationInput`-compatible object. Returning `undefined` keeps the
 generic `agent-step` fallback for that custom mapper. Mapper failures are logged
 and also fall back to the generic observation.
 
-The bundle does not infer Skill impact, generate proposals, modify Skill files,
-or publish versions.
+The bundle and the `dsh-skill-evolution` executable are adapters over the same
+core maintenance operations. Both parse their own input, call the core
+operation, and render its result; proposal lookup, transitions, evaluation
+artifacts, validation, and publication checks therefore have the same behavior.
+The bundle does not infer Skill impact from arbitrary runtime events, and these
+commands remain outside the model tool catalog.
 
-For in-session maintenance, the bundle contributes the human slash command
-`/skill-evolution observe`, `/skill-evolution failures`, `/skill-evolution metrics`,
-`/skill-evolution health`, `/skill-evolution repair`, and
-`/skill-evolution feedback --kind incorrect --note "..."`. These handlers use
-the current session workspace as the evolution root and remain outside the
-model tool catalog. Full proposal, evaluation, promotion, and rollback flows
-are available through the `dsh-skill-evolution` executable shipped by the core
-package:
+In a DSH session, the bundle contributes the human slash commands
+`/skill-evolution observe`, `/skill-evolution failures`,
+`/skill-evolution metrics`, `/skill-evolution health`,
+`/skill-evolution repair`, `/skill-evolution feedback`,
+`/skill-evolution propose`, `/skill-evolution evaluate`,
+`/skill-evolution accept`, `/skill-evolution reject`,
+`/skill-evolution defer`, `/skill-evolution promote`, and
+`/skill-evolution rollback`. The session workspace is the default evolution
+root. The equivalent executable commands are:
 
 ```bash
 dsh-skill-evolution observe --root /path/to/project
 dsh-skill-evolution failures --root /path/to/project --format markdown
 dsh-skill-evolution feedback --root /path/to/project --session SESSION --kind incorrect --skill api-debugging --note "遗漏代理超时配置"
 dsh-skill-evolution propose --root /path/to/project --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
-dsh-skill-evolution evaluate --root /path/to/project --proposal proposal-id --cases cases.json --output evaluation.json
+dsh-skill-evolution evaluate --root /path/to/project --proposal proposal-id --cases cases.json
 dsh-skill-evolution accept --root /path/to/project --proposal proposal-id --reason "Reviewed evaluation"
-dsh-skill-evolution promote --root /path/to/project --proposal proposal-id --evaluation evaluation.json --scope project
+dsh-skill-evolution promote --root /path/to/project --proposal proposal-id --scope project
 dsh-skill-evolution rollback --root /path/to/project --skill api-debugging --version 1.0.0
 dsh-skill-evolution repair --root /path/to/project
 dsh-skill-evolution rotate --root /path/to/project --max-bytes 10485760 --retention-days 30
+```
+
+`evaluate` writes the artifact to
+`.skill-evolution/evaluations/<proposal-root>.json` by default. `promote` selects
+the latest unexpired artifact for that root; pass `--evaluation PATH` only when
+using an explicit artifact. Valid publication scopes are `explicit-only`,
+`project`, `user`, and `stable`.
+
+The complete bundle flow keeps a quoted multi-word intent as one value and
+uses the same root-based defaults:
+
+```text
+/skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
+/skill-evolution evaluate --proposal proposal-id --cases cases.json
+/skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"
+/skill-evolution promote --proposal proposal-id --scope project --dry-run true
+/skill-evolution promote --proposal proposal-id --scope project
 ```

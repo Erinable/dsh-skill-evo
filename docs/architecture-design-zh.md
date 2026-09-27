@@ -177,7 +177,23 @@ interface SkillEvolutionService {
 
 这些方法分别代表记录、推导、诊断、生成、比较、决策和采用，不提供一个 `evolve()` 方法把所有步骤隐式串起来。
 
-### 2.5 Adoption Coordinator
+### 2.5 Maintenance operations and adapter boundary
+
+维护行为由 `dsh-skill-evolution` core 的 operations seam 提供：
+`proposeSkillChange`、`evaluateProposal`、`reviewProposal`、
+`promoteProposal` 和 `rollbackSkill` 接收已经解析的选项并返回结构化结果。
+CLI 和 DSH bundle 都只是 adapter：负责解析命令参数、创建当前 root 的
+`EvolutionService`、调用同一个 operation，以及渲染成功或带类型错误的结果。
+core 不反向依赖 DSH 或 bundle，因而 proposal 查找、状态转换、评估 artifact
+校验和发布前检查不会在两个入口中分叉。
+
+每个状态变化只通过 `PROPOSAL_TRANSITIONS` 这一张 authoritative transition
+table 校验，并写入一个确定性的
+`decision:transition:<root>:<to>:<updatedAt>` 记录。metrics 从这些
+transition decisions 统计 promoted、rejected 和 rolled-back；历史 action
+records 仍可读取。
+
+### 2.6 Adoption Coordinator
 
 职责：执行显式采用动作，验证采用范围和版本关系，写入 `adoption-applied`，然后请求已有 provider 对后续发现重新观察。
 
@@ -186,7 +202,7 @@ interface SkillEvolutionService {
 - proposal 状态为 `accepted`；
 - base version 仍然是当前采用目标的祖先或明确处理冲突；
 - Skill 文件/目录结构检查通过；
-- 作用域明确：project、user、explicit-only 或 future-session；
+- 作用域明确，并且只能是 `explicit-only`、`project`、`user` 或 `stable`；
 - 写入新版本快照并保留父版本；
 - 记录实际生效时间点和下一次加载边界。
 
@@ -300,19 +316,32 @@ DecisionRecord 是长期维护的核心，不允许只保存最终 patch。被�
 
 ```text
 draft
-  → diagnosed
-  → proposed
-  → locally-checked
-  → needs-observation
-  → accepted
-  → adopted
-
-proposed / locally-checked → rejected
-needs-observation → deferred
-adopted → superseded / reverted
+  → proposed | replayed | observed | rejected | deferred
+proposed
+  → evaluating | rejected | deferred
+evaluating
+  → evaluated | rejected | deferred
+evaluated
+  → accepted | rejected | deferred
+replayed
+  → observed | evaluated | accepted | rejected | deferred
+observed
+  → evaluated | accepted | rejected | deferred
+accepted
+  → promoted | rejected
+promoted
+  → rolled-back
+rejected
+  → observed
+deferred
+  → observed | rejected
 ```
 
-`accepted` 表示决策者同意采用，不表示线上已经证明收益；`adopted` 表示文件或显式版本指针已经改变；`comparatively-shown` 是证据状态，不是生命周期状态。
+上表就是唯一的状态机定义；实现中的 `canTransition`、`assertCanTransition`
+和 `transitionProposal` 都从这张表派生。`accepted` 表示决策者同意采用，
+不表示线上已经证明收益；`promoted` 表示版本已经发布，`rolled-back` 表示
+已恢复到先前版本。每次成功转换写入一个确定性的 transition decision，
+重复写入同一记录不会制造第二条 decision。
 
 ### 4.2 版本和作用域
 
@@ -323,7 +352,6 @@ explicit-only  只能由人工/维护命令显式加载
 project         当前项目后续加载生效
 user            当前用户范围后续加载生效
 stable          进入默认发现路径
-retired         不再默认发现，但版本和历史保留
 ```
 
 候选采用必须写明：
@@ -465,16 +493,21 @@ curator         periodic merge/split/dormant/retired review
 第一版只需要内部或开发者命令，不放进普通模型工具 catalog：
 
 ```text
-dsh skill-evo observe --skill <name> --since <time>
-dsh skill-evo inspect --session <id>
-dsh skill-evo project --observation <id>
-dsh skill-evo diagnose --experience <id>
-dsh skill-evo propose --diagnosis <id>
-dsh skill-evo check --proposal <id>
-dsh skill-evo decide --proposal <id> --decision <...>
-dsh skill-evo adopt --proposal <id> --scope <...>
-dsh skill-evo history --skill <name>
+dsh-skill-evolution observe --root <project>
+dsh-skill-evolution propose --root <project> --skill <name> --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
+dsh-skill-evolution evaluate --root <project> --proposal <id> --cases cases.json
+dsh-skill-evolution accept --root <project> --proposal <id> --reason "Reviewed evaluation"
+dsh-skill-evolution promote --root <project> --proposal <id> --scope project --dry-run
+dsh-skill-evolution promote --root <project> --proposal <id> --scope project
+dsh-skill-evolution rollback --root <project> --skill <name> --version 1.0.0
 ```
+
+`evaluate` 默认把 artifact 写到
+`.skill-evolution/evaluations/<proposal-root>.json`；`promote` 不指定
+`--evaluation` 时选择该 root 的最新未过期 artifact。可用 scope 只有
+`explicit-only`、`project`、`user` 和 `stable`。DSH bundle 以同样的参数
+映射调用上述 core operations，例如先 `propose`、`evaluate`、`accept`，再
+执行一次 `promote --dry-run`，最后执行真实 `promote`。
 
 命令的每一步都应产生 DecisionRecord 或操作日志。不能提供一个无审计的 `--auto-evolve` 直接覆盖生产 Skill。
 
