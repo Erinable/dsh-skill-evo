@@ -384,14 +384,11 @@ export class EvolutionService {
     const lastId = observations.at(-1)?.id
     const fingerprint = createContentHash(observations.map(item => item.id).join('\n'))
     if (cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint) {
-      const existing = await Promise.all([
-        this.experiences.readAll(),
-        this.failures.readAll(),
-        this.clusters.readAll(),
-        this.diagnoses.readAll(),
-      ])
-      if (observations.length === 0 || existing.every(records => records.length > 0)) {
-        return { experiences: existing[0], failures: existing[1], clusters: existing[2], diagnoses: existing[3] }
+      return {
+        experiences: await this.experiences.readAll(),
+        failures: await this.failures.readAll(),
+        clusters: await this.clusters.readAll(),
+        diagnoses: await this.diagnoses.readAll(),
       }
     }
     const workflow = new EvolutionWorkflow()

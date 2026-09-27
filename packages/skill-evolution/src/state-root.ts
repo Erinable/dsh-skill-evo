@@ -1,4 +1,6 @@
 import { appendFile, mkdir, readdir, readFile, stat, writeFile, unlink } from 'node:fs/promises'
+import { rename } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { parseObservation, serializeObservation } from './events.js'
 import { withFileLock } from './locking.js'
@@ -115,11 +117,11 @@ export class ObservationLog {
       const text = await readFile(path, 'utf8')
       if (text.length > 0 && !text.endsWith('\n')) throw new Error(`invalid observation archive (unterminated line): ${path}`)
       for (const line of text.split('\n').filter(Boolean)) {
-        try { addUnique(result, seen, parseObservation(line), path) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
+        try { addUnique(result, seen, parseObservation(line)) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
       }
     }
     const current = await readFile(this.filePath, 'utf8')
-    for (const line of completeLines(current).filter(Boolean)) addUnique(result, seen, parseObservation(line), this.filePath)
+    for (const line of completeLines(current).filter(Boolean)) addUnique(result, seen, parseObservation(line))
     return result
   }
 
@@ -166,16 +168,18 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
     const complete = lastNewline >= 0 ? bytes.subarray(0, lastNewline + 1) : Buffer.alloc(0)
     const tail = lastNewline >= 0 ? bytes.subarray(lastNewline + 1) : bytes
     if (tail.length > 0) {
-      invalidQuarantine = `${path}.invalid-${Date.now()}-${process.pid}`
+      invalidQuarantine = `${path}.invalid-${Date.now()}-${process.pid}-${randomUUID()}`
       await writeFile(invalidQuarantine, tail)
     }
     rotated = join(archiveDir, `${basename(path)}.${new Date().toISOString().replaceAll(':', '-')}.${process.pid}.jsonl`)
-    await writeFile(rotated, complete)
+    const temporary = `${rotated}.tmp-${process.pid}-${randomUUID()}`
+    await writeFile(temporary, complete)
+    await rename(temporary, rotated)
     await writeFile(path, '')
   }
   const deleted: string[] = []
-  if (options.retentionDays !== undefined) {
-    const cutoff = Date.now() - options.retentionDays * 86_400_000
+  {
+    const cutoff = Date.now() - (options.retentionDays ?? 30) * 86_400_000
     for (const archive of await archivePaths(path)) {
       const info = await stat(archive)
       if (info.isFile() && info.mtimeMs < cutoff) { await unlink(archive); deleted.push(archive) }
@@ -185,7 +189,7 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
   return { ...(rotated === undefined ? {} : { rotated }), ...(invalidQuarantine === undefined ? {} : { invalidQuarantine }), deleted, bytes: size?.size ?? 0 }
 }
 
-function addUnique(result: RuntimeObservation[], seen: Set<string>, event: RuntimeObservation, path: string): void {
+function addUnique(result: RuntimeObservation[], seen: Set<string>, event: RuntimeObservation): void {
   if (seen.has(event.id)) return
   seen.add(event.id)
   result.push(event)
