@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
-import { assertFeedbackKind, createContentHash, EvolutionService, ObservationLog, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
+import { assertFeedbackKind, createContentHash, EvolutionService, ObservationLog, OperationError, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -231,7 +231,7 @@ async function executeMaintenanceCommand(invocation, config) {
       const result = await promoteProposal(service, {
         proposalRef: requiredFlag(flags, 'proposal'),
         scope: flags.scope ?? 'project',
-        dryRun: flags['dry-run'] === 'true',
+        dryRun: parseBooleanFlag(flags['dry-run'], 'dry-run'),
         ...(flags.evaluation === undefined ? {} : { evaluationPath: resolve(flags.evaluation) }),
         ...(flags.reason === undefined ? {} : { reason: flags.reason }),
       })
@@ -257,6 +257,13 @@ async function executeMaintenanceCommand(invocation, config) {
 function requiredFlag(flags, name) {
   if (typeof flags[name] !== 'string' || flags[name].length === 0) throw new Error(`missing --${name}`)
   return flags[name]
+}
+
+function parseBooleanFlag(value, name) {
+  if (value === undefined) return false
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new OperationError('invalid-option', `--${name} must be true or false`)
 }
 
 function parseFlags(words) {
