@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import { createContentHash } from './events.js'
-import { withLock, removeDeadLock } from './locking.js'
+import { createContentHash, parseObservation } from './events.js'
+import { sweepLocks, withLock, type SweptLock } from './locking.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -18,6 +18,7 @@ export interface EvolutionRepairReport {
   readonly orphanLocksRemoved: readonly string[]
   readonly manifestIssues: readonly string[]
   readonly locksPreserved: readonly string[]
+  readonly locks: readonly SweptLock[]
 }
 
 /** Repair append-only files while preserving invalid input in a quarantine file. */
@@ -92,25 +93,24 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
 
 /** Repair projections, stale locks, and skill manifests under an evolution root. */
 export async function repairEvolutionRoot(root: string, options: { readonly jsonlPaths: readonly string[]; readonly observationsPath?: string }): Promise<EvolutionRepairReport> {
+  const observationsPath = options.observationsPath ?? join(root, '.skill-evolution', 'observations.jsonl')
+  const lockPaths = [...new Set([...options.jsonlPaths, observationsPath].map(path => `${path}.lock`))]
+  const stateDir = join(root, '.skill-evolution')
+  const locksDir = join(stateDir, 'locks')
+  const directories = [...new Set([stateDir, locksDir])]
+  const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
-  for (const path of options.jsonlPaths) jsonl.push(await repairJsonlFile(path))
-  const { removed, preserved } = await removeOrphanLocks(root)
-  const manifestIssues = await inspectManifests(root)
-  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues }
-}
-
-async function removeOrphanLocks(root: string): Promise<{ removed: string[]; preserved: string[] }> {
-  const directory = join(root, '.skill-evolution', 'locks')
-  let entries
-  try { entries = await readdir(directory) } catch (error) { if (isMissing(error)) return { removed: [], preserved: [] }; throw error }
-  const removed: string[] = []
-  const preserved: string[] = []
-  for (const entry of entries) {
-    const path = join(directory, entry)
-    if (await removeDeadLock(path)) removed.push(path)
-    else preserved.push(path)
+  for (const path of options.jsonlPaths) {
+    const parse = path === observationsPath ? (value: unknown) => {
+      try { parseObservation(JSON.stringify(value)); return true } catch { return false }
+    } : undefined
+    jsonl.push(await repairJsonlFile(path, { ...(parse === undefined ? {} : { parse }) }))
   }
-  return { removed, preserved }
+  const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
+  const removed = lockArtifacts.filter(item => item.removed).map(item => item.path)
+  const preserved = lockArtifacts.filter(item => !item.removed).map(item => item.path)
+  const manifestIssues = await inspectManifests(root)
+  return { jsonl, projectionCursorRebuilt: false, orphanLocksRemoved: removed, locksPreserved: preserved, manifestIssues, locks }
 }
 
 async function inspectManifests(root: string): Promise<string[]> {
