@@ -1,5 +1,5 @@
 import type { DecisionRecord, RuntimeObservation, SkillProposal } from './types.js'
-import { latestProposalsByRoot } from './proposal.js'
+import { latestProposalsByRoot, proposalRootId } from './proposal.js'
 
 export interface SkillUsageMetric {
   readonly skillName: string
@@ -58,9 +58,9 @@ export function aggregateMetrics(
     followUpRate: rate(metric.followUps.size, metric.succeeded.size),
   }))
   const latestProposals = latestProposalsByRoot(proposals)
-  const promoted = new Set(decisions.filter(decision => decision.toStatus === 'promoted' || decision.action === 'promoted').map(decision => decision.proposalId ?? decision.id))
-  const rejected = new Set(decisions.filter(decision => decision.toStatus === 'rejected' || decision.action === 'rejected').map(decision => decision.proposalId ?? decision.id))
-  const rolledBack = new Set(decisions.filter(decision => decision.toStatus === 'rolled-back' || decision.action === 'rollback' || decision.action === 'reverted').map(decision => decision.proposalId ?? decision.id))
+  const promoted = decisionKeys(decisions, 'promoted', 'promoted')
+  const rejected = decisionKeys(decisions, 'rejected', 'rejected')
+  const rolledBack = decisionKeys(decisions, 'rolled-back', 'rollback', 'reverted')
   return {
     observations: events.length,
     sessions: sessions.size,
@@ -73,6 +73,26 @@ export function aggregateMetrics(
     },
     contextCost,
   }
+}
+
+/** Count transition decisions while retaining compatibility with action-only history. */
+function decisionKeys(
+  decisions: readonly DecisionRecord[],
+  status: DecisionRecord['toStatus'],
+  ...legacyActions: DecisionRecord['action'][]
+): Set<string> {
+  return new Set(decisions
+    .filter(decision => decision.toStatus === status || (decision.toStatus === undefined && legacyActions.includes(decision.action)))
+    .map(decision => decision.proposalId === undefined ? legacyDecisionKey(decision) : proposalRootId(decision.proposalId)))
+}
+
+function legacyDecisionKey(decision: DecisionRecord): string {
+  const prefixes = [`decision:${decision.action}:`]
+  if (decision.action === 'promoted') prefixes.push('decision:promote:')
+  if (decision.action === 'rejected') prefixes.push('decision:reject:')
+  if (decision.action === 'rollback' || decision.action === 'reverted') prefixes.push('decision:rollback:')
+  const prefix = prefixes.find(candidate => decision.id.startsWith(candidate))
+  return prefix === undefined ? decision.id : decision.id.slice(prefix.length)
 }
 
 function rate(numerator: number, denominator: number): number {
