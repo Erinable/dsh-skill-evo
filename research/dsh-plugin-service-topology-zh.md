@@ -11,13 +11,14 @@
    - 写法【明说】：提供方继承 Cordis `Service`，调用 `super(ctx, '<key>')`，再用 `declare module '@deepseek-ai/cordis'` 给 `ctx.<key>` 补类型。消费方写 `export const inject = ['<key>']` 或 `static inject = ['<key>']`。
    - 依赖语义【明说】：inject 里的每一项都是硬依赖。缺了任何一项，插件就停在 PENDING，不报错也不启动；服务出现后会自动 apply。可选依赖的写法是用 `ctx.get()` 探测，或者用 `ctx.inject([...], cb)` 包一层子插件。
    - 作用域【明说】：服务注册在所在 profile 进程那棵插件树的 root 上，provider 卸载时服务自动注销。
-   - 作用域【推断】：没有按 session 划分的服务。按 agent 隔离只有一个先例：agent preset，而且要求服务开一个 `isolate` realm。
+   - 按 session 的作用域【明说】：官方机制是 agent preset 加 `isolate` realm，架构文档原文是 “Give one session a different capability set → compose an agent preset; a service row there needs an `isolate` realm”。粒度是这样的：preset 的插件树在声明时按 preset 建一份；session 创建时选定 preset，由 preset 绑定给这个 session 的 agent；realm 里的服务不能泄漏到 root，挂载时的 leak 检查会拒绝。
+   - 按 session 的作用域【推断】：普通插件（不经过 preset）没有「每个 session 一份」的 `provide` 方式。另外，用同一个 preset 的多个 session 共享同一棵 preset 树，所以这里的「按 session」实际上是「按 session 选的 preset」。
    - 三角色约定【明说】：「Service Definition / Provider / Consumer」是 DSH 的官方约定，写在 `AGENTS.md` 和 `docs/glossary.md` 里。拆包规则只有一句：「角色各自演化时才拆」，不强制按 `<capability>-<impl>` 命名。
    - `capability-seams.md` 本身【明说】：它是脚本生成的服务图谱，不是规范原文。
 2. **catalog 刷新接口**
    - 服务上没有【明说】：`ctx.skills` 对外没有公开的 invalidate、refresh 或 reload 方法。
    - 唯一的失效入口【明说】：`registerProvider` 注册时借给该 provider 的 `SkillProviderControl.invalidate(): void`。它不带参数，调用一次会清空整个 registry 的缓存，粒度既不是单个 Skill 也不是 scope。
-   - filesystem provider【明说】：默认用 chokidar 监听 Skill 根目录，外部写入 `SKILL.md` 后，下一个模型 step 就能看到刷新。
+   - filesystem provider【明说】：默认用 chokidar 监听 Skill 根目录，外部写入 `SKILL.md` 后 registry 会失效。模型那一侧只有 name 或 description 变了才会在下一个 step 收到新 catalog；只改正文不会通知模型，下次调用 `skill` 工具时直接读到新正文（见第 2 节）。
    - 对本仓的影响【推断】：`EvolutionServiceOptions.invalidate(skillName, scope)` 在 DSH 里没有签名相同的对应接口；两个参数到了 DSH 侧都用不上；`stable` scope 在 DSH 里没有对应概念。
 3. **进程拓扑**
    - 各 profile 的进程【明说】：
@@ -51,10 +52,15 @@
 
 - 【明说】`provide` 的 key 存在 root 的 isolate 表里。provider 注销时，依赖它的插件会先收到通知并卸载。来源：[`vendor/cordis/src/reflect.ts:277-305`][cordis-reflect-provide]。
 - 【明说】`ctx.isolate(name)` 可以给某个服务开一个独立的 realm，在这个 realm 里换一个实现不会影响父作用域。来源：[`vendor/cordis/src/context.ts:109-125`][cordis-isolate]。
-- 【明说】按 agent 隔离的服务只有一个先例，就是 agent preset，原文是 “a service row there needs an `isolate` realm”。来源：[`docs/architecture.md:145`][arch-145]。代码里有对应的强制检查：[`packages/preset/agent-preset-registry/src/mount.ts:258-267`][preset-mount]。
+- 【明说】按 session 使用不同服务集合，官方给的机制是 agent preset。架构文档的原文是 “Give one session a different capability set | compose an agent preset; a service row there needs an `isolate` realm”，来源：[`docs/architecture.md:145`][arch-145]。
+- 【明说】这个机制的粒度如下：
+  - 每个 preset 声明时就建好一个 registry 自有的 scope 和一棵内存里的 Loader 树。插件注册继承 preset 的 scope，可见性由 Agent scope 的父链接控制。来源：[`packages/preset/agent-preset-registry/README.md:56`][preset-readme-56]。
+  - 新 session 在创建时解析 preset，先看用户选的默认值，再回退到部署的 `default`。来源：[`README.md:46`][preset-readme-46]。
+  - 挂载时会审计 “globally leaked services”，发现泄漏就拒绝挂载。来源：[`README.md:58`][preset-readme-58]。代码里的对应检查会抛错 `Preset services require isolate realms`，见 [`packages/preset/agent-preset-registry/src/mount.ts:258-267`][preset-mount]。
 - 【明说】`agent.ctx` 不会复制服务，它只给注册打一个 scope 标签。架构文档里写的规则是 “Scope a registration to one agent → use that agent's `agent.ctx`”。来源：[`docs/architecture.md:162`][arch-162]。
 - 【推断】一次 `dsh --profile <name>` 启动会组合出一棵插件树，服务就挂在这棵树的 root 上，所以这里说的「全局」实际上是按进程和 profile 划分的。依据：[`docs/architecture.md:15-27`][arch-profiles]。
-- 【查不到】「按 session」的服务作用域。查过的地方：`vendor/cordis/src`，那里没有 fork API，生命周期单位是 Fiber；还查过 `docs/architecture.md`、`packages/core/scope`。
+- 【推断】除了 preset 这条路，普通插件没有「每个 session 一份」的 `provide` 方式。依据：Cordis 里生命周期的单位是 Fiber，没有按 session fork 服务的 API（`vendor/cordis/src`）；`agent.ctx` 只给注册打 scope 标签，不复制服务（见上一条）。
+- 【推断】用同一个 preset 的多个 session 共享同一棵 preset 树（README:56 说树是按声明建的，Agent 持有它的引用），所以「按 session」隔离的实际单位是「session 选中的 preset」。如果要求每个 session 各有一份独立的服务实例，按现有文档做不到；这一点我没有在代码里验证。
 
 ### 消费方与依赖缺失
 
@@ -220,6 +226,9 @@
 [arch-desktop]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/docs/architecture.md#L55
 [desktop-readme-5]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/apps/desktop/README.md#L5
 [preset-mount]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/preset/agent-preset-registry/src/mount.ts#L258-L267
+[preset-readme-46]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/preset/agent-preset-registry/README.md#L46
+[preset-readme-56]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/preset/agent-preset-registry/README.md#L56
+[preset-readme-58]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/preset/agent-preset-registry/README.md#L58
 [tool-bash]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/shell/tool-bash/src/index.ts#L34
 [dsh-agents-138]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/AGENTS.md#L138
 [glossary]: https://github.com/deepseek-ai/deepseek-harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/docs/glossary.md#L7-L9
