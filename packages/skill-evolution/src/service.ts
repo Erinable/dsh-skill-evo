@@ -8,7 +8,7 @@ import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInp
 import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
-import { repairEvolutionRoot, repairJsonlFile, repairJsonlFileUnlocked, type EvolutionRepairReport } from './repair.js'
+import { repairEvolutionRoot, repairJsonlFileUnlocked, type EvolutionRepairReport, type JsonlRepairResult } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
@@ -149,18 +149,17 @@ export class EvolutionService {
 
   async repair(): Promise<EvolutionRepairReport> {
     const paths = [this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
-    const jsonl = []
+    const jsonl: JsonlRepairResult[] = []
+    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath })
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
       for (const path of await archivePaths(this.observations.filePath)) {
         jsonl.push(await repairJsonlFileUnlocked(path, { parse: isObservationValue }))
       }
     })
-    for (const path of paths) jsonl.push(await repairJsonlFile(path))
-    const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: [], observationsPath: this.observations.filePath })
     await writeFile(this.projectionCursorPath, '{}\n', 'utf8')
     await this.refreshDerived()
-    return { ...report, jsonl, projectionCursorRebuilt: true }
+    return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true }
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
