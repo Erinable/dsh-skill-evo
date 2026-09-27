@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
-import { assertFeedbackKind, createContentHash, EvolutionService, JsonlEventStore, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
+import { assertFeedbackKind, createContentHash, EvolutionService, ObservationLog, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -121,7 +121,7 @@ function mapTurnEnd(base, event) {
  */
 export function apply(ctx, config = {}) {
   const storePath = config.storePath ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'skill-evolution', 'events.jsonl')
-  const adapter = new DshEvolutionAdapter(new JsonlEventStore(storePath))
+  const adapter = new DshEvolutionAdapter(new ObservationLog(storePath))
   const defaultMapper = createDefaultEventMapper()
   let writeQueue = Promise.resolve()
 

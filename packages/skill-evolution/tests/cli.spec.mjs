@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -88,5 +88,37 @@ describe('CLI maintenance lifecycle', () => {
     const secondAccepted = JSON.parse((await run(root, 'accept', '--proposal', `${second.id}:evaluated`, '--reason', 'Review failed gate')).stdout)
     const failedGate = await run(root, 'promote', '--proposal', secondAccepted.id, '--dry-run')
     expect(failedGate.stderr).toContain('gate-failed')
+  })
+
+  it('rotates the configured store, honors file precedence, and makes retention explicit', async () => {
+    const root = await setup()
+    const store = join(root, 'custom-events.jsonl')
+    const override = join(root, 'override-events.jsonl')
+    await writeFile(store, 'store-content\n', 'utf8')
+    await writeFile(override, 'override-content\n', 'utf8')
+
+    const storeRotation = await run(root, 'rotate', '--root', root, '--store', store, '--max-bytes', '1')
+    expect(storeRotation.code).toBe(0)
+    expect(JSON.parse(storeRotation.stdout).rotated).toContain(join('archive', 'custom-events.jsonl.'))
+
+    const precedence = await run(root, 'rotate', '--root', root, '--store', store, '--file', override, '--max-bytes', '1')
+    expect(precedence.code).toBe(0)
+    expect(JSON.parse(precedence.stdout).rotated).toContain(join('archive', 'override-events.jsonl.'))
+
+    const oldStoreArchive = join(root, 'archive', 'custom-events.jsonl.2000-01-01T00-00-00.000Z.1.jsonl')
+    const oldOtherArchive = join(root, 'archive', 'other-events.jsonl.2000-01-01T00-00-00.000Z.1.jsonl')
+    await writeFile(oldStoreArchive, '', 'utf8')
+    await writeFile(oldOtherArchive, '', 'utf8')
+    await utimes(oldStoreArchive, new Date('2000-01-01'), new Date('2000-01-01'))
+    await utimes(oldOtherArchive, new Date('2000-01-01'), new Date('2000-01-01'))
+
+    const noRetention = await run(root, 'rotate', '--root', root, '--store', store, '--max-bytes', '999999')
+    expect(JSON.parse(noRetention.stdout).deleted).toEqual([])
+    expect(await stat(oldStoreArchive)).toBeTruthy()
+
+    const withRetention = await run(root, 'rotate', '--root', root, '--store', store, '--max-bytes', '999999', '--retention-days', '30')
+    expect(JSON.parse(withRetention.stdout).deleted).toContain(oldStoreArchive)
+    await expect(stat(oldStoreArchive)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await stat(oldOtherArchive)).toBeTruthy()
   })
 })
