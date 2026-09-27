@@ -51,9 +51,11 @@
 
 **怎么区分成员和 agent**：agent 和成员在 GitHub 上用的是同一个账号，不能按作者区分，只能按正文区分。agent 写到 GitHub 的评论只有 Reviewer 的评审结论，第一行固定是 `评审结论：`（`delivery-contract`「评审契约」）。所以下面三类都算成员意见：
 
-- PR 评论（`gh api repos/{owner}/{repo}/issues/<n>/comments`），正文不以 `评审结论：` 开头；
-- review（`gh api repos/{owner}/{repo}/pulls/<n>/reviews`），`state` 为 `CHANGES_REQUESTED`，或正文非空且不以 `评审结论：` 开头。正文为空的 `APPROVED` / `COMMENTED` 不算，后者的内容在行内评论里；
-- 行内评论（`gh api repos/{owner}/{repo}/pulls/<n>/comments`），全部算，agent 不写行内评论。
+- PR 评论（`gh api --paginate repos/{owner}/{repo}/issues/<n>/comments`），正文不以 `评审结论：` 开头；
+- review（`gh api --paginate repos/{owner}/{repo}/pulls/<n>/reviews`），`state` 为 `CHANGES_REQUESTED`，或正文非空且不以 `评审结论：` 开头。正文为空的 `APPROVED` 无可转发内容，`COMMENTED` 的正文在行内评论里、由行内那条取，两者都不算；
+- 行内评论（`gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`），全部算，agent 不写行内评论。
+
+三条读取都要带 `--paginate`：`gh api` 默认只返第一页（每页 30 条），一张 PR 多轮返工加每日重扫很容易超过，漏页就把成员意见静默丢掉，正好抵消这一查的意义。`--paginate` 会把各页拼接，配 `--jq` 照常用。
 
 对象：`gh pr list --state open --json number,title,url` 的每个 PR。
 
@@ -74,7 +76,7 @@
    负责人不是 agent，或 issue 已是 `done` / `cancelled` 时，照样转发，但不 @，列入摘要。
 5. 列入当天摘要：「PR #<n> 有 <k> 条 GitHub 意见，已转到 <KEY> 并交回 <执行 agent 名>」。
 
-完成判据：每个 `OPEN` PR 上的每条成员意见，其 `html_url` 都出现在对应 issue 的一条 `GitHub 意见：#<n>` 评论里，且同一条意见只转发、只 @ 过一次。
+完成判据：三条 `gh api` 读取都带 `--paginate` 取全；每个 `OPEN` PR 上的每条成员意见，其 `html_url` 都出现在对应 issue 的一条 `GitHub 意见：#<n>` 评论里，且同一条意见只转发、只 @ 过一次。
 
 ## 摘要格式
 
