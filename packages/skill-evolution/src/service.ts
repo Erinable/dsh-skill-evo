@@ -11,6 +11,7 @@ import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
 import { repairEvolutionRoot, repairJsonlFile, type EvolutionRepairReport } from './repair.js'
 import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withFileLock } from './locking.js'
+import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import type {
   DecisionRecord,
   FeedbackKind,
@@ -26,12 +27,13 @@ import type {
   EvaluationPolicy,
   Attribution,
   EvaluationArtifact,
+  PublicationScope,
 } from './types.js'
 
 export interface EvolutionServiceOptions {
   readonly root: string
   readonly store?: string
-  readonly invalidate?: (skillName: string, scope: 'project' | 'user' | 'stable') => void | Promise<void>
+  readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
   readonly evaluationPolicy?: EvaluationPolicy
   readonly operator?: string
   readonly evaluationTtlMs?: number
@@ -85,6 +87,7 @@ export class EvolutionService {
     readonly note: string
     readonly source?: 'user' | 'maintainer'
   }): Promise<FeedbackRecord> {
+    const kind = assertFeedbackKind(input.kind)
     const note = redactSensitiveText(input.note.trim())
     if (note.length === 0) throw new Error('feedback note must not be empty')
     const record: FeedbackRecord = {
@@ -95,7 +98,7 @@ export class EvolutionService {
       correlationIds: [...input.correlationIds ?? []],
       ...(input.stepId === undefined ? {} : { stepId: input.stepId }),
       ...(input.toolCallId === undefined ? {} : { toolCallId: input.toolCallId }),
-      kind: input.kind,
+      kind,
       ...(input.attribution === undefined ? {} : { attribution: input.attribution }),
       attributionStatus: input.attributionStatus ?? (input.attribution === undefined ? 'pending' : 'accepted'),
       attributedBy: input.attributedBy ?? (input.source === 'user' ? 'rule' : 'human'),
@@ -236,9 +239,10 @@ export class EvolutionService {
   async promote(
     proposal: SkillProposal,
     evaluation: SkillEvalResult,
-    scope: 'explicit-only' | 'project' | 'user' | 'stable',
+    scope: PublicationScope,
     reason = 'evaluation gate passed',
   ): Promise<void> {
+    assertPublicationScope(scope)
     assertCanTransition(proposal.status, 'promoted')
     const artifact = await this.requireEvaluationArtifact(proposal, evaluation)
     const verifiedEvaluation = artifact.result
