@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir, uptime } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   EvolutionWorkflow,
@@ -216,6 +217,43 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     await import('node:fs/promises').then(fs => fs.mkdir(join(dir, '.skill-evolution', 'locks'), { recursive: true }))
     await import('node:fs/promises').then(fs => fs.writeFile(join(dir, '.skill-evolution', 'locks', 'api-debugging.lock'), 'held'))
     await expect(new SkillVersionStore(dir).promote(proposal, { scope: 'project' })).rejects.toThrow('already in progress')
+  })
+
+  it('reports the live publication owner without reclaiming it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-live-lock-'))
+    dirs.push(dir)
+    const root = join(dir, 'api-debugging')
+    await mkdir(root, { recursive: true })
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    await writeFile(join(root, 'SKILL.md'), base)
+    const proposal = createProposal({ id: 'live-locked', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: base.replace('Base.', 'Next.'), intent: 'Next' })
+    const lockPath = join(dir, '.skill-evolution', 'locks', 'api-debugging.lock')
+    await mkdir(join(dir, '.skill-evolution', 'locks'), { recursive: true })
+    await writeFile(lockPath, JSON.stringify({ v: 1, token: 'live', pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
+    await expect(new SkillVersionStore(dir).promote(proposal, { scope: 'project' })).rejects.toThrow(new RegExp(`already in progress.*pid ${process.pid}.*operation promote`))
+    await expect(readFile(lockPath, 'utf8')).resolves.toContain('"token":"live"')
+  })
+
+  it('reclaims a dead publication lock before recovering a completed journal', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-recovery-'))
+    dirs.push(dir)
+    const store = new SkillVersionStore(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const proposal = createProposal({ id: 'recoverable', skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: base, proposedVersion: '1.0.0', candidateContent: base.replace('Base.', 'Recovered.'), intent: 'Recover' })
+    await mkdir(join(dir, 'api-debugging'), { recursive: true })
+    await writeFile(join(dir, 'api-debugging', 'SKILL.md'), base)
+    await store.promote(proposal, { scope: 'project' })
+    const root = join(dir, 'api-debugging')
+    const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
+    await writeFile(join(root, '.publish.json'), JSON.stringify({ proposalId: proposal.id, version: '1.0.0', contentHash: manifest.contentHash }))
+    await writeFile(join(root, 'SKILL.md'), base)
+    await writeFile(join(root, 'current.json'), JSON.stringify({ version: 'stale', contentHash: createContentHash(base) }))
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid
+    if (!deadPid) throw new Error('child pid unavailable')
+    await writeFile(join(dir, '.skill-evolution', 'locks', 'api-debugging.lock'), JSON.stringify({ v: 1, token: 'dead', pid: deadPid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
+    expect((await store.readCurrent('api-debugging'))?.content).toContain('Recovered.')
+    await expect(readFile(join(root, '.publish.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(JSON.parse(await readFile(join(root, 'current.json'), 'utf8')).version).toBe('1.0.0')
   })
 
   it('analyzes overlap and keeps curator decisions append-only', () => {

@@ -1,7 +1,8 @@
-import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createContentHash } from './events.js'
 import { validateSkillCandidate, validateSkillDocument } from './evaluator.js'
+import { LockBusyError, withLock } from './locking.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
 
 export interface SkillVersionStoreOptions {
@@ -29,7 +30,7 @@ export class SkillVersionStore {
   private mutationQueue: Promise<void> = Promise.resolve()
 
   async readCurrent(skillName: string): Promise<CurrentSkill | undefined> {
-    return this.withMutationLock(skillName, () => this.readCurrentUnlocked(skillName))
+    return this.withMutationLock(skillName, 'read-current', () => this.readCurrentUnlocked(skillName))
   }
 
   private async readCurrentUnlocked(skillName: string): Promise<CurrentSkill | undefined> {
@@ -78,7 +79,7 @@ export class SkillVersionStore {
     },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
-    return this.withMutationLock(proposal.skillName, () => this.promoteUnlocked(proposal, options))
+    return this.withMutationLock(proposal.skillName, 'promote', () => this.promoteUnlocked(proposal, options))
   }
 
   private async promoteUnlocked(
@@ -149,7 +150,7 @@ export class SkillVersionStore {
     options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
-    return this.withMutationLock(skillName, () => this.rollbackUnlocked(skillName, version, options))
+    return this.withMutationLock(skillName, 'rollback', () => this.rollbackUnlocked(skillName, version, options))
   }
 
   private async rollbackUnlocked(
@@ -214,22 +215,17 @@ export class SkillVersionStore {
     return issues
   }
 
-  private withMutationLock<T>(skillName: string, operation: () => Promise<T>): Promise<T> {
+  private withMutationLock<T>(skillName: string, operationName: 'read-current' | 'promote' | 'rollback', operation: () => Promise<T>): Promise<T> {
     const run = this.mutationQueue.then(async () => {
       const lockPath = join(this.root, '.skill-evolution', 'locks', `${skillName}.lock`)
-      await mkdir(join(this.root, '.skill-evolution', 'locks'), { recursive: true })
-      let handle
       try {
-        handle = await open(lockPath, 'wx')
+        return await withLock(lockPath, operationName, operation, { waitMs: 0 })
       } catch (error) {
-        if (isExists(error)) throw new Error(`Skill publication already in progress for "${skillName}"`)
-        throw error
-      }
-      try {
-        return await operation()
-      } finally {
-        await handle.close()
-        await unlink(lockPath).catch(() => undefined)
+        if (!(error instanceof LockBusyError)) throw error
+        const owner = 'owner' in error.state ? error.state.owner : undefined
+        const diagnostics = owner === undefined ? '' : ` (pid ${owner.pid}, operation ${owner.operation ?? 'unknown'})`
+        const repair = error.guard === undefined ? '' : `; stale reclaim guard: ${error.guard}; run repair`
+        throw new Error(`Skill publication already in progress for "${skillName}"${diagnostics}${repair}`)
       }
     })
     this.mutationQueue = run.then(() => undefined, () => undefined)
@@ -321,8 +317,4 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 
 function isMissingFile(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
-}
-
-function isExists(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST'
 }
