@@ -341,6 +341,39 @@ describe('phase workflow orchestration', () => {
     expect((await service.observations.query({ kind: 'adoption-applied' }))[0]?.payload).toMatchObject({ proposalId: 'service-proposal', effectiveAt: 'next-load' })
   })
 
+  it('writes one deterministic transition decision per lifecycle edge', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-transition-decisions-'))
+    dirs.push(dir)
+    const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const candidate = base.replace('Base.', 'Improved.')
+    await mkdir(join(dir, 'api-debugging'), { recursive: true })
+    await writeFile(join(dir, 'api-debugging', 'SKILL.md'), base)
+    const service = new EvolutionService({ root: dir })
+    const proposal = transitionProposal(createProposal({ id: 'decision-lifecycle', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Improve' }), 'proposed')
+    const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
+    const evaluated = (await service.proposals.readAll()).find(item => item.id === 'decision-lifecycle:evaluated')!
+    await service.acceptProposal(evaluated, 'reviewed')
+    const accepted = (await service.proposals.readAll()).find(item => item.id === 'decision-lifecycle:accepted')!
+    await service.promote(accepted, evaluation, 'project')
+
+    const decisions = await service.decisions.readAll()
+    expect(decisions.filter(item => item.toStatus === 'evaluated')).toHaveLength(1)
+    expect(decisions.filter(item => item.toStatus === 'accepted')).toHaveLength(1)
+    expect(decisions.filter(item => item.toStatus === 'promoted')).toHaveLength(1)
+    expect(decisions.every(item => !/^decision:(evaluate|accept|promote):/.test(item.id))).toBe(true)
+    expect(await service.decisions.append(decisions.find(item => item.toStatus === 'accepted')!)).toBe(false)
+    expect(await service.decisions.readAll()).toHaveLength(decisions.length)
+  })
+
+  it('deduplicates transition metrics with legacy action-only decisions', () => {
+    const decisions = [
+      { id: 'decision:transition:proposal-1:promoted:2026-09-25T00:00:00.000Z', proposalId: 'proposal-1', skillName: 'api-debugging', action: 'promoted' as const, reason: 'done', evidenceIds: [], fromStatus: 'accepted' as const, toStatus: 'promoted' as const, createdAt: '2026-09-25T00:00:00.000Z' },
+      { id: 'decision:promote:proposal-1', skillName: 'api-debugging', action: 'promoted' as const, reason: 'legacy', evidenceIds: [], createdAt: '2026-09-25T00:00:00.000Z' },
+      { id: 'decision:rejected:proposal-2', skillName: 'api-debugging', action: 'rejected' as const, reason: 'legacy', evidenceIds: [], createdAt: '2026-09-25T00:00:00.000Z' },
+    ]
+    expect(aggregateMetrics([], [], decisions).proposals).toEqual({ total: 0, promoted: 1, rejected: 1, rolledBack: 0 })
+  })
+
   it('rejects an evaluation artifact that is missing or bound to another candidate', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-artifact-'))
     dirs.push(dir)
