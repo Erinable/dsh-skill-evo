@@ -8,12 +8,12 @@ The workspace owner is the decision maker. Resolve the owner through the tracker
 
 ## Subscribers
 
-The default subscriber set is the request initiator plus the decision maker, deduplicated by `user_id`:
+The default subscriber set is the request initiator plus the decision maker, deduplicated by `user_id`. The canonical issue-description line is `需求提出人 user_id: <member-user-id>`; parent creation writes it and every child copies it into `child.md`.
 
-- **Request initiator**: the chat initiator for a chat-created request, or the member who authored the triggering comment for an issue run.
+- **Request initiator**: resolve in this order: a valid `需求提出人 user_id` line already recorded in the issue description; if the line says `unresolved`, use the decision maker immediately; otherwise use the member who authored the triggering comment, then `creator_id` only when `creator_type == member`, then the decision maker. The `creator_type == member` case is safe because the platform has established that the id is a member, and is the deliberate exception to ADR-0012's old agent-id guard.
 - **Decision maker**: the workspace owner from the `Decision maker` section above.
 
-When no member request initiator can be resolved, subscribe only the decision maker. A parent and every child issue use this same set. Resolve each person through the tracker adapter's workspace member query and pass `user_id`; membership ids, agent ids, `creator_id`, and `assignee_id` are not substitutes.
+When chat context cannot provide a member id, write `需求提出人 user_id: unresolved (fallback to Decision maker)` instead of inventing an id. When no valid member request initiator can be resolved, subscribe only the decision maker. A parent and every child issue use this same set. Resolve each person through the tracker adapter's workspace member query and pass `user_id`; membership ids and agent ids are not substitutes.
 
 ## Labels in this workspace
 
