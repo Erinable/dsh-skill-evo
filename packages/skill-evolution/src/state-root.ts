@@ -1,8 +1,9 @@
-import { appendFile, mkdir, readdir, readFile, stat, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile, unlink } from 'node:fs/promises'
 import { rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { createContentHash, parseObservation, serializeObservation } from './events.js'
+import { appendFrames, quarantinePath, readFrames, splitFrames } from './jsonl.js'
 import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
@@ -113,7 +114,7 @@ export class ObservationLog {
       await this.ensureInitialized()
       const events = await this.readFacts()
       if (events.some(item => item.id === event.id)) return false
-      await appendFile(this.filePath, serializeObservation(event), 'utf8')
+      await appendFrames(this.filePath, [serializeObservation(event).slice(0, -1)])
       return true
     }))
   }
@@ -160,10 +161,10 @@ export class ObservationLog {
       const cached = this.archiveCache.get(path)
       let events = cached?.events
       if (cached?.signature !== signature) {
-        const text = await readFile(path, 'utf8')
-        if (text.length > 0 && !text.endsWith('\n')) throw new Error(`invalid observation archive (unterminated line): ${path}`)
+        const { lines, tail } = await readFrames(path)
+        if (tail.length > 0) throw new Error(`invalid observation archive (unterminated line): ${path}`)
         const parsed: RuntimeObservation[] = []
-        for (const line of text.split('\n').filter(Boolean)) {
+        for (const line of lines) {
           try { parsed.push(parseObservation(line)) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
         }
         events = parsed
@@ -171,8 +172,8 @@ export class ObservationLog {
       }
       for (const event of events ?? []) addUnique(result, seen, event)
     }
-    const current = await readFile(this.filePath, 'utf8')
-    for (const line of completeLines(current).filter(Boolean)) addUnique(result, seen, parseObservation(line))
+    const current = await readFrames(this.filePath)
+    for (const line of current.lines) addUnique(result, seen, parseObservation(line))
     return result
   }
 
@@ -215,11 +216,10 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
   let invalidQuarantine: string | undefined
   if (current !== undefined && current.size >= options.maxBytes) {
     const bytes = await readFile(path)
-    const lastNewline = bytes.lastIndexOf(0x0a)
-    const complete = lastNewline >= 0 ? bytes.subarray(0, lastNewline + 1) : Buffer.alloc(0)
-    const tail = lastNewline >= 0 ? bytes.subarray(lastNewline + 1) : bytes
+    const { tail } = splitFrames(bytes)
+    const complete = bytes.subarray(0, bytes.length - tail.length)
     if (tail.length > 0) {
-      invalidQuarantine = `${path}.invalid-${Date.now()}-${process.pid}-${randomUUID()}`
+      invalidQuarantine = quarantinePath(path)
       await writeFile(invalidQuarantine, tail)
     }
     rotated = join(archiveDir, `${basename(path)}.${new Date().toISOString().replaceAll(':', '-')}.${process.pid}.jsonl`)
@@ -244,12 +244,6 @@ function addUnique(result: RuntimeObservation[], seen: Set<string>, event: Runti
   if (seen.has(event.id)) return
   seen.add(event.id)
   result.push(event)
-}
-
-function completeLines(text: string): string[] {
-  const lines = text.split('\n')
-  if (lines.at(-1) !== '') lines.pop()
-  return lines
 }
 
 function isMissingFile(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT' }

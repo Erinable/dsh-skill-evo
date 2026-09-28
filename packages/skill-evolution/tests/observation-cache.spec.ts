@@ -73,7 +73,7 @@ describe('ObservationLog archive cache', () => {
     await store.append(observation('second'))
 
     expect(readPaths.filter(candidate => candidate === archive)).toHaveLength(1)
-    expect(readPaths.filter(candidate => candidate === path)).toHaveLength(2)
+    expect(readPaths.filter(candidate => candidate === path)).toHaveLength(4)
   })
 
   it('refreshes cache after archive addition, same-name replacement, and deletion', async () => {

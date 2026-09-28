@@ -245,6 +245,31 @@ describe('ObservationLog state root', () => {
     expect((await readdir(join(dir, 'archive'))).some(name => name.startsWith('custom-events.jsonl.'))).toBe(true)
   })
 
+  it('quarantines a current tail before appending and keeps the new observation through repair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-observation-tail-'))
+    dirs.push(dir)
+    const service = new EvolutionService({ root: dir })
+    const path = service.observations.filePath
+    const first = observation('first', 'agent-step')
+    const second = observation('second', 'agent-step')
+    await service.recordObservation(first)
+    const tail = Buffer.from('{"id":"second","torn":"abcdefg')
+    expect(tail).toHaveLength(30)
+    await writeFile(path, Buffer.concat([await readFile(path), tail]))
+
+    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['first'])
+    expect(await service.recordObservation(second)).toBe(true)
+    expect(await service.recordObservation(second)).toBe(false)
+    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['first', 'second'])
+    const quarantines = (await readdir(join(dir, '.skill-evolution'))).filter(name => name.startsWith('observations.jsonl.invalid-'))
+    expect(quarantines).toHaveLength(1)
+    expect(await readFile(join(dir, '.skill-evolution', quarantines[0]))).toEqual(tail)
+
+    const report = await service.repair()
+    expect(report.jsonl.find(item => item.path === path)?.removedInvalidLines).toBe(0)
+    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['first', 'second'])
+  })
+
   it.each([
     ['bad JSON', 'not-json'],
     ['invalid schema', JSON.stringify({ id: 'bad', schemaVersion: 99 })],
@@ -258,6 +283,7 @@ describe('ObservationLog state root', () => {
     await writeFile(segment, content, 'utf8')
     const store = new ObservationLog(path)
     await expect(store.readAll()).rejects.toThrow(segment)
+    await expect(store.query({ kind: 'agent-step' })).rejects.toThrow(segment)
     await expect(store.append(observation('new', 'agent-step'))).rejects.toThrow(segment)
   })
 
@@ -271,7 +297,8 @@ describe('ObservationLog state root', () => {
     await writeFile(path, Buffer.concat([await readFile(path), tail]))
     const result = await new ObservationLog(path).rotate({ maxBytes: 1 })
     expect(result.invalidQuarantine).toBeDefined()
-    expect(await readFile(result.invalidQuarantine!, 'utf8')).toBe(tail.toString())
+    expect(result.invalidQuarantine).toMatch(/^.+\.invalid-\d+-\d+-[0-9a-f-]{36}$/)
+    expect(await readFile(result.invalidQuarantine!)).toEqual(tail)
     expect((await readFile(result.rotated!, 'utf8')).endsWith('\n')).toBe(true)
     expect((await readFile(result.rotated!, 'utf8')).split('\n').filter(Boolean)).toHaveLength(1)
     const store = new ObservationLog(path)
