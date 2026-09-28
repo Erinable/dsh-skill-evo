@@ -23,9 +23,9 @@ description: "交付契约。接到指派的子 issue 就先读，开 PR、发�
    ```bash
    gh pr create --draft --base main --title "<KEY>: <一句话>" --body-file ./pr-body.md
    ```
-   `pr-body.md` 第一行是 `Closes <KEY>`，正文最后一行是 `修改意见请评论在 <KEY> 上`（有 attribution 行时放在它之前）。成员合并后，这个子 issue 会自动置为 `done`。
+   `pr-body.md` 第一行是 `Closes <KEY>`，正文最后一行是 `修改意见请评论在 <KEY> 上`（有 attribution 行时放在它之前）。代码、测试、配置或 `skills/**` PR 由成员合并；纯 Markdown 文档 PR 按「被评审之后」由 Reviewer 合并。
    完成判据：`gh pr view --json isDraft,title,body` 显示 `isDraft: true`，标题以 `<KEY>: ` 开头，首行是 `Closes <KEY>`，attribution 之前的最后一行是 `修改意见请评论在 <KEY> 上`。
-5. **状态**：先 `multica issue status <issue> in_review`，再发交接评论。顺序不能反：@Reviewer 会立刻起 Reviewer 的 run，状态还没改就可能被读到旧状态。缺信息无法推进时改用「提问」一节，状态置 `blocked`。`done` 由合并 PR 自动完成。
+5. **状态**：先 `multica issue status <issue> in_review`，再发交接评论。顺序不能反：@Reviewer 会立刻起 Reviewer 的 run，状态还没改就可能被读到旧状态。只有不可逆、权限或花费问题无法推进时才改用「提问」一节并置 `blocked`。`done` 由合并 PR 自动完成。
    完成判据：`multica issue get <issue> --output json` 的 `status` 为 `in_review` 或 `blocked`。
 6. **交接评论**：在自己的子 issue 上发一条评论，写 PR 链接、证据（实际命令和实际输出），**只用「交接」一节的交接命令发出**，`TO=Reviewer`。
    完成判据：交接命令最后打印 `handoff ok: Reviewer <评论 id>`。没打印就是没交接，issue 不能停在 `in_review` 就结束 run。
@@ -34,7 +34,7 @@ description: "交付契约。接到指派的子 issue 就先读，开 PR、发�
 
 ## 被评审之后
 
-- **PASS**：Reviewer 已把 PR 转为正式 PR，issue 上会有「等待合并」的评论。你的工作到此为止，等成员合并。
+- **PASS**：Reviewer 已把 PR 转为正式 PR。Reviewer 先运行 `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`，逐行确认每个当前路径和重命名前路径都匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。全部匹配时执行 `gh pr merge <n> --merge`，并在 issue 上说明已自动合并；任何代码、测试、配置或 `skills/**` 路径都不匹配，Reviewer 只在 issue 上写「等待成员合并」。
 - **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
 - **GitHub 意见**：issue 上出现以 `GitHub 意见：#<n>` 开头、@ 你的评论，是每日巡检把成员留在 GitHub PR 上的意见转了过来。把引用的每条意见当作成员在 issue 上的评论处理：要改就回原任务分支返工、推送，再按交付步骤 5、6 置 `in_review`、发交接评论并 @Reviewer，交接评论里逐条写每个意见链接怎么处理的；只是提问就在 issue 上回答，不改状态。不要去 GitHub 上回复。
@@ -43,7 +43,7 @@ description: "交付契约。接到指派的子 issue 就先读，开 PR、发�
 ## 评审契约（Reviewer）
 
 1. **只读检出**：`git fetch origin` 后执行 `git diff origin/main...origin/<分支>`，工作区保持无提交。
-2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论；再在子 issue 上评论，写明「等待合并」。
+2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论。按「被评审之后」的机械白名单检查 `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`：纯 Markdown 文档路径由 Reviewer 执行 `gh pr merge <n> --merge`，并在子 issue 上评论「已由 Reviewer 合并」；否则在子 issue 上评论「等待成员合并」。
 3. **BLOCK**：在子 issue 上评论，写清哪条验收标准没过、在哪个位置、要改什么，用「交接」一节的交接命令发出，`TO=<原执行 agent 名>`、`PARENT=<触发你的交接评论 id>`。
 4. **ADR 检查**：PR 引入的不可逆决策（数据格式、公开接口、依赖方向）有没有对应的 `docs/adr/` 文件；PR 与已有 ADR 冲突时，有没有按 `docs/agents/domain.md` 的「Flag ADR conflicts」显式标出；新 ADR 的编号是否与 `origin/main` 上已有的编号冲突，冲突时后合并的 PR 改号。任何一项没满足就判 BLOCK，理由写明缺的是哪一项。
 5. **冲突复核**：执行 agent 解完冲突后 @ 你，交接评论第一行是 `冲突已解决：#<n>`。按「PR 冲突时」的复核规则只核对合并本身。
@@ -74,12 +74,12 @@ PR 已交付（`in_review`，不管是 draft 待评审还是已 PASS 等合并�
 
 ## 提问（需要成员拍板时）
 
-1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案，成员可以只回「默认」。每个问题写出固定字段 `提问目标 user_id`、`提问类别`、`默认答案`、`提问时间` 和 `resume status: <todo|in_progress>`；类别取 `business judgment` 或 `irreversible / permission / spending`，然后把 issue 置为 `blocked`。
-2. 目标规则：先读 issue 描述里的 `需求提出人 user_id`（子 issue 继承父 issue）；显式写 `unresolved` 时立即回退 Decision maker；没有记录时再用触发评论的 member 作者，再用 `creator_id`（仅 `creator_type == member`），最后回退 Decision maker。业务判断问需求提出人；不可逆决策、权限或花费问 Decision maker。需求提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
-3. 使用所选 tracker adapter 的 `Ask a person and wait` 一节，传入 `issue`、文件中的 `body`，以及触发线程 `thread` 和回复后的 `next`（如有）。由 adapter 负责发布、收件人解析、只过滤目标成员的一次性唤醒和结束本次 run；调用方不得复制 tracker 命令。其他成员的回复只作上下文，不算回答。
-4. 目标成员无回复时按 `orchestrate/PATROL.md` 的固定标记升级表处理。每个提醒、转交、超时标记都带原提问评论 id：2 天提醒一次；4 天停旧目标 wakeup、转 Decision maker（负责人不是原提问 agent 时按 adapter 注册替代 wakeup），原目标迟到回复只作上下文；7 天停掉仍挂着的 wakeup，再按记录的 `resume status` 恢复可逆业务问题并在评论中采用默认答案、通知原提出人和原执行 agent；不可逆、权限或花费问题置 `backlog` 并通知 Decision maker。巡检覆盖有待回答提问的父 issue、子 issue 和无父 issue 的票。
+1. **一次问完**：一轮问题写在一条评论里，每个问题带编号并附默认答案。`business judgment` 直接记录 `采用默认答案，成员可推翻`，继续当前流程，不置 `blocked`；只有 `irreversible / permission / spending` 问题写出固定字段 `提问目标 user_id`、`提问类别`、`默认答案`、`提问时间` 和 `resume status: <todo|in_progress>`，置 `blocked` 并等待成员。
+2. 目标规则仅适用于受保护问题：先读 issue 描述里的 `需求提出人 user_id`（子 issue 继承父 issue）；显式写 `unresolved` 时立即回退 Decision maker；没有记录时再用触发评论的 member 作者，再用 `creator_id`（仅 `creator_type == member`），最后回退 Decision maker。不可逆决策、权限或花费问 Decision maker。需求提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
+3. 仅对 `irreversible / permission / spending` 使用所选 tracker adapter 的 `Ask a person and wait` 一节，传入 `issue`、文件中的 `body`，以及触发线程 `thread` 和回复后的 `next`（如有）。由 adapter 负责发布、收件人解析、只过滤目标成员的一次性唤醒和结束本次 run；调用方不得复制 tracker 命令。其他成员的回复只作上下文，不算回答。
+4. 目标成员无回复时按 `orchestrate/PATROL.md` 的固定标记升级表处理。每个提醒、转交、超时标记都带原提问评论 id：2 天提醒一次；4 天停旧目标 wakeup、转 Decision maker（负责人不是原提问 agent 时按 adapter 注册替代 wakeup），原目标迟到回复只作上下文；7 天停掉仍挂着的 wakeup，将 issue 置 `backlog` 并通知 Decision maker。业务判断不进入等待状态。巡检覆盖有待回答提问的父 issue、子 issue 和无父 issue 的票。
 
-完成判据：问题评论已发出、包含目标/类别/默认值/时间戳，issue 为 `blocked`，并已按 adapter 规则结束本次 run。
+完成判据：业务判断已发布默认决议并继续；不可逆、权限或花费问题评论已发出、包含目标/类别/默认值/时间戳，issue 为 `blocked`，并已按 adapter 规则结束本次 run。
 
 ## 交接：必须显式 @
 
@@ -152,7 +152,7 @@ perl -pi -e 's#\[@?([^\]]*)\]\(mention://(agent|squad)/[^)]*\)#\@$1#g; s#mention
    - (a) 标题含问题关键词，或者和要建的票标题说的是同一件事；
    - (b) 描述里有同一个来源锚点，也就是同一个 `specs/<slug>/`、同一个代码位置或函数，或者同一个来源 KEY。
 
-   只满足一条的（比如别的 spec 的 `Task 1`、别的文档的 `D6`）**不算重复**，在评论里列出来，写明「同号不同源」。建父 issue 时，只和已有的**父 issue**（`parent_issue_id` 为空）比；搜到的执行票、跟踪票不算重复，把它的 KEY 写进父 issue 描述。(a)(b) 看不出来时不自己猜，按所选 tracker adapter 的 `Ask a person and wait` 问成员一个问题，默认答案是「不算重复，新建」。
+   只满足一条的（比如别的 spec 的 `Task 1`、别的文档的 `D6`）**不算重复**，在评论里列出来，写明「同号不同源」。建父 issue 时，只和已有的**父 issue**（`parent_issue_id` 为空）比；搜到的执行票、跟踪票不算重复，把它的 KEY 写进父 issue 描述。(a)(b) 看不出来时，采用默认答案「不算重复，新建」，写明 `采用默认答案，成员可推翻` 后继续；只有判断会造成不可逆、权限或花费影响时才按「提问」等待成员。
 5. **处理**（只对第 4 步判定为重复、也就是来源相同的票）：
 
    | 重复票的状态 | 做法 |

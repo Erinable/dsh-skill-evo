@@ -3,9 +3,9 @@ name: orchestrate
 description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 上被触发（新建、stage 完成唤醒、成员回复）、Triager 或 Architect @Mika 交接、跑每日巡检时使用。"
 ---
 
-Mika 统一编排：成员只提需求和合 PR，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
+Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并纯 Markdown 文档 PR，成员合并代码、测试、配置和 `skills/**` PR。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
 
-向成员提问使用所选 tracker adapter 的 `Ask a person and wait` 一节。
+不可逆决策、权限或花费才向成员提问，使用所选 tracker adapter 的 `Ask a person and wait` 一节；business judgment 记录默认答案并继续。
 
 - **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
 - **建票前查重**：本 skill 里每一次 `multica issue create`（父 issue、stage 子 issue、拆票、修订票）之前，先按 `delivery-contract` 的「建票前查重」查，只有同一问题、同一来源的票才复用，不新建。
@@ -49,7 +49,7 @@ multica issue subscriber add <parent-id> --user-id <subscriber-user-id>
    - 已经是 Mika：本次 run 直接结束。
 
    同一张 issue 被多跑一次也不会建出第二套子 issue，也不会留下没有负责人的父 issue。
-1. 按路由表判断类型。判断不了时，按所选 tracker adapter 的 `Ask a person and wait` 一节问成员**一个**问题（带默认答案），传入父 issue、问题正文、触发线程（如有）及回复后路由的 next 指令；本次 run 结束。成员回复后按回复路由，不再追问。
+1. 按路由表判断类型。判断不了时，记录一个带推荐答案的问题评论，写明 `采用默认答案，成员可推翻`，按默认答案继续路由；只有涉及不可逆决策、权限或花费时，才按所选 tracker adapter 的 `Ask a person and wait` 一节问成员并结束本次 run。
 2. 在父 issue 上评论本次路由：类型、全部 stage 的计划。
 3. 按「stage 模板」建 Stage 1 的子 issue（先查重；父 issue 描述里点名的现有 KEY 是同一种票，直接复用），父 issue 置 `in_progress`。
 
@@ -68,7 +68,7 @@ multica issue subscriber add <parent-id> --user-id <subscriber-user-id>
 | skill 或文档修改 | S1 Scribe |
 | 只需要一个答案 | 不开票（见入口第 1 步） |
 
-「合并后按结论问成员是否追加后续 stage」「成员想继续做时」都通过所选 tracker adapter 的 `Ask a person and wait` 一节问成员**一个**问题（带默认答案），传入父 issue、问题正文、触发线程（如有）及按回复追加 stage 的 next 指令。
+「合并后按结论问成员是否追加后续 stage」「成员想继续做时」记录一个带推荐答案的问题评论，写明 `采用默认答案，成员可推翻`，按默认答案追加 stage；只有追加动作不可逆、需要权限或会花费时，才通过所选 tracker adapter 的 `Ask a person and wait` 一节等待成员。
 
 ### stage 模板
 
@@ -103,7 +103,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ### 拆票
 
-实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆：
+实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆；该 stage 的实现 PR 触及代码、测试、配置或 `skills/**` 时仍由成员合并，纯 Markdown 文档 stage 可由 Reviewer 合并：
 
 1. `git fetch origin` 后读 `origin/main` 上的 `specs/<slug>/tasks.md`。文件不在 `origin/main` 上说明 spec PR 还没合，在父 issue 上说明，本次 run 结束。
 2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。查重时问题关键词用 task 编号，来源锚点用 `specs/<slug>/`：只有描述里也写着同一个 `specs/<slug>/` 的同号 task 票才复用，别的 spec 的 `Task N` 是同号不同源，照建。
@@ -112,7 +112,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ## 收口
 
-这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 都是成员合并 PR 后才变 `done` 的，合并就是验收，所以父 issue 由 Mika 直接关闭。不置 `in_review`，也不请成员确认后再关。
+这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 在其 PR 合并后才变 `done`，合并就是验收。纯 Markdown 文档 PR 由 Reviewer PASS 后按白名单自动合并；代码、测试、配置和 `skills/**` PR 仍由成员合并。所有子 issue 进入 `done` 后，父 issue 由 Mika 直接关闭，不再请成员确认。
 
 1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
 2. 直接置 `done`：

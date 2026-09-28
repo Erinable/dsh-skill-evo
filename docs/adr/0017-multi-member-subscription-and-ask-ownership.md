@@ -4,7 +4,9 @@ status: accepted
 
 # 多成员订阅、提问归属与回复过滤
 
-当一个工作区有多个 member 时，父 issue 和子 issue 默认订阅需求提出人与 Decision maker，按 `user_id` 去重。提出人按 issue 描述中的 `需求提出人 user_id`、显式 `unresolved` 回退 Decision maker、触发评论 member 作者、`creator_type == member` 时的 `creator_id`、Decision maker 的顺序解析；父 issue 写下的提出人行由每个 child 继承，因而子 issue 上的任意评论不会覆盖原始提出人。业务判断问需求提出人；不可逆决策、权限或花费问 Decision maker；只有被问目标的 member 回复算回答，wakeup 只过滤该目标。这样保留需求上下文，同时避免旁观者的回复意外结算需要授权的决定。
+ADR-0019 部分取代本 ADR 关于 business judgment 提问目标与回复归属的规则；本 ADR 的订阅、受保护决策目标和 `user_id` 约束继续有效。
+
+当一个工作区有多个 member 时，父 issue 和子 issue 默认订阅需求提出人与 Decision maker，按 `user_id` 去重。提出人按 issue 描述中的 `需求提出人 user_id`、显式 `unresolved` 回退 Decision maker、触发评论 member 作者、`creator_type == member` 时的 `creator_id`、Decision maker 的顺序解析；父 issue 写下的提出人行由每个 child 继承，因而子 issue 上的任意评论不会覆盖原始提出人。在 ADR-0019 生效前，业务判断问需求提出人；现行规则由 ADR-0019 取代。不可逆决策、权限或花费问 Decision maker；只有被问目标的 member 回复算回答，wakeup 只过滤该目标。这样保留需求上下文，同时避免旁观者的回复意外结算需要授权的决定。
 
 ## Considered Options
 

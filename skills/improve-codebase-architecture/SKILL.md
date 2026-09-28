@@ -60,11 +60,11 @@ End the report with a **Top recommendation** section: which candidate you'd tack
 
 See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram patterns, and styling guidance.
 
-Do NOT propose interfaces yet. After the file is written, ask the user: "Which of these would you like to explore?"
+Do NOT propose interfaces yet. After the file is written, select the top recommendation, record `采用默认答案，成员可推翻`, and continue with that candidate. A later member reply may overturn the selection.
 
 ### 3. Grilling loop
 
-Once the user picks a candidate, call the Skill tool with "grilling" to walk the decision tree with them: constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
+For the selected top recommendation, call the Skill tool with "grilling" to walk the decision tree using the default-answer flow: constraints, dependencies, the shape of the deepened module, what sits behind the seam, and what tests survive. A member reply can later overturn a recorded default.
 
 Side effects happen inline as decisions crystallize; call the Skill tool with "domain-modeling" to keep the domain model current as you go:
 
