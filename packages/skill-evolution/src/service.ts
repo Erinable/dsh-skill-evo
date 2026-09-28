@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { createContentHash, parseObservation, redactSensitiveText } from './events.js'
+import { createContentHash, isObservationValue, redactSensitiveText } from './events.js'
 import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
@@ -412,11 +412,6 @@ export class EvolutionService {
     return snapshot
   }
 }
-
-function isObservationValue(value: unknown): boolean {
-  try { parseObservation(JSON.stringify(value)); return true } catch { return false }
-}
-
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')
