@@ -3,7 +3,7 @@ name: orchestrate
 description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 上被触发（新建、stage 完成唤醒、成员回复）、Triager 或 Architect @Mika 交接、跑每日巡检时使用。"
 ---
 
-Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并纯 Markdown 文档 PR，成员合并代码、测试、配置和 `skills/**` PR。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
+Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并 `docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md`，成员合并代码、测试、配置和 `skills/**` 下非 Markdown 文件。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
 
 不可逆决策、权限或花费才向成员提问，使用所选 tracker adapter 的 `Ask a person and wait` 一节；business judgment 记录默认答案并继续。
 
@@ -103,7 +103,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ### 拆票
 
-实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆；该 stage 的实现 PR 触及代码、测试、配置或 `skills/**` 时仍由成员合并，纯 Markdown 文档 stage 可由 Reviewer 合并：
+实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆；该 stage 的实现 PR 触及代码、测试、配置或 `skills/**` 下非 Markdown 文件时仍由成员合并，`docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md` 可由 Reviewer 合并：
 
 1. `git fetch origin` 后读 `origin/main` 上的 `specs/<slug>/tasks.md`。文件不在 `origin/main` 上说明 spec PR 还没合，在父 issue 上说明，本次 run 结束。
 2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。查重时问题关键词用 task 编号，来源锚点用 `specs/<slug>/`：只有描述里也写着同一个 `specs/<slug>/` 的同号 task 票才复用，别的 spec 的 `Task N` 是同号不同源，照建。
@@ -112,7 +112,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ## 收口
 
-这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 在其 PR 合并后才变 `done`，合并就是验收。纯 Markdown 文档 PR 由 Reviewer PASS 后按白名单自动合并；代码、测试、配置和 `skills/**` PR 仍由成员合并。所有子 issue 进入 `done` 后，父 issue 由 Mika 直接关闭，不再请成员确认。
+这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 在其 PR 合并后才变 `done`，合并就是验收。`docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md` 由 Reviewer PASS 后按白名单自动合并；代码、测试、配置和 `skills/**` 下非 Markdown 文件仍由成员合并。所有子 issue 进入 `done` 后，父 issue 由 Mika 直接关闭，不再请成员确认。
 
 1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
 2. 直接置 `done`：
@@ -130,7 +130,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
   3. **最后一步**：`multica issue assign <原 issue id> --to-id <Mika 的 id>`，再 `multica issue status <原 issue id> in_progress`。
 
   指派放在最后：指派不会起新 run，前面几步做完 issue 才有负责人，stage 完成后也才能唤醒到 Mika。
-- **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。建之前查重：问题关键词用编号，来源锚点用架构扫描 issue 的 KEY，两者都对上的已有父 issue 才不再建。
+- **Architect @Mika**（架构扫描自动选题后）：按性价比第一的选题，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步；记录「采用默认答案，成员可推翻」。建之前查重：问题关键词用选题编号，来源锚点用架构扫描 issue 的 KEY，两者都对上的已有父 issue 才不再建。
 
 ## 故障
 
@@ -149,5 +149,5 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 |---|---|---|---|---|
 | 每日巡检 | 每天 09:07 Asia/Shanghai | run_only | Mika | 读 `PATROL.md` |
 | 每日分诊 | 每天 09:37 Asia/Shanghai | run_only | Triager | 捞没有负责人也没有父 issue 的 issue，分诊后 @Mika，走「交接入口」 |
-| 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；成员回复编号后 Architect @Mika，走「交接入口」；成员不回复就什么都不发生 |
+| 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；Architect 自动选性价比第一的选题并记录「采用默认答案，成员可推翻」，@Mika 走「交接入口」后将扫描 issue 置 `done`；没有值得做的就写「本期不立项」并将扫描 issue 置 `done` |
 | Skill 同步 | GitHub push 到 `main` 的 webhook；每天 08:53 Asia/Shanghai 兜底 | run_only | Mika | 记录票 SKIL-112；有改动、失败或需要成员决定时留言，无改动不留言。只同步仓库 skill 副本，不同步平台智能体指令、不删除 skill，也不给新导入的 skill 绑定智能体 |
