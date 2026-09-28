@@ -1,0 +1,323 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import {
+  EvolutionService,
+  createContentHash,
+  evaluateProposal,
+  promoteProposal,
+  proposeSkillChange,
+  reviewProposal,
+  rollbackSkill,
+} from '../src/index.js'
+
+// Crash points and expected recovery: docs/design/publication-crash-recovery.md §1.3 and §4.
+// `it.fails` rows reproduce today's non-convergence; flip them to `it` once the recovery protocol in that design lands.
+
+const fault = vi.hoisted(() => ({ paths: [] as string[], invalidate: false }))
+vi.mock('node:fs/promises', async importActual => {
+  const actual = await importActual<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      const target = fault.paths.find(path => String(args[0]).startsWith(`${path}.tmp-`))
+      if (target !== undefined) {
+        fault.paths = []
+        throw new Error(`injected crash before writing ${target}`)
+      }
+      return actual.writeFile(...args)
+    },
+  }
+})
+
+const dirs: string[] = []
+afterEach(async () => {
+  fault.paths = []
+  fault.invalidate = false
+  vi.restoreAllMocks()
+  await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true })))
+})
+
+const skillName = 'api-debugging'
+const base = `---\nname: ${skillName}\ndescription: Debug APIs.\n---\n\nUse curl.\n`
+const first = `${base}Check the response status before editing.\n`
+const second = `${first}Retry idempotent requests once.\n`
+
+type Crash =
+  | { readonly kind: 'file'; readonly file: string }
+  /** Today's journal is `<skill>/.publish.json`; the design moves it to `.skill-evolution/publications/<skill>.json`. */
+  | { readonly kind: 'journal' }
+  | { readonly kind: 'call'; readonly store: 'observations' | 'proposals' | 'decisions'; readonly call?: number }
+  | { readonly kind: 'invalidate' }
+
+interface CrashRow {
+  readonly point: string
+  readonly crash: Crash
+  readonly versionedBase?: boolean
+  /** Crash lands before the operation's commit point, so repair must leave the pre-operation state. */
+  readonly beforeCommit?: boolean
+}
+
+function service(root: string): EvolutionService {
+  return new EvolutionService({
+    root,
+    invalidate: async () => {
+      if (!fault.invalidate) return
+      fault.invalidate = false
+      throw new Error('injected crash in invalidate')
+    },
+  })
+}
+
+async function tempRoot(label: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), `dsh-publication-${label}-`))
+  dirs.push(root)
+  await mkdir(join(root, skillName), { recursive: true })
+  await writeFile(join(root, skillName, 'SKILL.md'), base, 'utf8')
+  return root
+}
+
+async function writeVersionedBase(root: string): Promise<void> {
+  const now = '2026-09-28T00:00:00.000Z'
+  const manifest = { name: skillName, version: '1.0.0', contentHash: createContentHash(base), status: 'stable', scope: 'project', createdBy: 'human', createdAt: now, updatedAt: now }
+  await writeFile(join(root, skillName, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+}
+
+async function accept(evolution: EvolutionService, root: string, id: string, baseContent: string, candidateContent: string, proposedVersion: string, marker: string): Promise<string> {
+  const proposed = await proposeSkillChange(evolution, { root, id, skillName, baseContent, candidateContent, proposedVersion, intent: `publish ${proposedVersion}` })
+  const evaluated = await evaluateProposal(evolution, { root, proposalRef: proposed.proposal.id, cases: [{ id: `case-${id}`, category: 'original-failure', task: 'debug', expected: { contains: [marker] } }] })
+  return (await reviewProposal(evolution, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })).recordId
+}
+
+/** One accepted proposal `proposal-crash` that publishes `first` as 1.1.0. */
+async function promoteScenario(label: string, versionedBase = false): Promise<{ root: string; proposalRef: string }> {
+  const root = await tempRoot(label)
+  if (versionedBase) await writeVersionedBase(root)
+  const proposalRef = await accept(service(root), root, 'proposal-crash', base, first, '1.1.0', 'Check the response status')
+  return { root, proposalRef }
+}
+
+/** `proposal-one` published 1.0.0, `proposal-two` published 1.1.0; the operation under test rolls back to 1.0.0. */
+async function rollbackScenario(label: string): Promise<{ root: string }> {
+  const root = await tempRoot(label)
+  const evolution = service(root)
+  await promoteProposal(evolution, { proposalRef: await accept(evolution, root, 'proposal-one', base, first, '1.0.0', 'Check the response status'), scope: 'project' })
+  await promoteProposal(evolution, { proposalRef: await accept(evolution, root, 'proposal-two', first, second, '1.1.0', 'Retry idempotent'), scope: 'project' })
+  return { root }
+}
+
+function arm(crash: Crash, root: string, evolution: EvolutionService): void {
+  if (crash.kind === 'file') fault.paths = [join(root, crash.file)]
+  else if (crash.kind === 'journal') fault.paths = [join(root, skillName, '.publish.json'), join(root, '.skill-evolution', 'publications', `${skillName}.json`)]
+  else if (crash.kind === 'invalidate') fault.invalidate = true
+  else crashOnCall(evolution[crash.store], crash.call ?? 1)
+}
+
+function crashOnCall(store: { append(record: never): Promise<boolean> }, call: number): void {
+  const original = store.append.bind(store) as (record: unknown) => Promise<boolean>
+  let count = 0
+  vi.spyOn(store, 'append').mockImplementation(async (record: never) => {
+    count += 1
+    if (count === call) throw new Error('injected crash in append')
+    return original(record)
+  })
+}
+
+const TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g
+const EPOCH_MS = /:\d{13}(?![0-9a-f])/g
+
+function normalize(text: string): string {
+  return text.replace(TIMESTAMP, '<t>').replace(EPOCH_MS, ':<ms>')
+}
+
+async function listFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+  const files: string[] = []
+  for (const entry of entries) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...await listFiles(path))
+    else if (!entry.name.includes('.tmp-')) files.push(path)
+  }
+  return files
+}
+
+async function jsonl(path: string): Promise<unknown[]> {
+  const text = await readFile(path, 'utf8').catch(() => '')
+  return text.split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(normalize(line)))
+}
+
+/** Everything a publication changes, with clocks and absolute paths removed. Reads files directly so it never triggers recovery. */
+async function publicationState(root: string): Promise<unknown> {
+  const skillDirectory = join(root, skillName)
+  const skillFiles: Record<string, string> = {}
+  for (const path of await listFiles(skillDirectory)) {
+    skillFiles[relative(skillDirectory, path)] = await readFile(path, 'utf8').then(normalize)
+  }
+  const state = join(root, '.skill-evolution')
+  const journals = (await listFiles(join(state, 'publications'))).map(path => relative(state, path))
+  const proposals = await jsonl(join(state, 'proposals.jsonl')) as Array<{ id: string; status: string }>
+  const latest = new Map<string, string>()
+  for (const record of proposals) latest.set(record.id.replace(/:[a-z-]+$/, ''), record.status)
+  return {
+    skillFiles,
+    journals,
+    latestStatus: Object.fromEntries(latest),
+    proposals,
+    decisions: await jsonl(join(state, 'decisions.jsonl')),
+    observations: await jsonl(join(state, 'observations.jsonl')),
+  }
+}
+
+async function latestStatus(root: string, proposalRoot: string): Promise<string | undefined> {
+  return ((await publicationState(root)) as { latestStatus: Record<string, string> }).latestStatus[proposalRoot]
+}
+
+function publicationsOf(report: unknown): unknown {
+  return (report as { publications?: unknown }).publications
+}
+
+const promoteRows: readonly CrashRow[] = [
+  { point: 'P0 before the publication journal is written', crash: { kind: 'journal' }, beforeCommit: true },
+  { point: 'P1a W1 before versions/1.1.0/SKILL.md', crash: { kind: 'file', file: `${skillName}/versions/1.1.0/SKILL.md` } },
+  { point: 'P1b W1 before live SKILL.md', crash: { kind: 'file', file: `${skillName}/SKILL.md` } },
+  { point: 'P1c W1 before live manifest.json', crash: { kind: 'file', file: `${skillName}/manifest.json` } },
+  { point: 'P1d W1 before current.json', crash: { kind: 'file', file: `${skillName}/current.json` } },
+  { point: 'P1e W1 invalidate before .publish.json unlink', crash: { kind: 'invalidate' } },
+  { point: 'P1f W1 before versions/1.0.0/manifest.json (versioned base)', crash: { kind: 'file', file: `${skillName}/versions/1.0.0/manifest.json` }, versionedBase: true },
+  { point: 'P2 after W1, before W2 observation', crash: { kind: 'call', store: 'observations' } },
+  { point: 'P3 after W2, before W3 ledger record', crash: { kind: 'call', store: 'proposals' } },
+  { point: 'P4 after W3, before W4 decision', crash: { kind: 'call', store: 'decisions' } },
+]
+
+const rollbackRows: readonly CrashRow[] = [
+  { point: 'R1a R1 before live manifest.json', crash: { kind: 'file', file: `${skillName}/manifest.json` } },
+  { point: 'R1b R1 before current.json', crash: { kind: 'file', file: `${skillName}/current.json` } },
+  { point: 'R1c R1 invalidate after current.json', crash: { kind: 'invalidate' } },
+  { point: 'R2 after R1, before R2 observation', crash: { kind: 'call', store: 'observations' } },
+  { point: 'R3 after R2, before R3 rollback decision', crash: { kind: 'call', store: 'decisions' } },
+  { point: 'R4 after R3, before R4 ledger record', crash: { kind: 'call', store: 'proposals' } },
+  { point: 'R5 after R4, before R5 transition decision', crash: { kind: 'call', store: 'decisions', call: 2 } },
+]
+
+// Set EXPECT_PUBLICATION_RECOVERY=1 to run the pending rows as ordinary tests and see today's failures.
+const pending = process.env.EXPECT_PUBLICATION_RECOVERY === '1' ? it : it.fails
+const convergesToday = new Set<string>([
+  'P0 before the publication journal is written:rerun',
+  'P0 before the publication journal is written:repair',
+  'P1a W1 before versions/1.1.0/SKILL.md:rerun',
+])
+const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
+
+async function crashPromote(row: CrashRow): Promise<{ root: string; proposalRef: string; reference: unknown; before: unknown }> {
+  const reference = await promoteScenario('reference', row.versionedBase).then(async ({ root, proposalRef }) => {
+    await promoteProposal(service(root), { proposalRef, scope: 'project' })
+    return publicationState(root)
+  })
+  const { root, proposalRef } = await promoteScenario('crash', row.versionedBase)
+  const before = await publicationState(root)
+  const crashing = service(root)
+  arm(row.crash, root, crashing)
+  await expect(promoteProposal(crashing, { proposalRef, scope: 'project' })).rejects.toThrow('injected crash')
+  return { root, proposalRef, reference, before }
+}
+
+async function crashRollback(row: CrashRow): Promise<{ root: string; reference: unknown }> {
+  const reference = await rollbackScenario('reference').then(async ({ root }) => {
+    await rollbackSkill(service(root), { skillName, version: '1.0.0' })
+    return publicationState(root)
+  })
+  const { root } = await rollbackScenario('crash')
+  const crashing = service(root)
+  arm(row.crash, root, crashing)
+  await expect(rollbackSkill(crashing, { skillName, version: '1.0.0' })).rejects.toThrow('injected crash')
+  return { root, reference }
+}
+
+describe('promote crash points', () => {
+  beforeAll(() => { expect(promoteRows.map(row => row.point.split(' ')[0])).toEqual(['P0', 'P1a', 'P1b', 'P1c', 'P1d', 'P1e', 'P1f', 'P2', 'P3', 'P4']) })
+
+  for (const row of promoteRows) {
+    recovery(row, 'rerun')(`${row.point}: rerunning the same promote converges to one successful promote`, async () => {
+      const { root, proposalRef, reference } = await crashPromote(row)
+      await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
+      expect(await publicationState(root)).toEqual(reference)
+    })
+
+    recovery(row, 'repair')(`${row.point}: repair alone converges to ${row.beforeCommit === true ? 'the state before promote' : 'one successful promote'}`, async () => {
+      const { root, reference, before } = await crashPromote(row)
+      await service(root).repair()
+      expect(await publicationState(root)).toEqual(row.beforeCommit === true ? before : reference)
+    })
+  }
+
+  pending('health reports the unfinished promote and repair reports completing it', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P3'))!
+    const { root } = await crashPromote(row)
+    const health = await service(root).healthReport()
+    expect(publicationsOf(health)).toEqual([expect.objectContaining({ skillName, operation: 'promote', proposalId: 'proposal-crash', fromVersion: 'unversioned', toVersion: '1.1.0' })])
+    const repaired = await service(root).repair()
+    expect(publicationsOf(repaired)).toEqual([expect.objectContaining({ skillName, operation: 'promote', outcome: 'completed' })])
+    expect(publicationsOf(await service(root).healthReport())).toEqual([])
+    expect(await latestStatus(root, 'proposal-crash')).toBe('promoted')
+  })
+
+  pending('health reads a half-written promote without changing any file', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root } = await crashPromote(row)
+    const crashed = await publicationState(root)
+    await service(root).healthReport()
+    expect(await publicationState(root)).toEqual(crashed)
+  })
+})
+
+describe('rollback crash points', () => {
+  for (const row of rollbackRows) {
+    recovery(row, 'rerun')(`${row.point}: rerunning the same rollback converges to one successful rollback`, async () => {
+      const { root, reference } = await crashRollback(row)
+      await expect(rollbackSkill(service(root), { skillName, version: '1.0.0' })).resolves.toMatchObject({ skillName, version: '1.0.0' })
+      expect(await publicationState(root)).toEqual(reference)
+    })
+
+    recovery(row, 'repair')(`${row.point}: repair alone converges to one successful rollback`, async () => {
+      const { root, reference } = await crashRollback(row)
+      await service(root).repair()
+      expect(await publicationState(root)).toEqual(reference)
+    })
+  }
+
+  pending('a second rollback to the version that is already current writes nothing', async () => {
+    const { root } = await rollbackScenario('double')
+    await rollbackSkill(service(root), { skillName, version: '1.0.0' })
+    const once = await publicationState(root)
+    await rollbackSkill(service(root), { skillName, version: '1.0.0' })
+    expect(await publicationState(root)).toEqual(once)
+    expect(await latestStatus(root, 'proposal-one')).toBe('promoted')
+    expect(await latestStatus(root, 'proposal-two')).toBe('rolled-back')
+  })
+})
+
+describe('one promotion check', () => {
+  pending('dry-run rejects a base version that real promotion rejects', async () => {
+    const root = await tempRoot('dry-run-base-version')
+    await writeVersionedBase(root)
+    const evolution = service(root)
+    const proposed = await proposeSkillChange(evolution, { root, id: 'proposal-version', skillName, baseContent: base, baseVersion: '0.9.0', candidateContent: first, proposedVersion: '1.1.0', intent: 'stale base version' })
+    const evaluated = await evaluateProposal(evolution, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'case-version', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
+    const proposalRef = (await reviewProposal(evolution, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })).recordId
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toThrow()
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'stale-base' })
+  })
+
+  pending('service.promote and promoteProposal reject the same inconsistent artifact with the same code', async () => {
+    const { root, proposalRef } = await promoteScenario('check-parity')
+    const evolution = service(root)
+    const persisted = (await evolution.evaluations.readAll()).at(-1)!
+    const legacyId = `${persisted.id}:legacy`
+    await evolution.evaluations.append({ ...persisted, id: legacyId, result: { ...persisted.result, artifactId: legacyId, policyVersion: 'legacy-policy' } })
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
+    const accepted = (await evolution.proposals.readAll()).at(-1)!
+    const legacy = (await evolution.evaluations.readAll()).find(item => item.id === legacyId)!
+    await expect(evolution.promote(accepted, legacy.result, 'project')).rejects.toMatchObject({ code: 'evaluation-mismatch' })
+  })
+})
