@@ -1,4 +1,4 @@
-> 状态：SKIL-91 的成员规则与同步方案。仓库文档合并后，平台 skill 副本仍需按 `docs/governance/documentation.md` 的同步步骤更新。
+> 状态：SKIL-91 的成员规则与同步方案。平台 skill 副本由「Skill 同步」autopilot 按 `docs/governance/documentation.md` 自动同步；该 autopilot 失败时才使用其中的手动备用步骤。
 
 何时读：修改成员订阅、提问对象、回复归属、无回复升级，或排查仓库 skill 与平台副本漂移时。实例事实以 `docs/agents/instance.md` 为准，通用 tracker 机制以 `docs/agents/issue-tracker.md` 为准。
 
@@ -25,11 +25,11 @@
 | `skills/delivery-contract/SKILL.md:74-79` | 生效的仓库 skill | 提问只要求默认答案，未规定目标类别和无回复处理 | 写入目标、类别、时间戳、目标过滤和升级表引用 |
 | `docs/design/skil-36-seams.md`、`docs/governance/documentation.md` | 历史记录/治理记录 | 记录过旧 owner 硬编码、ADR-0011/0012/0013 的背景；不是运行时入口 | 保留历史证据；规则以本票新增 ADR 和 `docs/agents/*` 为准 |
 | `specs/skil-36-seams/tasks.md` | 历史任务记录 | 含旧成员 ID 命中，是已完成任务的证据，不是运行时规则 | 保留，不作为身份来源；统一来源仍是 `docs/agents/instance.md` |
-| 平台 `orchestrate` skill（2026-09-26T11:14:41Z） | 当前生效的安装副本 | `SKILL.md` 的订阅/提问/交接命令仍直接写旧 owner `user_id`；`PATROL.md` 仍是旧四查 | 本 PR 不直接改平台；合并后按治理文档 `refresh` 或 `update` + `files upsert`，再用 `skill get` 复核 |
-| 平台 `delivery-contract` skill（2026-09-26T10:22:18Z） | 当前生效的安装副本 | `SKILL.md` 的成员标识和 wakeup 命令仍直接写旧 owner `user_id` | 本 PR 不直接改平台；合并后从仓库内容同步 |
+| 平台 `orchestrate` skill（2026-09-26T11:14:41Z） | 当前生效的安装副本 | `SKILL.md` 的订阅/提问/交接命令仍直接写旧 owner `user_id`；`PATROL.md` 仍是旧四查 | 本 PR 不直接改平台；合并后由「Skill 同步」autopilot 同步，失败时按治理文档的 `refresh` 或 `update` + `files upsert` 备用步骤，再用 `skill get` 复核 |
+| 平台 `delivery-contract` skill（2026-09-26T10:22:18Z） | 当前生效的安装副本 | `SKILL.md` 的成员标识和 wakeup 命令仍直接写旧 owner `user_id` | 本 PR 不直接改平台；合并后由「Skill 同步」autopilot 从仓库内容同步，失败时使用治理文档的手动备用步骤 |
 | 11 个 agent instructions（Mika、Scout、Cartographer、Architect、Spec Writer、Builder、Reviewer、Sleuth、Triager、Prototyper、Scribe） | 平台 agent 配置 | 未发现成员 `user_id` 硬编码；大多只引用 `delivery-contract` 或 tracker adapter | 不直接改平台 agent；只在本 PR 记录需要变更的原文 → 新文预览 |
 
-仓库验收命令 `grep -rn 'cb288268' skills docs/agents` 应只命中 `docs/agents/instance.md`。平台副本中的旧值不计入仓库 grep，直到同步步骤执行。
+仓库验收命令 `grep -rn 'cb288268' skills docs/agents` 应只命中 `docs/agents/instance.md`。平台副本中的旧值不计入仓库 grep；「Skill 同步」autopilot 负责仓库合并后的副本更新，不同步平台智能体指令、不删除 skill，也不给新导入的 skill 绑定智能体。
 
 ## Agent instructions 预览（不直接修改平台）
 

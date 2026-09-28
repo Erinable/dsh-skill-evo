@@ -143,10 +143,11 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ## 自动任务
 
-三个 autopilot 与本 skill 的关系（创建与配置不在本 skill 内）：
+四个 autopilot 与本 skill 的关系（创建与配置不在本 skill 内）：
 
 | 名称 | 触发 | 模式 | 执行者 | 与 Mika 的接口 |
 |---|---|---|---|---|
 | 每日巡检 | 每天 09:07 Asia/Shanghai | run_only | Mika | 读 `PATROL.md` |
 | 每日分诊 | 每天 09:37 Asia/Shanghai | run_only | Triager | 捞没有负责人也没有父 issue 的 issue，分诊后 @Mika，走「交接入口」 |
 | 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；成员回复编号后 Architect @Mika，走「交接入口」；成员不回复就什么都不发生 |
+| Skill 同步 | GitHub push 到 `main` 的 webhook；每天 08:53 Asia/Shanghai 兜底 | run_only | Mika | 记录票 SKIL-112；有改动、失败或需要成员决定时留言，无改动不留言。只同步仓库 skill 副本，不同步平台智能体指令、不删除 skill，也不给新导入的 skill 绑定智能体 |
