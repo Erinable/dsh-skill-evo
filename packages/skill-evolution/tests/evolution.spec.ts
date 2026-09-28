@@ -138,12 +138,13 @@ describe('phase 2 evidence workflow', () => {
     const reverse = clusterFailureCases([...cases].reverse())
     expect(reverse).toEqual(forward)
     expect(forward.map(cluster => cluster.id)).toEqual(['cluster:api-debugging:case-a', 'cluster:api-debugging:case-d'])
+    expect(clusterFailureCases([cases[0]!])[0]!.id).toBe(clusterFailureCases(cases.slice(0, 2))[0]!.id)
   })
 
   it('shares a cluster for closely related CJK bigrams', () => {
     const cases = [
-      { id: 'zh-a', skillName: 'api-debugging', task: 'debug', failure: '应该先设置代理', evidenceEventIds: ['a'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
-      { id: 'zh-b', skillName: 'api-debugging', task: 'debug', failure: '应该先设置代理再试', evidenceEventIds: ['b'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:01.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+      { id: 'zh-a', skillName: 'api-debugging', task: 'debug', failure: '不对，应该先设置代理', evidenceEventIds: ['a'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+      { id: 'zh-b', skillName: 'api-debugging', task: 'debug', failure: '不对，要先配置代理', evidenceEventIds: ['b'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:01.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
     ]
     expect(clusterFailureCases(cases)).toHaveLength(1)
   })
@@ -163,6 +164,17 @@ describe('phase 2 evidence workflow', () => {
     const twentyCluster = clusterFailureCases(twentyCases)[0]!
     expect(diagnoseFailureCluster(twoCluster, twoCases).confidence).toBe('medium')
     expect(diagnoseFailureCluster(twentyCluster, twentyCases).confidence).toBe('high')
+
+    const counterEvent = event({ id: 'counter', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { explicit: true, feedbackKind: 'incorrect', text: 'still wrong', counterEvidence: ['task completed successfully'] } })
+    const counterCases = buildFailureCases([counterEvent])
+    const counterCluster = clusterFailureCases(counterCases)[0]!
+    const counterDiagnosis = diagnoseFailureCluster(counterCluster, counterCases)
+    const baselineCases = buildFailureCases([event({ id: 'baseline', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { explicit: true, feedbackKind: 'incorrect', text: 'still wrong' } })])
+    const baselineCluster = clusterFailureCases(baselineCases)[0]!
+    const baselineDiagnosis = diagnoseFailureCluster(baselineCluster, baselineCases)
+    expect(counterDiagnosis.counterEvidence).toEqual(['task completed successfully'])
+    expect(baselineDiagnosis.confidence).toBe('medium')
+    expect(counterDiagnosis.confidence).toBe('low')
 
     const explicit = buildExperiences([event({ id: 'feedback', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } })])[0]!
     expect(explicit.confidence).toBe(0.9)
@@ -656,9 +668,11 @@ describe('phase workflow orchestration', () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-feedback-'))
     dirs.push(dir)
     const service = new EvolutionService({ root: dir })
-    const record = await service.recordFeedback({ sessionId: 'session-1', skillName: 'api-debugging', kind: 'incorrect', note: '遗漏代理超时配置' })
+    const record = await service.recordFeedback({ sessionId: 'session-1', skillName: 'api-debugging', kind: 'incorrect', confidence: 0.9, note: '遗漏代理超时配置' })
     expect(record.kind).toBe('incorrect')
     expect((await service.observations.query({ kind: 'user-follow-up' }))[0]?.payload).toMatchObject({ feedbackKind: 'incorrect', explicit: true })
+    expect((await service.listFailures())[0]).toMatchObject({ origin: 'explicit-feedback', feedbackKind: 'incorrect', attributionConfidence: 0.9 })
+    expect((await service.experiences.readAll())[0]?.confidence).toBe(0.9)
     const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
     const candidate = base.replace('Base.', 'Improved.')
     const proposal = createProposal({ id: 'markdown-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Add timeout diagnosis' })

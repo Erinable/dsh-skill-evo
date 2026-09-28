@@ -89,6 +89,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
   for (const event of events) {
     if (event.kind === 'user-follow-up' && event.payload.explicit === true && event.skill !== undefined) {
       const feedbackKind = feedbackKindOf(event.payload.feedbackKind)
+      const counterEvidence = counterEvidenceFields(event)
       if (feedbackKind === 'satisfied') continue
       cases.push({
         id: `failure:${event.id}`,
@@ -99,6 +100,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
         ...(typeof event.payload.attributionConfidence === 'number' && Number.isFinite(event.payload.attributionConfidence)
           ? { attributionConfidence: Math.max(0, Math.min(1, event.payload.attributionConfidence)) }
           : {}),
+        ...counterEvidence,
         task: taskText(event),
         failure: textPayload(event) ?? `Explicit feedback: ${String(feedbackKind ?? 'other')}`,
         evidenceEventIds: [event.id],
@@ -109,6 +111,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
       continue
     }
     if (event.kind === 'skill-load-failed' && event.skill !== undefined) {
+      const counterEvidence = counterEvidenceFields(event)
       cases.push({
         id: `failure:${event.id}`,
         skillName: event.skill.name,
@@ -118,6 +121,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
         task: taskText(event),
         failure: textPayload(event) ?? 'Skill load failed',
         evidenceEventIds: [event.id, ...event.correlationIds],
+        ...counterEvidence,
         severity: 'high',
         createdAt: event.occurredAt,
         status: 'open',
@@ -128,6 +132,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
     if (event.kind === 'user-follow-up' && event.sessionId !== undefined) {
       const skills = [...loadedBySession.get(event.sessionId) ?? []]
       if (skills.length !== 1) continue
+      const counterEvidence = counterEvidenceFields(event)
       cases.push({
         id: `failure:${event.id}`,
         skillName: skills[0]!,
@@ -136,6 +141,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
         task: taskText(event),
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
+        ...counterEvidence,
         severity: 'medium',
         createdAt: event.occurredAt,
         status: 'open',
@@ -178,7 +184,7 @@ export function clusterFailureCases(
     signature: cluster.signature,
     caseIds: cluster.cases.map(failure => failure.id).sort(),
     occurrenceCount: cluster.cases.length,
-    createdAt: options.now ?? cluster.cases.reduce((earliest, failure) => failure.createdAt < earliest ? failure.createdAt : earliest, cluster.cases[0]!.createdAt),
+    createdAt: options.now ?? cluster.cases[0]!.createdAt,
     status: 'open',
   }))
 }
@@ -207,6 +213,15 @@ export function diagnoseFailureCluster(
           ? 'not-skill'
           : 'uncertain'
   const proposedOperation = rootCause === 'content' ? 'patch-content' : rootCause === 'composition' ? 'edit-metadata' : 'observe-only'
+  const hypothesis = rootCause === 'content'
+    ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
+    : rootCause === 'composition'
+      ? 'The Skill could not be loaded; inspect catalog visibility, provider composition, and loader availability.'
+      : rootCause === 'boundary'
+        ? 'The feedback identifies a constraint boundary; inspect whether the Skill declares its prerequisites and limits.'
+        : rootCause === 'not-skill'
+          ? 'The feedback describes a changed task goal rather than a Skill-owned failure.'
+          : 'The available evidence does not isolate a Skill-owned cause yet.'
   const supportingExperienceIds = experiences
     .filter(experience => experience.evidenceEventIds.some(id => selected.some(failure => failure.evidenceEventIds.includes(id))))
     .map(experience => experience.id)
@@ -214,15 +229,7 @@ export function diagnoseFailureCluster(
     id: `diagnosis:${cluster.id}`,
     clusterId: cluster.id,
     rootCause,
-    hypothesis: rootCause === 'content'
-        ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
-        : rootCause === 'composition'
-          ? 'The Skill could not be loaded; inspect catalog visibility, provider composition, and loader availability.'
-          : rootCause === 'boundary'
-            ? 'The feedback identifies a constraint boundary; inspect whether the Skill declares its prerequisites and limits.'
-            : rootCause === 'not-skill'
-              ? 'The feedback describes a changed task goal rather than a Skill-owned failure.'
-        : 'The available evidence does not isolate a Skill-owned cause yet.',
+    hypothesis,
     supportingExperienceIds,
     counterEvidence: unique(selected.flatMap(failure => failure.counterEvidence ?? [])),
     proposedOperation,
@@ -318,7 +325,7 @@ function tokenSet(value: string): Set<string> {
   for (const part of value.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]+/giu) ?? []) {
     if (/^[\u4e00-\u9fff]+$/u.test(part)) {
       const chars = [...part]
-      if (chars.length === 1) tokens.add(chars[0]!)
+      for (const char of chars) tokens.add(char)
       for (let index = 0; index < chars.length - 1; index += 1) tokens.add(`${chars[index]}${chars[index + 1]}`)
     } else if (part.length > 1) {
       tokens.add(part)
@@ -330,7 +337,12 @@ function tokenSet(value: string): Set<string> {
 function similarity(left: Set<string>, right: Set<string>): number {
   if (left.size === 0 || right.size === 0) return left.size === right.size ? 1 : 0
   const intersection = [...left].filter(token => right.has(token)).length
+  if ([...left, ...right].some(isCjkToken)) return intersection / Math.min(left.size, right.size)
   return intersection / new Set([...left, ...right]).size
+}
+
+function isCjkToken(value: string): boolean {
+  return /^[\u4e00-\u9fff]+$/u.test(value)
 }
 
 function feedbackKindOf(value: unknown): FeedbackKind | undefined {
@@ -344,9 +356,16 @@ function compareFailureCases(left: SkillFailureCase, right: SkillFailureCase): n
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
 }
 
+function counterEvidenceFields(event: RuntimeObservation): { readonly counterEvidence?: readonly string[] } {
+  const values = event.payload.counterEvidence
+  if (!Array.isArray(values)) return {}
+  const counterEvidence = values.filter((value): value is string => typeof value === 'string' && value.length > 0)
+  return counterEvidence.length === 0 ? {} : { counterEvidence }
+}
+
 function confidenceBand(cases: readonly SkillFailureCase[], occurrenceCount = cases.length): SkillDiagnosis['confidence'] {
   const occurrenceStrength = Math.min(0.6, Math.log2(Math.max(cases.length, occurrenceCount) + 1) / 5)
-  const sessionCount = new Set(cases.map(failure => failure.sessionId ?? failure.evidenceEventIds[0] ?? failure.id)).size
+  const sessionCount = new Set(cases.flatMap(failure => failure.sessionId === undefined ? [] : [failure.sessionId])).size
   const sessionStrength = Math.min(0.2, sessionCount / 5 * 0.2)
   const explicit = cases.filter(failure => failure.origin === 'explicit-feedback')
   const feedbackStrength = explicit.length > 0 ? 0.15 : 0

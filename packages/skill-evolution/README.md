@@ -39,15 +39,23 @@ Phase 2/3 APIs:
 Failure cases carry a structured `origin`: `load-failure`, `implicit-follow-up`, or
 `explicit-feedback`; explicit feedback also carries its `feedbackKind` and any
 provided `attributionConfidence`. Clustering sorts cases by `createdAt` and `id`,
-uses CJK character bigrams, and derives each cluster id from its earliest case id,
+uses CJK unigram/bigram tokens with an overlap coefficient, and derives each
+cluster id from its earliest case id,
 so projection output is independent of observation input order. Existing derived
 records are rebuilt with the new ids; consumers must resolve old cluster ids by
 reprojecting rather than treating them as durable identifiers.
 
 `Experience.confidence` and diagnosis confidence are evidence-strength scores,
 not calibrated probabilities. They combine occurrence count, distinct sessions,
-explicit feedback and counter-evidence. The score is informational until a
-separate calibration policy exists and is not used as a publication gate.
+explicit feedback, its `attributionConfidence`, and counter-evidence. The score
+is informational until a separate calibration policy exists and is not used as a
+publication gate.
+
+Persisted proposals are append-only facts and may retain a pre-migration
+`clusterId`. After re-projection, `renderProposalMarkdown` cannot resolve that
+old derived id and omits the Cluster line; callers should refresh proposal
+references from the current projection rather than treating cluster ids as
+permanent identifiers.
 
 Phase 4 APIs:
 
