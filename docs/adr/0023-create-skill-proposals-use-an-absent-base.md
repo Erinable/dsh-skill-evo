@@ -6,7 +6,7 @@ status: proposed
 
 `ProposalOperation` 增加 `create-skill`。`SkillProposal` 增加可选字段 `operation` 和 `source`。`create-skill` 的 `baseVersion` 与 `expectedBase.contentHash` 都写成字面量 `'absent'`，并且 `operation === 'create-skill'` 当且仅当 `expectedBase.contentHash === 'absent'`。凡是检查 Base 的地方（design、evaluate、evaluation artifact、promote 预检、`assertExpectedBase`），遇到 `absent` 都要求当前 Skill 仍然不存在，这样同名并发创建在发布锁内就会报 stale base。转移表不加状态、不加转移（ADR-0004），record id 沿用 ADR-0021。
 
-自我纠正片段（Correction episode）和它跨 session 的聚合（Correction pattern）存进两个新的派生 store：`episodes`、`patterns`。它们引用 observation id，带识别器版本和策略版本，可以删掉重建（ADR-0002、ADR-0016）。它们不塞进 `failures`：Failure case 按定义必须能归到某个 Skill，而这类片段往往出现在没有加载任何 Skill 的 session 里。投影 cursor 记下这些注入判断的版本，版本一变就重投影。
+自我纠正片段（Correction episode）和它跨 session 的聚合（Correction pattern）存进两个新的派生 store：`episodes`、`patterns`。它们引用 observation id，带识别器版本和策略版本，可以删掉重建（ADR-0002、ADR-0016）。它们不塞进 `failures`：Failure case 按定义必须能归到某个 Skill，而这类片段往往出现在没有加载任何 Skill 的 session 里。投影 cursor 记下这些注入判断的版本，版本一变就重投影。`patterns` 只存和时间、Skill root、台账都无关的字段，也就是签名和每次出现的 episode、session、时间。时间窗内的计数、是否是候选、目标 Skill 都在读取时按传入的 `now` 现算。原因是投影缓存不随时间失效，存下来的判断会过期。
 
 这个决策不可逆：`'absent'` 会写进台账，派生 store 的名字和记录形状会被报告、metrics 和以后的读取方依赖。
 

@@ -1,7 +1,7 @@
 # 从工具调用的自我纠正片段提炼 Skill
 
 > 状态：SKIL-128 设计提案（父 issue SKIL-127，S1）。不可逆决策见 ADR-0022、ADR-0023（都是 `proposed`，待成员确认）。
-> 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。基线 `origin/main` @ `2a442af`。本文只出设计，不写实现代码。
+> 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。基线 `origin/main` @ `2a442af`（代码）；第 2 轮修订时已合并到 `6accc8b`，这之间 main 只合入了 PR #78 的文档（ADR-0021 与 `proposal-ledger-transition.md`），代码没有变化。本文只出设计，不写实现代码。
 
 要解决的问题：模型 `git push` 连续报 443，自己想到设置代理后成功。这段上下文今天在采集、投影、提案三层都留不下来，几天后模型还会先犯同样的错，再自己纠正一遍。
 
@@ -10,7 +10,7 @@
 ### 1.1 读了什么
 
 - 本仓库：`packages/dsh-bundle/index.js`（全文）；`packages/skill-evolution/src/` 下的 `types.ts`、`experience.ts`、`proposal.ts`、`service.ts`、`operations.ts`、`workflow.ts`、`records.ts`、`events.ts`、`projection.ts`、`metrics.ts`、`report.ts`（全文），`lifecycle.ts:27-155,268-285`、`evaluator.ts:40-60,107-125,174-260`、`state-root.ts:1-80`、`portfolio.ts:1-42,130-144`。
-- 文档：`CONTEXT.md`、`AGENTS.md`、`docs/agents/domain.md`、`docs/agents/issue-tracker.md`，ADR-0002、0004、0005、0006、0014、0015、0016、0019、0020；PR #78（SKIL-123）的 `docs/design/proposal-ledger-transition.md` 和 ADR-0021（`proposed`）；`research/designer-subagent-readonly-tools-zh.md`；SKIL-104 的收尾决议评论；SKIL-125 / SKIL-126 的描述（SKIL-126 还没有设计 PR）。
+- 文档：`CONTEXT.md`、`AGENTS.md`、`docs/agents/domain.md`、`docs/agents/issue-tracker.md`，ADR-0002、0004、0005、0006、0014、0015、0016、0019、0020；PR #78（SKIL-123，已在 `6accc8b` 合并）的 `docs/design/proposal-ledger-transition.md` 和 ADR-0021（`accepted`）；`research/designer-subagent-readonly-tools-zh.md`；SKIL-104 的收尾决议评论；SKIL-125 / SKIL-126 的描述（SKIL-126 还没有设计 PR）。
 - DSH 源码（本机克隆 `deepseek-harness` @ `6ce94ee`，比 SKIL-102 调研用的 `477b4f4` 新）：`packages/shell/tool-bash/src/render.ts:10-60`、`packages/shell/tool-bash/src/index.ts:150-180,243,275-300,380-390`、`packages/shell/shell/src/render.ts:37-43`、`packages/core/session/src/types.ts:344-363`。
 - 基线：`npm --prefix packages/skill-evolution test` 输出 `Test Files  12 passed (12)`、`Tests  134 passed (134)`。
 
@@ -87,7 +87,21 @@ tool/result┘                                   │ Projection
 | 同上 | `timedOut` | `true` | — | 同上 |
 | 同上 | `errorLine` | 报错首行，脱敏、压缩空白后 | ≤ 200 字符 | 失败时才写（见 3.3） |
 
-不采集：完整输出（stdout/stderr 全文）、bash 的 `description`（模型写的自由文本）、`workdir`、非命令型工具的参数值（文件路径、搜索词、编辑内容）、环境变量的值、URL 的 query 和 fragment。
+不采集：
+
+- 完整输出（stdout/stderr 全文）
+- bash 的 `description`（模型写的自由文本）
+- `workdir`
+- 非命令型工具的参数值（文件路径、搜索词、编辑内容）
+- `command` / `errorLine` 里 URL 的 query 和 fragment：由 R7 在截断之前换成 `?[REDACTED]` / `#[REDACTED]`（§3.4）
+- 密钥类变量的值：变量名命中 R5 的那些
+
+会留在事实里的（`command` 前 16 个 token 以内、`errorLine` 200 字符以内），成员确认的正是这一部分：
+
+- 非密钥类环境变量的值，例如代理地址 `http_proxy=http://10.0.0.1:7890`。userinfo 部分已由 R1 脱敏。
+- URL 的 scheme、host、端口和路径，例如 `https://github.com/o/r.git`。
+- 命令行里的位置参数和普通 flag 的值：分支名、文件路径、包名等。
+- 报错首行里的 host、路径和数字。
 
 `failed` 语义不变，仍然只表示工具报错（`isError` / `data.error`）。「非零退出算不算失败」由投影层的识别器决定（§4），事实里只记退出码本身。理由：事实只记发生了什么，判断放派生层（ADR-0016）；老记录里的 `failed` 也不会被悄悄换了含义。
 
@@ -101,7 +115,7 @@ tool/result┘                                   │ Projection
 | B. 落盘时就规范化成「命令形状」 | `https_proxy=<url> git push <arg>`，值全换成占位符 | 中 | 同上 | 差：形状规则一改，老事实就和新事实对不上，又不能回写 | 规则每次变更都会让历史失配 |
 | C. A + B 都存 | 两份 | 中 | 同上 | 形状部分同 B | 同 B |
 
-推荐 A。形状放到投影层从 `command` 算（§4.3），带识别器版本，规则可以随时改、重投影即生效。代价是事实里留着脱敏后的参数值，比如代理地址 `http://10.0.0.1:7890`（没有凭据）、remote URL 的 host 和路径。这一点列进待确认项。
+推荐 A。形状放到投影层从 `command` 算（§4.3），带识别器版本，规则可以随时改、重投影即生效。代价是事实里会留下 §3.1「会留在事实里的」那几类值，这一点列进待确认项。
 
 ### 3.3 `exitCode` 和 `errorLine` 从哪里来
 
@@ -125,15 +139,16 @@ tool/result┘                                   │ Projection
 
 推荐 A。bundle 本来就 import core（`index.js:391` 已经在用 `redactSensitiveText`），两份规则今天是同一套，合并没有行为差异。
 
-规则按顺序执行，每条都幂等（对输出再跑一次结果不变）。前三条是现有规则，保留；R1 必须排在现有规则 3 前面，否则会重现 §1.2 里整段 host 被吞的问题：
+规则按表中顺序执行，每条都幂等：对输出再跑一次，结果不变。「现有 1–3」是今天已有的规则，保留，但排在最后。R1 必须排在现有规则 3 前面，否则会重现 §1.2 里整段 host 被吞的问题。R7 排在第二，URL 里的参数因此在其他规则之前就整段去掉了。
 
 | # | 覆盖 | 匹配（示意，大小写不敏感） | 替换后 |
 |---|---|---|---|
 | R1 | URL userinfo、带凭据的 remote URL | `<scheme>://<user>[:<pass>]@` | `<scheme>://[REDACTED]@` |
+| R7 | URL 的 query 和 fragment（签名 URL、`?access_token=`、`?sig=` 等） | 以 `<scheme>://` 开头的 URL，其中 `?` 之后、到空白或引号为止的内容；`#` 之后同理 | `?[REDACTED]`、`#[REDACTED]`，host 和路径保留 |
 | R2 | `Authorization` 等头，含 `-H` / `--header` 的值 | `(proxy-)?authorization`、`x-api-key`、`x-auth-token`、`cookie` 后接 `:`，吃到引号或行尾 | `Authorization: [REDACTED]` |
 | R3 | `--token` / `--password` 类参数 | `--(token\|password\|passwd\|pass\|secret\|api-key\|apikey\|auth\|auth-token\|access-token\|client-secret)` 后接 `=` 或空白再跟一个值 | `--token [REDACTED]` |
 | R4 | curl 的 `-u` / `--user` | `(-u\|--user)\s+\S+:\S+` | `-u [REDACTED]` |
-| R5 | 环境变量赋值里的密钥（含 `export`） | 变量名以 `TOKEN`、`SECRET`、`PASSWORD`、`PASSWD`、`PASS`、`KEY`、`AUTH`、`CREDENTIAL(S)`、`COOKIE` 结尾，后接 `=值` | `GITHUB_TOKEN=[REDACTED]` |
+| R5 | 环境变量赋值里的密钥（含 `export`、`env`） | 只在 shell token 的开头生效：变量名以 `TOKEN`、`SECRET`、`PASSWORD`、`PASSWD`、`PASS`、`KEY`、`AUTH`、`CREDENTIAL(S)`、`COOKIE` 结尾，后接 `=值`。URL 里的 `key=value` 不归它管，已由 R7 整段去掉 | `GITHUB_TOKEN=[REDACTED]` |
 | R6 | 已知格式的令牌，不论出现在哪 | `ghp_`、`gho_`、`ghu_`、`ghs_`、`ghr_`、`github_pat_`、`glpat-`、`xox[abp]-`、`AKIA[0-9A-Z]{16}`、`npm_` 加 36 位 | `[REDACTED]` |
 | 现有 1–3 | `sk-` key、`Bearer` / `Basic`、`password\|token\|secret` 加 `:` / `=` | 不变 | 不变 |
 
@@ -148,11 +163,23 @@ tool/result┘                                   │ Projection
 "export NPM_AUTH=[REDACTED]; token=[REDACTED]"
 ```
 
+URL query / fragment 的探针（R7）。Reviewer 在 `2a442af` 的现有规则上实测，前三条原样保留：
+
+```
+"curl \"https://api.example.com/v1?access_token=abc123def\""                        → "curl \"https://api.example.com/v1?[REDACTED]\""
+"curl \"https://b.s3.amazonaws.com/o?X-Amz-Signature=deadbeef&X-Amz-Credential=AKID\"" → "curl \"https://b.s3.amazonaws.com/o?[REDACTED]\""
+"curl \"https://x.blob.core.windows.net/c?sv=2020&sig=abc%2Fdef\""                   → "curl \"https://x.blob.core.windows.net/c?[REDACTED]\""
+"open https://app.example.com/cb#access_token=abc123"                              → "open https://app.example.com/cb#[REDACTED]"
+"git clone https://u:p@git.example.com/r.git?ref=main"                             → "git clone https://[REDACTED]@git.example.com/r.git?[REDACTED]"
+```
+
+`errorLine` 走同一套规则，报错首行里的 URL 同样去掉 query 和 fragment。
+
 执行顺序：命令先脱敏、再分词截断。反过来的话，截断可能把一个密钥切成两半，两半都匹配不上。落盘前 bundle 仍对整个 payload 跑一遍 `redactRecord`（`index.js:156`），这一遍因为幂等不会改坏已脱敏的值。
 
 已知漏网（不追求完备，写进文档和测试名）：`mysql -pPASS` 这类短参数紧贴值；位置参数里的密码；base64 编码后的凭据；heredoc 正文。`command` 只保留前 16 个 token，限制了这些情况的暴露面。
 
-代理地址本身（`10.0.0.1:7890`）不是凭据，不脱敏。它是 §4 纠正动作和 §7 环境事实的依据；它会不会进入候选正文，由 §6.4 的正文检查挡住。
+代理地址本身（`10.0.0.1:7890`）不是凭据，不脱敏，和 §3.1「会留在事实里的」一致。它是 §4 纠正动作和 §8 环境事实的依据。它会不会进入候选正文，由 §6.4 的正文检查挡住。
 
 ### 3.5 向后兼容
 
@@ -222,7 +249,8 @@ interface EpisodeDraft {
 ### 4.3 规则识别器 `rule-1`
 
 1. 只看有 `command` 的 attempt。没有 `command` 的（老记录、非命令型工具）跳过，不产出。
-2. **意图**：把 `command` 按 `&&`、`||`、`;`、`|` 切段，取最后一段；去掉前导的 `VAR=值` 赋值和 `sudo`、`env`、`command`、`time` 前缀；取程序名加第一个不以 `-` 开头的参数。`https_proxy=http://… git push origin main` → `git push`。
+2. **意图**：把 `command` 按 `&&`、`||`、`;`、`|` 切段，取最后一段；去掉前导的 `VAR=值` 赋值和 `sudo`、`env`、`command`、`time` 前缀；取程序名加第一个不以 `-` 开头的参数，并跳过已知带值的全局选项的值（`git -C <dir>`、`git -c <k=v>`、`npm --prefix <dir>`、`make -C <dir>`、`docker --context <c>`）。`https_proxy=http://… git push origin main` → `git push`；`git -C repo push` → `git push`。
+   已知限制（S2 列入 spec）：`bash -c "…"`、`sh -c`、`eval` 这类只取到外层程序，不拆内层命令；`npx <pkg>`、`pnpm dlx <pkg>` 取到的是包名，同一个工具的不同调用方式会分成不同意图。这些是投影层规则，升级识别器版本、重投影就能改，不影响事实。
 3. **片段**：同一 session 里按 `sessionSeq`（没有时按 `occurredAt`）排序。同一意图累计失败 ≥ N 次，之后 20 次 attempt 以内出现同意图的成功，就构成一段。中间夹着别的意图的调用不打断计数。
 4. **报错签名**：取最后一次失败的 `exitCode` 和 `errorLine`，规范化成 `exit:<n>|<line>`，≤ 160 字符。规范化步骤：转小写；URL 只留 `scheme://host[:port]`；引号内的内容换成 `<q>`；`after N ms`、时间戳、7 位以上十六进制、UUID 换成占位符。端口号和退出码保留，它们正是区分信号的地方。上例得到 `exit:128|fatal: unable to access <q>: failed to connect to github.com port 443 after <n> ms: couldn't connect to server`。
 5. **纠正动作**：对比最后一次失败和成功那次，再加上两者之间成功的其他意图调用，只提取名字，不取值：
@@ -283,7 +311,7 @@ const DEFAULT_CORRECTION_POLICY = {
   version: '1',
   minFailures: 2,          // N：同意图连续失败 ≥ 2 次才算一段
   minSessions: 3,          // K：≥ 3 个不同 session
-  windowDays: 30,          // D：只数最近 30 天（按 episode.occurredAt，相对投影时刻）
+  windowDays: 30,          // D：只数最近 30 天（按 episode.occurredAt，相对读取时传入的 now，见 5.3）
   maxAttemptsToSuccess: 20,
   allowedScopes: ['project', 'user'],   // §6.5
 }
@@ -298,7 +326,7 @@ const DEFAULT_CORRECTION_POLICY = {
 
 ### 5.3 Correction pattern
 
-新 derived store `patterns`，投影时按 `signatureKey` 对 episode 分组：
+新 derived store `patterns`，投影时按 `signatureKey` 对 episode 分组。**只存和时间、Skill root、台账都无关的字段**：
 
 ```ts
 interface CorrectionPattern {
@@ -308,23 +336,41 @@ interface CorrectionPattern {
   readonly errorSignature: string
   readonly correction: readonly string[]
   readonly environmental: boolean
-  readonly episodeIds: readonly string[]
-  readonly sessionCount: number       // 窗口内不同 session 数
-  readonly totalSessionCount: number  // 不看窗口
+  readonly retryOnly: boolean
+  readonly occurrences: readonly { readonly episodeId: string; readonly sessionId: string; readonly occurredAt: string }[]
+  readonly totalSessionCount: number  // 全部 occurrence 的不同 session 数
   readonly firstSeenAt: string
   readonly lastSeenAt: string
-  readonly candidate: boolean         // 窗口内 sessionCount ≥ K 且不是 retryOnly
   readonly policyVersion: string
 }
 ```
 
-没到门槛的 pattern 也写进 store，`candidate: false`，给人看，但不能作为 `design` 的来源。
+窗口计数和「是不是候选」都不存。`refreshDerived` 在 Observation 不变时直接返回旧结果（`service.ts:396`），而 cursor 里没有时间，所以存下来的窗口计数在 30 天没有新事实时会一直不变，已经过期的 pattern 仍然是候选。改成读取时现算：
 
-「新建还是补丁到哪个 Skill」（§6.2）不存进 pattern。它取决于 Skill root 里现有哪些 Skill，而 Skill root 的变化不经过 Observation，投影 cursor 看不见，存进去就会过期。这个目标在 `failures` 渲染和 `design` 时现算。
+```ts
+function assessPattern(input: {
+  pattern: CorrectionPattern
+  policy: CorrectionPolicy
+  now: string                                  // 调用方传入；bundle 取当前时间，测试固定
+  proposals: readonly SkillProposal[]          // 来自这个 pattern 的提案（source.patternId）
+}): {
+  since: string                                // 计数起点：max(now − D, 最近一次 promote 的时间)；promote 时间取台账里 promoted 记录的 updatedAt
+  windowSessionCount: number                   // since 之后的不同 session 数
+  candidate: boolean                           // windowSessionCount ≥ K 且不是 retryOnly 且没有进行中的提案
+  blockedBy?: { proposalId: string; status: ProposalStatus }   // 进行中的提案
+  promotedSkill?: string                       // 最近一次 promote 发布的 Skill 名
+}
+```
+
+`design`、`failures`、`metrics` 都调用这一个纯函数，不读存下来的判断。门槛只有这一处实现，「超出 D 天后不再是候选」和「promote 之后重新计数」（§6.3）都在这里成立。
+
+「新建还是补丁到哪个 Skill」（§6.2）同样不存进 pattern。它取决于 Skill root 里现有哪些 Skill，而 Skill root 的变化不经过 Observation，投影 cursor 看不见，存进去就会过期。这个目标在 `failures` 渲染和 `design` 时现算。
+
+所有 pattern 都写进 store，不管到没到门槛，给人看。能不能作为 `design` 的来源，只看 `assessPattern(…).candidate`。
 
 ### 5.4 在 `failures` / `metrics` 里可见
 
-- `failures` 的 Markdown 报告（`report.ts` 的 `renderFailuresMarkdown`）在现有按 cluster 分组的内容后面加一节「自我纠正」：每个 pattern 一行，列出意图、报错签名、纠正动作、`sessionCount / K`、窗口、是否候选、目标（新建，或补丁到哪个 Skill，现算），报告头写出策略版本和 K / N / D。
+- `failures` 的 Markdown 报告（`report.ts` 的 `renderFailuresMarkdown`）在现有按 cluster 分组的内容后面加一节「自我纠正」：每个 pattern 一行，列出意图、报错签名、纠正动作、`windowSessionCount / K`、计数起点、是否候选（没成为候选时写原因：未到门槛、只是重试、或被哪个提案挡住）、目标（新建，或补丁到哪个 Skill）。这些都在渲染时按当前时间用 `assessPattern` 现算。报告头写出策略版本、K / N / D 和计算用的 `now`。
 - `metrics`（`EvolutionMetrics`）加一段：
 
 ```ts
@@ -333,7 +379,7 @@ corrections: {
   recognizer: { version, fallbacks },
   episodes: number,
   patterns: number,
-  candidates: number,
+  candidates: number,      // 按 metrics 调用时的 now 现算（assessPattern），不读缓存
   rejectedDrafts: number,
 }
 ```
@@ -379,6 +425,7 @@ corrections: {
 
 推荐 A。按顺序判断，第一条命中就停：
 
+0. 这个 pattern 有过 `promoted` 的提案（`assessPattern(…).promotedSkill`），而且那个 Skill 仍然存在：`patch-content` 这个 Skill。发布之后还在犯同样的错，要么是 Skill 没被加载（描述、触发条件的问题），要么是加载了但做法不够，两种都该改它，不该再建一个。
 1. 人给了 `--skill <name>`：这个 Skill 存在就 `patch-content`，不存在就 `create-skill` 并用这个名字。
 2. pattern 里过半的 episode 加载过同一个 Skill（`loadedSkills`）：`patch-content` 这个 Skill。它在上下文里，模型还是犯了错，说明它缺这一段。
 3. pattern 的词（意图的词加报错签名的 host）和某个 Skill 的名字、描述的词做 Jaccard（复用 `portfolio.ts` 的切词），最高分 ≥ 0.5：`patch-content` 这个 Skill；前两名分数相同就报 `ambiguous-target`，要求带 `--skill`。
@@ -396,11 +443,21 @@ corrections: {
 
 `--pattern` 和 `--cluster` 二选一。core 用例 `designFromPattern(service, { patternId, designer, proposedVersion, skillName? })`，所有前置检查都在起子代理之前做，失败不落任何东西（SKIL-104）：
 
-1. pattern 存在，`candidate: true`，否则 `insufficient-evidence`，报告里写出 `sessionCount / K`。这就是「门槛没过不能提案」。
+1. pattern 存在，并且 `assessPattern({ pattern, policy, now, proposals }).candidate` 为真（§5.3）。
+   - 没有进行中的提案、只是没到门槛时，报 `insufficient-evidence`，写出 `windowSessionCount / K` 和计数起点 `since`。这就是「门槛没过不能提案」。
+   - 有进行中的提案时，报 `already-proposed`，给出它的 id 和状态。
 2. 按 6.2 定目标。
-3. 没有同一 pattern 的未结束 Proposal（状态不是 `rejected`、`rolled-back`、`reverted`），否则 `already-proposed`，给出已有的 id。
-4. 调 Designer，校验输出（`validateSkillDocument`、6.4 的环境值检查），通过后 `createProposal` 并转到 `proposed`，停在这里。
+3. 调 Designer，校验输出（`validateSkillDocument`、6.4 的环境值检查），通过后 `createProposal` 并转到 `proposed`，停在这里。
 
+同一个 pattern 上的提案按状态分三类：
+
+| 状态 | 算作 | 对这个 pattern 的影响 |
+|---|---|---|
+| `draft`、`proposed`、`evaluating`、`evaluated`、`replayed`、`observed`、`accepted`、`deferred` | 进行中 | 挡住新提案（`already-proposed`）。`deferred` 也算，想重新提案的人先 reject 它 |
+| `promoted` | 已发布 | 不挡。计数起点移到这次 promote 的时间，只有发布之后新出现的 episode 才计入 K；目标按 6.2 规则 0 改成补丁这个 Skill |
+| `rejected`、`rolled-back`、`reverted` | 已结束 | 不挡，计数起点不变 |
+
+所以 `create-skill` 发布之后，要再积累 K 个 session 的同样错误，才会出现一个补丁这个新 Skill 的 `patch-content` 候选。这个 pattern 不会被永久挡住，也不会因为发布前的老 episode 马上又成为候选。
 `DesignerInput` 改成判别联合，`{ source: 'cluster', … }` 维持现状，新增：
 
 ```ts
@@ -417,7 +474,7 @@ corrections: {
 
 Designer 拿到的全部是已脱敏的派生字段，没有完整输出，因为事实里本来就没有。
 
-`SkillProposal` 新增的可选字段：`operation`、`source: { kind: 'pattern', patternId, signatureKey, episodeIds, targetReason }`。`evidenceEventIds` 填 episode 引用的 observation id。台账和转移表：`create-skill` 走现有的同一张表（`proposal.ts:24-37`），不加状态，不加转移，ADR-0004 不受影响。record id 按 ADR-0021（`<root>:<status>`，重复进入同一状态时是 `<root>:<status>:<n>`），通过 PR #78 的 `ProposalLedger.transition` 写入。所以 S2 要等 ADR-0021 合并后再定稿，和父 issue 的依赖说明一致。
+`SkillProposal` 新增的可选字段：`operation`、`source: { kind: 'pattern', patternId, signatureKey, episodeIds, targetReason }`。`evidenceEventIds` 填 episode 引用的 observation id。台账和转移表：`create-skill` 走现有的同一张表（`proposal.ts:24-37`），不加状态，不加转移，ADR-0004 不受影响。record id 按 ADR-0021（`<root>:<status>`，重复进入同一状态时是 `<root>:<status>:<n>`），通过 ADR-0021 设计的 `ProposalLedger.transition`（`docs/design/proposal-ledger-transition.md`）写入。ADR-0021 已经 `accepted`，但 `ledger.ts` 还没实现（`6accc8b` 上没有这个文件，实现在 SKIL-121 后续阶段），所以 S3 的第 3 张要排在 SKIL-121 的实现之后。
 
 ### 6.4 候选正文不写死环境值
 
@@ -501,11 +558,16 @@ Designer 拿到的全部是已脱敏的派生字段，没有完整输出，因�
 
 | 验收 | 怎么成立 | 落在哪 |
 |---|---|---|
-| 1 个 session 只产生 Experience，K 个 session 产生 `create-skill` 候选 | 规则识别器产出 1 个 episode（3 次失败 ≥ N = 2）和 1 条 Experience；pattern 的 `sessionCount = 1 < K = 3`，`candidate: false`，`design --pattern` 报 `insufficient-evidence`。K 份夹具时 `candidate: true`，因为 `loadedSkills` 为空、没有 Skill 的词能匹配上，6.2 判到规则 4，`design` 用假 Designer 得到 `operation: 'create-skill'`、`expectedBase.contentHash: 'absent'`、停在 `proposed` | §4.3、§5.2、§6.2、§6.3 |
+| 1 个 session 只产生 Experience，K 个 session 产生 `create-skill` 候选 | 规则识别器产出 1 个 episode（3 次失败 ≥ N = 2）和 1 条 Experience；`assessPattern` 得到 `windowSessionCount = 1 < K = 3`，不是候选，`design --pattern` 报 `insufficient-evidence`。K 份夹具时是候选，因为 `loadedSkills` 为空、没有 Skill 的词能匹配上，6.2 判到规则 4，`design` 用假 Designer 得到 `operation: 'create-skill'`、`expectedBase.contentHash: 'absent'`、停在 `proposed` | §4.3、§5.2、§6.2、§6.3 |
 | 候选和所有产物里没有代理凭据 | bundle 在落盘前按 R1 把 userinfo 换成 `[REDACTED]`，事实里没有 `alice` 和 `s3cretpw`；此后所有派生记录和产物（episode、pattern、Experience、Designer 输入、Proposal、用例草稿、报告）都只从事实派生，所以都没有。候选正文另过 §6.4 检查，代理 host `10.0.0.1` 和端口 `7890` 也不能出现。测试对状态根下的每个文件和 bundle 的每个输出 grep 这两个值 | §3.4、§6.4 |
 | promote 到 `stable` 被拒 | `promoteProposal` 查 `CorrectionPolicy.allowedScopes`，`stable` 报 `scope-not-allowed`，`--dry-run` 同样报 | §6.5 |
 | 没经 accept 不能 promote | 现有 `operations.ts:161` 和转移表保证；另加 accept 读 `passedGate`，没过门槛也不能 accept | §7.3 |
 | 换识别器后重投影，结果随之改变 | 注入一个 `version: 'fake-1'`、永远返回空的识别器 → cursor 的 `judges.correction` 从 `rule-1` 变成 `fake-1` → `refreshDerived()` 不带 `force` 就重投影 → `episodes` 和 `patterns` 被清空，`metrics.corrections.recognizer.version === 'fake-1'`，观测数不变 | §4.5 |
+
+第 1 条验收补两条相关用例：
+
+- **过期**：K 份夹具都放在 `now` 之前 31 天。`refreshDerived()` 之后不写任何新事实，直接调 `design --pattern`，报 `insufficient-evidence`，`windowSessionCount = 0`；`failures` 和 `metrics.corrections.candidates` 都显示不是候选。对照组把 `now` 移回 29 天前，就是候选。这证明窗口判断不依赖投影缓存（§5.3）。
+- **发布后**：K 份夹具产生的 `create-skill` 被 promote 之后，同一个 pattern 立刻不是候选（发布后新 episode 数为 0，不报 `already-proposed`）。再写入 K 份发布之后的夹具，它重新成为候选，`design` 判到 6.2 规则 0，得到 `patch-content` 这个新 Skill（§6.3）。
 
 ## 10. seam 与变化频率
 
@@ -524,22 +586,22 @@ Designer 拿到的全部是已脱敏的派生字段，没有完整输出，因�
 - ADR-0022：tool-call / tool-result 的 Observation 增加脱敏后的命令摘要和报错签名字段，`schemaVersion` 不变。
 - ADR-0023：`create-skill` 提案用哨兵值 `'absent'` 表示空 Base，自我纠正片段作为不绑定 Skill 的 Derived record 单独存放。
 
-编号：`origin/main` 当前最大是 0020，PR #78 占用 0021，所以本 PR 用 0022、0023。后合并的 PR 遇到冲突时改号。两条都依赖 ADR-0021 的 record id 规则，但不与它冲突。与现有 ADR 没有冲突：ADR-0014（依赖方向不变）、ADR-0016（episode 是派生的，引用 observation id，不回写）、ADR-0004（转移表不加状态）。
+编号：`origin/main`（`6accc8b`）当前最大是 0021，所以本 PR 用 0022、0023。两条都依赖 ADR-0021（`accepted`）的 record id 规则，但不与它冲突。与现有 ADR 没有冲突：ADR-0014（依赖方向不变）、ADR-0016（episode 是派生的，引用 observation id，不回写）、ADR-0004（转移表不加状态）。
 
 ## 12. 给 S2 / S3 的拆分建议
 
-S2 spec 等 ADR-0021 合并后定稿。S3 可以拆成三张，前两张互不依赖：
+ADR-0021 已经 `accepted`，S2 spec 可以直接定稿，不用再等。S3 可以拆成三张，前两张互不依赖：
 
 1. **采集与脱敏**（bundle + `events.ts`）：§3 全部；bundle 删掉 `redactText`；六个探针和各条规则的表驱动测试；bash 退出标记解析测试。
 2. **识别与聚合**（`correction.ts`、`state-root.ts`、`service.ts` 的投影、`metrics.ts`、`report.ts`）：§4、§5；验收 1 的前半和验收 5。
-3. **create-skill 与发布**（`types.ts`、`proposal.ts`、`operations.ts`、`service.ts`、`lifecycle.ts`、`evaluator.ts`、`dsh-adapter` 评测、bundle 的 `design --pattern`）：§6、§7；验收 1 的后半、2、3、4。依赖第 2 张和 PR #78。
+3. **create-skill 与发布**（`types.ts`、`proposal.ts`、`operations.ts`、`service.ts`、`lifecycle.ts`、`evaluator.ts`、`dsh-adapter` 评测、bundle 的 `design --pattern`）：§6、§7；验收 1 的后半、2、3、4。依赖第 2 张和 SKIL-121 的 `ProposalLedger` 实现。
 
 验证方式：每张都跑 `npm --prefix packages/skill-evolution test` 和 bundle 的测试，全部通过；第 3 张另跑一条端到端夹具，从事实写入一直到 promote 到 `project`，中间 `stable` 被拒。
 
 ## 13. 待定项
 
-- **待成员确认（阻塞交付）**：§3 的采集字段清单和脱敏规则，也就是 ADR-0022。
-- **业务判断（采用默认答案，成员可推翻）**：§8 的 Skill / memory / workflow 边界；§5.2 的 K = 3、N = 2、D = 30；§6.1 不支持回滚到不存在；§6.2 的目标判断规则；§7.3 accept 查门槛只对 pattern 来源生效；§4.2 `DerivedJudge` 的形状和 SKIL-126 谁先合并谁定。
+- **待成员确认（阻塞交付）**：§3 的采集字段清单和脱敏规则 R1–R7（ADR-0022）；空 Base 的表示和新增派生 store（ADR-0023）。
+- **业务判断（采用默认答案，成员可推翻）**：§8 的 Skill / memory / workflow 边界；§5.2 的 K = 3、N = 2、D = 30；§6.1 不支持回滚到不存在；§6.2 的目标判断规则（含规则 0：发布过的 pattern 改为补丁这个 Skill）；§6.3 进行中的提案（包括 `deferred`）挡住新提案，promote 后重新计数；§7.3 accept 查门槛只对 pattern 来源生效；§4.2 `DerivedJudge` 的形状和 SKIL-126 谁先合并谁定。
 - **没核实**：DSH 的 session `tool/result` 事件上会不会带 bash 的结构化结果（§3.3 第 1 步）；没有它也能用标记解析，所以不影响设计。
 - **范围外、建议另立票**：scope 真正改变写入路径（§6.5 的已知缺口）。
 

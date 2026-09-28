@@ -4,7 +4,7 @@ status: proposed
 
 # 工具调用 Observation 记录脱敏后的命令摘要和报错签名，不记完整输出
 
-为了从「失败几次后自己纠正」的片段里学东西，普通工具调用的 Observation 在 payload 上增加几个可选字段：tool/call 上加 `argKeys`（只有键名），命令型工具（今天是 `bash`、`pwsh`）再加 `command`（脱敏后的前 16 个 shell token，≤ 240 字符）和 `commandTruncated`；tool/result 上加 `exitCode`、`signal`、`timedOut`，失败时加 `errorLine`（脱敏后的报错首行，≤ 200 字符）。`schemaVersion` 仍为 1，老记录照样能读。这些值落盘前统一过 core 的 `redactSensitiveText`，并补齐这些规则：URL userinfo、`Authorization` 类请求头、`--token` / `--password` 类参数、`-u user:pass`、以 `TOKEN` / `SECRET` / `KEY` 等结尾的环境变量赋值、已知格式的令牌。先脱敏再截断。bundle 删掉自己那份 `redactText`，改用 core 的。
+为了从「失败几次后自己纠正」的片段里学东西，普通工具调用的 Observation 在 payload 上增加几个可选字段：tool/call 上加 `argKeys`（只有键名），命令型工具（今天是 `bash`、`pwsh`）再加 `command`（脱敏后的前 16 个 shell token，≤ 240 字符）和 `commandTruncated`；tool/result 上加 `exitCode`、`signal`、`timedOut`，失败时加 `errorLine`（脱敏后的报错首行，≤ 200 字符）。`schemaVersion` 仍为 1，老记录照样能读。这些值落盘前统一过 core 的 `redactSensitiveText`，并补齐这些规则：URL userinfo、URL 的 query 和 fragment（整段换成 `?[REDACTED]` / `#[REDACTED]`，挡住签名 URL 和 `?access_token=`）、`Authorization` 类请求头、`--token` / `--password` 类参数、`-u user:pass`、以 `TOKEN` / `SECRET` / `KEY` 等结尾的环境变量赋值、已知格式的令牌。先脱敏再截断。bundle 删掉自己那份 `redactText`，改用 core 的。
 
 事实只记发生了什么：`failed` 的含义不变，仍然只表示工具报错；非零退出只写成 `exitCode`，「算不算失败」和命令形状的规范化都放在投影层（ADR-0016）。这个决策不可逆：写进事实流的内容不能回写、不能再脱敏（ADR-0002、ADR-0016），字段名一旦有了读取方也不能改。
 
@@ -17,7 +17,13 @@ status: proposed
 
 ## Consequences
 
-- 脱敏后的非凭据值会留在事实里，比如代理 host 和端口、remote URL 的 host 和路径。它们不能进入候选 Skill 正文，由 create-skill 的环境值检查挡住（见 ADR-0023 与设计稿 §6.4）。
+- 只有变量名属于密钥类的环境变量值会被脱敏。其他值在 `command` 前 16 个 token 以内、`errorLine` 200 字符以内的，会留在事实里：
+  - 非密钥变量的值，例如代理地址 `http://10.0.0.1:7890`（userinfo 已脱敏）；
+  - URL 的 scheme、host、端口和路径；
+  - 位置参数和普通 flag 的值；
+  - 报错首行里的 host 和路径。
+
+  这些值不能进入候选 Skill 正文，由 create-skill 的环境值检查挡住（见 ADR-0023 与设计稿 §6.4）。
 - 已知漏网：`-pPASS` 这类短参数紧贴值、位置参数里的密码、编码过的凭据。只保留前 16 个 token 限制了这些情况的暴露面。
 
 来源：`docs/design/tool-correction-create-skill.md` §3（SKIL-128）
