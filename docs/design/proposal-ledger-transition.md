@@ -1,4 +1,4 @@
-> 状态：SKIL-123 设计提案（父 issue SKIL-121，来源：架构扫描第 3 期 SKIL-109 编号 3）。决策见 ADR-0021（`proposed`，待成员确认），它取代 ADR-0005。
+> 状态：SKIL-123 设计提案（父 issue SKIL-121，来源：架构扫描第 3 期 SKIL-109 编号 3）。决策见 ADR-0021（`accepted`，成员确认：SKIL-123），它取代 ADR-0005。
 > 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
 
 本文要解决两件事：一次 Proposal 转移收成 core 里的一个操作，写不进去就报错；Ledger record 的 id 能区分同一状态的多次进入。基线是 `origin/main` @ `2a442af`。本文只出设计，不写实现代码。
@@ -125,7 +125,7 @@ A 的计算规则：n = 该 root 已有的 `status === to` 的记录数 + 1；n 
 
 `proposalRootId` 的解析改为：末段是编号且前一段是状态后缀，就把两段一起去掉；末段是状态后缀，去掉一段；重复直到都不是。`proposal:abc:2` 这种 root（`2` 前面不是状态）不受影响。
 
-**推荐 A。** 不可逆，见第 5 节，待成员确认。
+**采用 A。** 不可逆，成员已确认（SKIL-123）。
 
 ### 2.3 磁盘上的旧记录（数据格式，ADR-0021）
 
@@ -134,7 +134,7 @@ A 的计算规则：n = 该 root 已有的 `status === to` 的记录数 + 1；n 
 
 以前因为判重丢掉的记录补不回来：那次转移的 decision 已经写了，旧数据里可能有「有 decision、无 Ledger record」的 root。不自动回填。metrics 按 root 去重计数（`metrics.ts:79-87`），数字不受影响。
 
-**推荐兼容读。** 不可逆，待成员确认。
+**采用兼容读。** 不可逆，成员已确认（SKIL-123）。
 
 ### 2.4 失败语义
 
@@ -242,4 +242,4 @@ T1、T2 可并行；T3 依赖两者；T4 依赖 T3。每个 task 单独合并后
 
 ## 5. 不可逆决策
 
-- **ADR-0021**：Ledger record id 按第几次进入编号（第 1 次无后缀、第 n 次 `:<n>`），新记录带 `previousRecordId`，decision id 为 `decision:ledger:<recordId>`；旧数据兼容读，不迁移。取代 ADR-0005。状态 `proposed`，待成员确认。
+- **ADR-0021**：Ledger record id 按第几次进入编号（第 1 次无后缀、第 n 次 `:<n>`），新记录带 `previousRecordId`，decision id 为 `decision:ledger:<recordId>`；旧数据兼容读，不迁移。取代 ADR-0005。成员确认：SKIL-123。

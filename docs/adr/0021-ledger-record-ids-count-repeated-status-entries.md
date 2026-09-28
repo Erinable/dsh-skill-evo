@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Ledger record id 按「第几次进入该状态」编号；旧记录原样兼容读；每条 Ledger record 恰好对应一条 decision
@@ -39,4 +39,5 @@ ADR-0005 里仍然成立的部分原样保留：只按精确 root 或精确 reco
 - 旧 decision（`decision:transition:<root>:<to>:<updatedAt>`，以及更早的 action-only 记录）不改写，metrics 继续兼容读。
 - 部署期间旧版进程不认识 `:<n>` 后缀，会把 `<root>:evaluated:2` 当成另一个 root，出现一条幽灵 Proposal；旧版进程也仍会静默丢掉重复进入。CLI、bundle 和 adapter 必须一起升级，之后这个风险才消失。
 
+成员确认：SKIL-123
 来源：[docs/design/proposal-ledger-transition.md](../design/proposal-ledger-transition.md)
