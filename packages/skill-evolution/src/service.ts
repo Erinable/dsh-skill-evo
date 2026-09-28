@@ -135,9 +135,11 @@ export class EvolutionService {
   }
 
   async health(): Promise<readonly JsonlHealth[]> {
-    const current = [this.observations.filePath, this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
-    const archives = await archivePaths(this.observations.filePath)
-    const reports = await Promise.all(current.map(path => inspectJsonlHealth(path)))
+    const reports = await Promise.all(this.layout.stores.map(store => inspectJsonlHealth(
+      store.path,
+      store.name === 'observations' ? { parse: isObservationValue } : {},
+    )))
+    const archives = await archivePaths(this.layout.observations.path)
     const archiveReports = await Promise.all(archives.map(path => inspectJsonlHealth(path, { parse: isObservationValue, requireTrailingNewline: true })))
     return [...reports, ...archiveReports]
   }
@@ -147,7 +149,7 @@ export class EvolutionService {
   }
 
   async repair(): Promise<EvolutionRepairReport> {
-    const paths = [this.proposals.filePath, this.decisions.filePath, this.experiences.filePath, this.failures.filePath, this.clusters.filePath, this.diagnoses.filePath, this.feedback.filePath, this.evaluations.filePath]
+    const paths = this.layout.stores.filter(store => store.name !== 'observations').map(store => store.path)
     const jsonl: JsonlRepairResult[] = []
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath, layout: this.layout })
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
