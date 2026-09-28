@@ -1,5 +1,6 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { appendFrames, readFrames } from './jsonl.js'
 import { withLock } from './locking.js'
 
 /** Small append-only JSONL repository for derived evolution records. */
@@ -15,7 +16,7 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
       await this.ensureInitialized()
       await this.refreshKnownIds()
       if (this.knownIds.has(record.id)) return false
-      await appendFile(this.filePath, `${JSON.stringify(record)}\n`, 'utf8')
+      await appendFrames(this.filePath, [JSON.stringify(record)])
       this.knownIds.add(record.id)
       return true
     }))
@@ -30,8 +31,8 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
   async readAll(): Promise<T[]> {
     return withLock(`${this.filePath}.lock`, 'read', async () => {
       await this.ensureInitialized()
-      const text = await readFile(this.filePath, 'utf8')
-      return parseLines(text)
+      const { lines } = await readFrames(this.filePath)
+      return lines.map(line => JSON.parse(line) as T)
     })
   }
 
@@ -58,13 +59,14 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
 
   private async initialize(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
+    const { lines } = await readFrames(this.filePath)
+    for (const line of lines) {
+      const record = JSON.parse(line) as T
+      if (typeof record.id !== 'string') throw new Error('invalid record id')
+      this.knownIds.add(record.id)
+    }
     try {
-      const text = await readFile(this.filePath, 'utf8')
-      for (const line of completeLines(text).filter(Boolean)) {
-        const record = JSON.parse(line) as T
-        if (typeof record.id !== 'string') throw new Error('invalid record id')
-        this.knownIds.add(record.id)
-      }
+      await stat(this.filePath)
     } catch (error) {
       if (!isMissingFile(error)) throw error
       await appendFile(this.filePath, '', 'utf8')
@@ -72,9 +74,9 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
   }
 
   private async refreshKnownIds(): Promise<void> {
-    const text = await readFile(this.filePath, 'utf8')
+    const { lines } = await readFrames(this.filePath)
     this.knownIds.clear()
-    for (const line of completeLines(text).filter(Boolean)) {
+    for (const line of lines) {
       const record = JSON.parse(line) as T
       if (typeof record.id !== 'string') throw new Error('invalid record id')
       this.knownIds.add(record.id)
@@ -86,16 +88,6 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
     this.writeQueue = result.then(() => undefined, () => undefined)
     return result
   }
-}
-
-function parseLines<T>(text: string): T[] {
-  return completeLines(text).filter(Boolean).map(line => JSON.parse(line) as T)
-}
-
-function completeLines(text: string): string[] {
-  const lines = text.split('\n')
-  if (lines.at(-1) !== '') lines.pop()
-  return lines
 }
 
 function isMissingFile(error: unknown): boolean {

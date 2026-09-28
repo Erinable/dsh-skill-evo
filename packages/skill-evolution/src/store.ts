@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseObservation, serializeObservation } from './events.js'
+import { appendFrames, readFrames } from './jsonl.js'
 import { withLock } from './locking.js'
 import type { RuntimeObservation } from './types.js'
 
@@ -27,7 +28,7 @@ export class JsonlEventStore {
       await this.ensureInitialized()
       await this.refreshKnownIds()
       if (this.knownIds.has(event.id)) return false
-      await appendFile(this.filePath, serializeObservation(event), 'utf8')
+      await appendFrames(this.filePath, [serializeObservation(event).slice(0, -1)])
       this.knownIds.add(event.id)
       return true
     }))
@@ -44,8 +45,8 @@ export class JsonlEventStore {
   async readAll(): Promise<RuntimeObservation[]> {
     return withLock(`${this.filePath}.lock`, 'read', async () => {
       await this.ensureInitialized()
-      const text = await readFile(this.filePath, 'utf8')
-      return parseLines(text, parseObservation)
+      const { lines } = await readFrames(this.filePath)
+      return lines.map(parseObservation)
     })
   }
 
@@ -69,9 +70,10 @@ export class JsonlEventStore {
 
   private async initialize(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
+    const { lines } = await readFrames(this.filePath)
+    for (const line of lines) this.knownIds.add(parseObservation(line).id)
     try {
-      const text = await readFile(this.filePath, 'utf8')
-      for (const event of parseLines(text, parseObservation)) this.knownIds.add(event.id)
+      await stat(this.filePath)
     } catch (error) {
       if (!isMissingFile(error)) throw error
       await appendFile(this.filePath, '', 'utf8')
@@ -79,9 +81,9 @@ export class JsonlEventStore {
   }
 
   private async refreshKnownIds(): Promise<void> {
-    const text = await readFile(this.filePath, 'utf8')
+    const { lines } = await readFrames(this.filePath)
     this.knownIds.clear()
-    for (const event of parseLines(text, parseObservation)) this.knownIds.add(event.id)
+    for (const line of lines) this.knownIds.add(parseObservation(line).id)
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -89,13 +91,6 @@ export class JsonlEventStore {
     this.writeQueue = result.then(() => undefined, () => undefined)
     return result
   }
-}
-
-function parseLines<T>(text: string, parser: (line: string) => T): T[] {
-  const lines = text.split('\n')
-  const trailing = lines.at(-1)
-  if (trailing !== undefined && trailing.length > 0) lines.pop()
-  return lines.filter(Boolean).map(parser)
 }
 
 function isMissingFile(error: unknown): boolean {
