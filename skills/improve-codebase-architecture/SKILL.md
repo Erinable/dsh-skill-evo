@@ -64,7 +64,7 @@ Do NOT propose interfaces yet. After the file is written, select the top recomme
 
 ### 3. Grilling loop
 
-Once the user picks a candidate, call the Skill tool with "grilling" to walk the decision tree with them: constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
+For the selected top recommendation, call the Skill tool with "grilling" to walk the decision tree using the default-answer flow: constraints, dependencies, the shape of the deepened module, what sits behind the seam, and what tests survive. A member reply can later overturn a recorded default.
 
 Side effects happen inline as decisions crystallize; call the Skill tool with "domain-modeling" to keep the domain model current as you go:
 

@@ -4,6 +4,8 @@ status: accepted
 
 # 可逆业务判断采用推荐答案，纯 Markdown PR 由 Reviewer 合并
 
+本 ADR 明确标记并解决与 ADR-0017、ADR-0018 的冲突：部分取代 ADR-0017 关于 business judgment 的提问目标与回复归属，部分取代 ADR-0018 关于 business judgment 7 天超时采用默认答案；两份旧 ADR 的其余规则继续有效。
+
 可逆的 business judgment 在提出时记录推荐答案并继续，决议明确「采用默认答案，成员可推翻」；不可逆决策、权限或花费仍需成员明确回复。Reviewer PASS 后，只有 `docs/**`、`specs/**` 下的 Markdown 文件或根目录 `CONTEXT.md` 全部命中白名单的 PR 才由 Reviewer 自动合并，涉及代码、测试、配置或 `skills/**` 的 PR 仍由成员合并。
 
 ## Considered Options

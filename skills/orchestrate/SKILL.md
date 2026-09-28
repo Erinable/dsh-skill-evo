@@ -5,7 +5,7 @@ description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 
 
 Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并纯 Markdown 文档 PR，成员合并代码、测试、配置和 `skills/**` PR。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
 
-向成员提问使用所选 tracker adapter 的 `Ask a person and wait` 一节。
+不可逆决策、权限或花费才向成员提问，使用所选 tracker adapter 的 `Ask a person and wait` 一节；business judgment 记录默认答案并继续。
 
 - **agent id** 现查：`multica agent list --output json`，按 `name` 取 `id`。
 - **建票前查重**：本 skill 里每一次 `multica issue create`（父 issue、stage 子 issue、拆票、修订票）之前，先按 `delivery-contract` 的「建票前查重」查，只有同一问题、同一来源的票才复用，不新建。

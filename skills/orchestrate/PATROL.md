@@ -64,11 +64,13 @@
    负责人不是 agent（成员接手了）时不 @，列入摘要。
 4. 列入当天摘要：「PR #<n> 冲突，已交回 <执行 agent 名>」。
 
+完成判据：每个冲突的 PR，其子 issue 上都有一条晚于 PR 最后一次提交的 `PR 冲突：#<n>` 评论，且同一次冲突只 @ 过一次。
+
 ## 文档 PR 自动合并查
 
-Reviewer PASS 后，若 PR 的 `gh pr diff <n> --name-only` 每一行都匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`，Reviewer 执行 `gh pr merge <n> --merge` 并在 issue 上写明已合并。任一文件不匹配（包括代码、测试、配置和 `skills/**`）就列入摘要「等待成员合并」，不得自动合并。
+巡检不代替 Reviewer 合并。对已出现 Reviewer `评审结论：PASS`、状态仍为 `OPEN` 的 PR，运行 `gh pr view <n> --json files --jq '.files[] | .path, (.previousFilename // empty)'`，逐行检查是否匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。白名单全部命中时列入摘要「文档 PR 已 PASS 但仍 OPEN，交回 Reviewer 合并」；任一文件不匹配时不因等待成员合并而列入本查，代码、测试、配置和 `skills/**` PR 继续等待成员。重复巡检只保留一条同 PR 摘要。
 
-完成判据：每个冲突的 PR，其子 issue 上都有一条晚于 PR 最后一次提交的 `PR 冲突：#<n>` 评论，且同一次冲突只 @ 过一次。
+完成判据：每个 PASS 后仍 OPEN 且白名单全命中的文档 PR 都已合并或列入一次「交回 Reviewer 合并」摘要；非文档 PR 不因正常等待成员合并进入本查。
 
 ## GitHub 意见查
 

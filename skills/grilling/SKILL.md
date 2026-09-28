@@ -46,12 +46,12 @@ Post the round, then wait for the user's answers in the same session and continu
 
 ### Issue-async
 
-One round, one run. Each round is recorded on the issue, and the run keeps advancing through the frontier without waiting for a member. The design tree needs no in-memory state: the issue's comment history _is_ the tree, so each run rebuilds the frontier by reading it.
+An issue-async invocation may process multiple rounds in one run. Each round is recorded on the issue, and the run keeps advancing through the frontier without waiting for a member. The design tree needs no in-memory state: the issue's comment history _is_ the tree, so each run rebuilds the frontier by reading it.
 
 Per round:
 
 1. Write the round to a file-backed body using the selected tracker adapter's `Conventions`. The body must list every frontier question and its recommended answer.
-2. Publish the round as an issue comment, then immediately publish a decision comment for each question: `采用默认答案，成员可推翻` followed by the recommended answer. Recompute the frontier after applying those answers and continue in the same run.
+2. Publish the round as an issue comment, then immediately publish one decision comment containing every default: `采用默认答案，成员可推翻` followed by each recommended answer. Recompute the frontier after applying those answers and continue in the same run.
 3. Repeat until the frontier is empty. Do not use `Ask a person and wait` for business judgment questions. Use that adapter operation only for `irreversible / permission / spending` questions, and end the run after registering the wait.
 
 If a member later replies, treat that reply as a requested override, apply it to the affected decision, and recompute the frontier. A reply is never required for the default decision to take effect.
@@ -64,4 +64,6 @@ Inside the round, a running sub-agent is an unsettled prerequisite: it does not 
 
 The _recommendations_ are the agent's: record each one and proceed. Members retain the ability to overturn a recorded default.
 
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
+### Interactive session reminder
+
+For the interactive carrier, the session is done when the frontier is empty: every branch of the design tree has been visited, nothing is silently assumed, and action waits for the user's confirmation of shared understanding.
