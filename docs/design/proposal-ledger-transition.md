@@ -83,7 +83,7 @@ interface LedgerTransition {
 
 1. 在 `proposals.jsonl.lock` 下读台账（一次锁内完成 2–4）。
 2. **重跑判断**：台账里已有 `previousRecordId === from.id` 且 `status === to` 的记录 → 这次转移写过了，取那一条，`replayed: true`，跳到 5。
-3. **校验**：`assertCanTransition(from.status, to)`（ADR-0004，唯一一次）。该 root 在台账里已有记录时，`from.id` 必须等于最新那条的 id，否则抛 `conflict`；`from.status === 'draft'` 或该 root 在台账里还没有记录时不查这一条（见 2.4）。
+3. **校验**：`assertCanTransition(from.status, to)`（ADR-0004，唯一一次）。该 root 在台账里已有记录时，`from.id` 必须等于最新那条的 id，否则抛 `conflict`；只有该 root 在台账里还没有记录时才不查这一条（见 2.4）。`from.status` 是什么都不豁免：拿着同 id 的 `draft` 对象对已有记录的 root 转移，同样抛 `conflict`。
 4. **写记录**：按 ADR-0021 算出 id（2.2），`previousRecordId = from.id`，追加。
 5. **写 decision**：锁外追加 `decision:ledger:<recordId>`，带 `recordId`、`fromStatus`、`toStatus`。`append` 返回 `false` 只说明这条 decision 已经在了（id 由 record id 决定），视为成功。
 
@@ -151,7 +151,7 @@ A 的计算规则：n = 该 root 已有的 `status === to` 的记录数 + 1；n 
 
 写入顺序选「先 Ledger record、后 decision」。反过来的顺序正是今天的坏状态（decision 说转了、台账没转）。先写记录时，崩溃留下的是「状态已转、缺一条审计」，调用方拿原来的 `from` 重试就会命中重跑判断并补上 decision。两次写入不嵌套加锁，避免引入锁顺序问题。「有 Ledger record、无 decision」由 `health` 报告、`repair` 补齐，归 SKIL-122 的恢复协议统一处理，本票只保证重跑能补。
 
-「该 root 在台账里还没有记录时不查 `from` 是否最新」：现有测试和 adapter 会在内存里 `transitionProposal` 出一个对象直接交给 service（`evolution.spec.ts:414-428,438-441`），这些 root 从未 stage。台账里没有它们时没有「最新」可比。采用默认答案，成员可推翻；以后要收紧成「必须先 stage」，只改这一处判断。
+「该 root 在台账里还没有记录时不查 `from` 是否最新」：现有测试和 adapter 会在内存里 `transitionProposal` 出一个对象直接交给 service（`evolution.spec.ts:414-428,438-441`），这些 root 从未 stage。台账里没有它们时没有「最新」可比。豁免只看台账里有没有该 root，不看 `from.status`：root 已有记录时，哪怕 `from` 是 `draft`（转移表允许 `draft → rejected / deferred / observed / replayed`），也必须等于最新记录，否则一个同 id 的 draft 就能把已 `promoted` 的 root 改成 `rejected`。采用默认答案，成员可推翻；以后要收紧成「必须先 stage」，只改这一处判断。
 
 `operations.ts` 的 `OperationErrorCode` 加 `conflict`，`resolveProposal` 的映射（`operations.ts:178`）照常把 `ProposalLedgerError` 转成 `OperationError`。`DuplicateRecordError` 不映射，按内部错误冒泡。
 
@@ -219,8 +219,9 @@ T1、T2 可并行；T3 依赖两者；T4 依赖 T3。每个 task 单独合并后
 
 **T4 · 调用点改走 `ProposalLedger`（`service.ts`、`operations.ts`、`CONTEXT.md`）**
 - §1.4 的 8 处全部换成 `this.ledger.transition(...)`，删 `recordDecision`；service 方法返回真实记录；`operations.ts:154` 用返回 id；`OperationErrorCode` 加 `conflict`；加 `proposals.append` 守卫测试。
+- `stageProposal` 保留 `service.ts:175-179` 的提前返回：台账里已有同 id 记录时比对内容，一致就返回已有记录，不调 `transition`。旧数据里的 `proposed` 记录没有 `previousRecordId`，重跑判断认不出它；删掉这段，重复 stage 旧 root 会撞上 `DuplicateRecordError`。
 - `evaluate` 的第二次转移（→ evaluated）必须以第一次转移返回的记录为 `from`，不能再用内存里的 `evaluating` 对象（它的 id 是输入 id，会触发 `conflict`）。同理，adapter 测试 `adapter.spec.ts:183-184` 把 `acceptProposal` 的返回值直接交给 `promote`，依赖 2.7 的返回值改动。
-- `CONTEXT.md` 的 **Ledger record** 词条改为「身份由 Proposal root、该状态和第几次进入组成」。
+- `CONTEXT.md` 和 `docs/governance/documentation.md:185-187` 的 **Ledger record** 词条都改为「身份由 Proposal root、该状态和第几次进入组成」，后者的引用从 ADR-0005 改为 ADR-0021。
 - 需要同步的测试断言：`evolution.spec.ts:548-555`（decision id 前缀），`evolution.spec.ts:414-428`（返回值 id 变为真实 record id，断言 status 不受影响）；`adapter.spec.ts:182-184`、`bundle.spec.mjs:324` 按 `${id}:evaluated` 查第一次评测，值不变，不用改。
 - 验证：V7、V8，以及 core / bundle / adapter 三个包的测试全绿。
 
@@ -229,7 +230,7 @@ T1、T2 可并行；T3 依赖两者；T4 依赖 T3。每个 task 单独合并后
 - **V1 回流**：stage → evaluate → reject → `transition(rejected, 'observed')` → evaluate。断言台账里 `status === 'evaluated'` 的记录有 2 条，id 为 `root:evaluated`、`root:evaluated:2`；`ledger.latest('root')` 与 `findProposalById(records, 'root')` 都返回 `root:evaluated:2`；`ledger.record('root:evaluated')` 返回第一次那条，`ledger.record('root:evaluated:2').previousRecordId === 'root:observed'`；`toStatus === 'evaluated'` 的 decision 恰好 2 条，`recordId` 分别对应两条记录。
 - **V2 第二次拒绝**：V1 之后再 reject，得到 `root:rejected:2`，decision 为 `decision:ledger:root:rejected:2`。
 - **V3 重跑**：同一个 `from` 连续调两次 `transition(from, 'accepted')`，第二次 `replayed: true`，台账和 decision 条数都不变。
-- **V4 冲突**：拿已经被转移过的旧对象再转移，抛 `conflict`，台账和 decision 都不变。
+- **V4 冲突**：拿已经被转移过的旧对象再转移，抛 `conflict`，台账和 decision 都不变。另一个用例：root 已 stage 且已转移之后，用同 id 的 `draft` 对象调 `rejectProposal`，同样抛 `conflict`，台账和 decision 条数都不变。
 - **V5 写失败**：把 `proposals.jsonl` 换成同名目录（或让 `appendFrames` 抛错的 store 替身），`service.acceptProposal` 以 rejects 结束、错误原样透出；decision 条数不变。再构造「id 已占用」的 `appendComputed`，调用方拿到 `DuplicateRecordError`。
 - **V6 补 decision**：让 decision store 第一次 append 抛错，`transition` 抛错且 Ledger record 已写；用同一个 `from` 重试，`replayed: true`，decision 补上且只有 1 条。
 - **V7 旧数据兼容**：用 `origin/main` 写出的台账夹具（`root`、`root:evaluating`、`root:evaluated`、`root:rejected`、`root:observed`，无 `previousRecordId`，decision 为 `decision:transition:*`）继续 evaluate，得到 `root:evaluated:2`；metrics 的 promoted / rejected / rolledBack 计数与改动前一致。
