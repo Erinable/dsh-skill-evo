@@ -4,7 +4,7 @@ status: proposed
 
 # 分类器输出存进 Classification memo；Projection 是 Observation log + memo + 版本的纯函数
 
-模型分类本身不确定。为了让 `repair` 和重新投影能确定性地重算，把注入的分类器的每次有效输出按 `classification:<classifierVersion>:<inputHash>` 存进 State directory 下的 Classification memo（`classifications.jsonl`）。memo 是 Observation log 之外的第三类记录：它不是 Fact record，不写回 Observation，不当作证据；也不是 Derived record，Projection 读它但从不重建它。「确定性」的定义是：给定 Observation log、规则版本、分类器版本（没注入时为 `none`）和 memo，Projection 的输出唯一。
+模型分类本身不确定。为了让 `repair` 和重新投影能确定性地重算，把注入的分类器的每次有效输出按 `classification:<classifierVersion>:<inputHash>` 存进 State directory 下的 Classification memo（`classifications.jsonl`）。memo 是 Observation log 之外的第三类记录：它不是 Fact record，不写回 Observation，不当作证据；也不是 Derived record，Projection 读它但从不重建它。「确定性」的定义是：给定 Observation log、规则版本、分类器版本（没注入时为 `none`）和 memo，Projection 的输出逐字段唯一，包括时间字段：Derived record 里的时间一律取自证据，不取墙钟时间（Diagnosis 的 `createdAt` 改为簇内最晚的 case `createdAt`）。
 
 这一条修订了 ADR-0002 和 `CONTEXT.md` 对 **Derived record**、**Projection** 的表述（「从 Observation log 完整重建」）：没注入分类器时照旧只依赖 Observation log；注入后，分类器来源的结论要靠 memo 才能复现，memo 丢了只能重新分类，结果可能不同。ADR-0016 不受影响：模型给的意图只出现在 Derived record 里，不写进事实流。
 
@@ -16,7 +16,7 @@ status: proposed
 
 ## Consequences
 
-- `layout.stores` 新增 role `memo`。health 和 repair 按分帧规则照常检查它，但 repair、Retention 和 Projection 都不删它、不重写它。
+- `layout.stores` 新增 role `memo`：`state-root.ts` 的 `StoreRole` 联合类型扩成 `'fact' | 'derived' | 'memo'`，`StoreName` 和 `resolveLayout` 的清单加上这个 store。health（`service.ts` 的 `health()`）和 repair（`repairEvolutionRoot` 的逐文件分帧修复）今天都不按 role 分支，会照常检查、隔离残行；repair、Retention 和 Projection 都不删它、不重写它，其中 Projection 的 `replaceAll` 只能作用于 `derived` store。
 - Projection cursor 要加 `derivationKey`（规则版本、意图策略版本、分类器版本、memo 指纹），否则换了分类器或改了规则，cursor 仍会判定「无需重投影」。
 - 分类器实现方必须在模型、prompt 或输出映射变化时换 `version`；core 无法校验这一点。
 
