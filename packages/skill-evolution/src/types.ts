@@ -89,12 +89,14 @@ export interface Experience {
   readonly evidenceEventIds: readonly string[]
   readonly outcome: ExperienceOutcome
   readonly attribution: Attribution
+  /** Evidence strength score in [0, 1], not a calibrated probability. */
   readonly confidence: number
   readonly createdAt: string
 }
 
 export type FailureSeverity = 'low' | 'medium' | 'high'
 export type FailureStatus = 'open' | 'clustered' | 'addressed' | 'ignored'
+export type FailureOrigin = 'load-failure' | 'implicit-follow-up' | 'explicit-feedback'
 
 export interface SkillFailureCase {
   readonly id: string
@@ -103,6 +105,12 @@ export interface SkillFailureCase {
   readonly skillVersion?: string
   readonly task: string
   readonly failure: string
+  /** Structured provenance for this generated failure case. */
+  readonly origin: FailureOrigin
+  readonly sessionId?: string
+  readonly feedbackKind?: FeedbackKind
+  readonly attributionConfidence?: number
+  readonly counterEvidence?: readonly string[]
   readonly evidenceEventIds: readonly string[]
   readonly severity: FailureSeverity
   readonly createdAt: string
@@ -138,6 +146,7 @@ export interface SkillDiagnosis {
   readonly supportingExperienceIds: readonly string[]
   readonly counterEvidence: readonly string[]
   readonly proposedOperation: ProposalOperation
+  /** Evidence strength band, not a calibrated probability or a release gate. */
   readonly confidence: 'low' | 'medium' | 'high'
   readonly createdAt: string
 }

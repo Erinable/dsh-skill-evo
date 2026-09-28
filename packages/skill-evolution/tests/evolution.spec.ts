@@ -14,6 +14,7 @@ import {
   buildExperiences,
   buildFailureCases,
   clusterFailureCases,
+  diagnoseFailureCluster,
   createContentHash,
   createProposal,
   evaluateCandidate,
@@ -83,6 +84,88 @@ describe('phase 2 evidence workflow', () => {
     ]
     const experience = buildExperiences(events).find(item => item.attribution === 'not-attributable')
     expect(experience).toMatchObject({ attribution: 'not-attributable', outcome: 'unknown', evidenceEventIds: ['loaded-a', 'loaded-b', 'follow-up'] })
+  })
+
+  it('records structured failure origins and diagnoses them without parsing free text', () => {
+    const cases = buildFailureCases([
+      event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'upload this again', explicit: false } }),
+      event({ id: 'explicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong command', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } }),
+      event({ id: 'load', kind: 'skill-load-failed', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'download failed' } }),
+    ])
+    expect(cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'failure:implicit', origin: 'implicit-follow-up' }),
+      expect.objectContaining({ id: 'failure:explicit', origin: 'explicit-feedback', feedbackKind: 'incorrect' }),
+      expect.objectContaining({ id: 'failure:load', origin: 'load-failure' }),
+    ]))
+    const diagnosisFor = (caseId: string) => diagnoseFailureCluster({
+      id: `cluster:api-debugging:${caseId}`, skillName: 'api-debugging', signature: 'free text is ignored',
+      caseIds: [caseId], occurrenceCount: 1, createdAt: '2026-09-25T00:00:00.000Z', status: 'open',
+    }, cases)
+    expect(diagnosisFor('failure:implicit')).toMatchObject({ rootCause: 'content', proposedOperation: 'patch-content' })
+    expect(diagnosisFor('failure:explicit')).toMatchObject({ rootCause: 'content', proposedOperation: 'patch-content' })
+    expect(diagnosisFor('failure:load')).toMatchObject({ rootCause: 'composition', proposedOperation: 'edit-metadata' })
+  })
+
+  it.each([
+    ['incorrect', 'content'],
+    ['dissatisfied', 'content'],
+    ['retry', 'content'],
+    ['constraint', 'boundary'],
+    ['goal-changed', 'not-skill'],
+    ['other', 'uncertain'],
+  ] as const)('maps explicit feedback kind %s to %s', (feedbackKind, rootCause) => {
+    const [failure] = buildFailureCases([event({
+      id: `feedback-${feedbackKind}`,
+      kind: 'user-follow-up',
+      skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' },
+      payload: { explicit: true, feedbackKind, text: 'the wording is irrelevant' },
+    })])
+    expect(failure).toMatchObject({ origin: 'explicit-feedback', feedbackKind })
+    expect(diagnoseFailureCluster({
+      id: `cluster:api-debugging:${failure!.id}`, skillName: 'api-debugging', signature: 'irrelevant',
+      caseIds: [failure!.id], occurrenceCount: 1, createdAt: failure!.createdAt, status: 'open',
+    }, [failure!]).rootCause).toBe(rootCause)
+  })
+
+  it('clusters independently of input order and uses a stable member id', () => {
+    const cases = [
+      { id: 'case-a', skillName: 'api-debugging', task: 'debug', failure: 'git push timeout', evidenceEventIds: ['a'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+      { id: 'case-b', skillName: 'api-debugging', task: 'debug', failure: 'git push timeout proxy remote', evidenceEventIds: ['b'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:01.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+      { id: 'case-d', skillName: 'api-debugging', task: 'debug', failure: 'git push timeout auth', evidenceEventIds: ['d'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:02.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+    ]
+    const forward = clusterFailureCases(cases)
+    const reverse = clusterFailureCases([...cases].reverse())
+    expect(reverse).toEqual(forward)
+    expect(forward.map(cluster => cluster.id)).toEqual(['cluster:api-debugging:case-a', 'cluster:api-debugging:case-d'])
+  })
+
+  it('shares a cluster for closely related CJK bigrams', () => {
+    const cases = [
+      { id: 'zh-a', skillName: 'api-debugging', task: 'debug', failure: '应该先设置代理', evidenceEventIds: ['a'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+      { id: 'zh-b', skillName: 'api-debugging', task: 'debug', failure: '应该先设置代理再试', evidenceEventIds: ['b'], severity: 'medium' as const, createdAt: '2026-09-25T00:00:01.000Z', status: 'open' as const, origin: 'implicit-follow-up' as const },
+    ]
+    expect(clusterFailureCases(cases)).toHaveLength(1)
+  })
+
+  it('uses evidence strength for diagnosis confidence and explicit attribution confidence', () => {
+    const two = Array.from({ length: 2 }, (_, index) => [
+      event({ id: `two-loaded-${index}`, sessionId: `two-session-${index}`, kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: `two-${index}`, sessionId: `two-session-${index}`, kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'still wrong' } }),
+    ]).flat()
+    const twenty = Array.from({ length: 20 }, (_, index) => [
+      event({ id: `twenty-loaded-${index}`, sessionId: `twenty-session-${index}`, kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: `twenty-${index}`, sessionId: `twenty-session-${index}`, kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'still wrong' } }),
+    ]).flat()
+    const twoCases = buildFailureCases(two)
+    const twentyCases = buildFailureCases(twenty)
+    const twoCluster = clusterFailureCases(twoCases)[0]!
+    const twentyCluster = clusterFailureCases(twentyCases)[0]!
+    expect(diagnoseFailureCluster(twoCluster, twoCases).confidence).toBe('medium')
+    expect(diagnoseFailureCluster(twentyCluster, twentyCases).confidence).toBe('high')
+
+    const explicit = buildExperiences([event({ id: 'feedback', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } })])[0]!
+    expect(explicit.confidence).toBe(0.9)
   })
 
   it('persists derived records idempotently', async () => {
@@ -580,7 +663,7 @@ describe('phase workflow orchestration', () => {
     const candidate = base.replace('Base.', 'Improved.')
     const proposal = createProposal({ id: 'markdown-proposal', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'Add timeout diagnosis' })
     expect(renderProposalMarkdown({ proposal })).toContain('## Proposed changes')
-    expect(renderFailuresMarkdown([{ id: 'failure-1', skillName: 'api-debugging', task: 'debug', failure: 'timeout omitted', evidenceEventIds: [record.id], severity: 'medium', createdAt: record.createdAt, status: 'open' }])).toContain('failure-1')
+    expect(renderFailuresMarkdown([{ id: 'failure-1', skillName: 'api-debugging', task: 'debug', failure: 'timeout omitted', origin: 'implicit-follow-up', evidenceEventIds: [record.id], severity: 'medium', createdAt: record.createdAt, status: 'open' }])).toContain('failure-1')
   })
 
   it('exports operational usage metrics without claiming causality', () => {

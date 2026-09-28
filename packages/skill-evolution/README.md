@@ -36,6 +36,19 @@ Phase 2/3 APIs:
 - `EvolutionWorkflow` for evidence-linked Designer callbacks.
 - `createProposal`, `evaluateCandidate`, and `JsonlRecordStore`.
 
+Failure cases carry a structured `origin`: `load-failure`, `implicit-follow-up`, or
+`explicit-feedback`; explicit feedback also carries its `feedbackKind` and any
+provided `attributionConfidence`. Clustering sorts cases by `createdAt` and `id`,
+uses CJK character bigrams, and derives each cluster id from its earliest case id,
+so projection output is independent of observation input order. Existing derived
+records are rebuilt with the new ids; consumers must resolve old cluster ids by
+reprojecting rather than treating them as durable identifiers.
+
+`Experience.confidence` and diagnosis confidence are evidence-strength scores,
+not calibrated probabilities. They combine occurrence count, distinct sessions,
+explicit feedback and counter-evidence. The score is informational until a
+separate calibration policy exists and is not used as a publication gate.
+
 Phase 4 APIs:
 
 - `SkillVersionStore` for candidate isolation, atomic file publication, version history,

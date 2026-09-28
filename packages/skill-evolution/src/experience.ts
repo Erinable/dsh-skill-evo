@@ -9,6 +9,7 @@ import type {
   SkillRef,
   SkillDiagnosis,
   SkillFailureCase,
+  FeedbackKind,
 } from './types.js'
 
 export interface ExperienceProjectionOptions {
@@ -87,11 +88,17 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
   const cases: SkillFailureCase[] = []
   for (const event of events) {
     if (event.kind === 'user-follow-up' && event.payload.explicit === true && event.skill !== undefined) {
-      const feedbackKind = event.payload.feedbackKind
+      const feedbackKind = feedbackKindOf(event.payload.feedbackKind)
       if (feedbackKind === 'satisfied') continue
       cases.push({
         id: `failure:${event.id}`,
         skillName: event.skill.name,
+        sessionId: event.sessionId,
+        origin: 'explicit-feedback',
+        ...(feedbackKind === undefined ? {} : { feedbackKind }),
+        ...(typeof event.payload.attributionConfidence === 'number' && Number.isFinite(event.payload.attributionConfidence)
+          ? { attributionConfidence: Math.max(0, Math.min(1, event.payload.attributionConfidence)) }
+          : {}),
         task: taskText(event),
         failure: textPayload(event) ?? `Explicit feedback: ${String(feedbackKind ?? 'other')}`,
         evidenceEventIds: [event.id],
@@ -105,6 +112,8 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
       cases.push({
         id: `failure:${event.id}`,
         skillName: event.skill.name,
+        sessionId: event.sessionId,
+        origin: 'load-failure',
         ...(event.skill.contentHash === undefined ? {} : { skillVersion: event.skill.contentHash }),
         task: taskText(event),
         failure: textPayload(event) ?? 'Skill load failed',
@@ -122,6 +131,8 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
       cases.push({
         id: `failure:${event.id}`,
         skillName: skills[0]!,
+        sessionId: event.sessionId,
+        origin: 'implicit-follow-up',
         task: taskText(event),
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
@@ -146,7 +157,8 @@ export function clusterFailureCases(
 ): FailureCluster[] {
   const threshold = options.similarity ?? 0.6
   const clusters: Array<{ skillName: string; signature: string; cases: SkillFailureCase[] }> = []
-  for (const failure of cases) {
+  const orderedCases = [...cases].sort(compareFailureCases)
+  for (const failure of orderedCases) {
     const tokens = tokenSet(failure.failure)
     const existing = clusters.find(cluster => cluster.skillName === failure.skillName
       && similarity(tokens, tokenSet(cluster.signature)) >= threshold)
@@ -154,16 +166,19 @@ export function clusterFailureCases(
       clusters.push({ skillName: failure.skillName, signature: failure.failure, cases: [failure] })
     } else {
       existing.cases.push(failure)
-      if (failure.failure.length > existing.signature.length) existing.signature = failure.failure
+      if (failure.failure.length > existing.signature.length
+        || (failure.failure.length === existing.signature.length && failure.failure < existing.signature)) {
+        existing.signature = failure.failure
+      }
     }
   }
   return clusters.map(cluster => ({
-    id: `cluster:${cluster.skillName}:${signatureOf(cluster.signature)}`,
+    id: `cluster:${cluster.skillName}:${cluster.cases[0]!.id}`,
     skillName: cluster.skillName,
     signature: cluster.signature,
-    caseIds: cluster.cases.map(failure => failure.id),
+    caseIds: cluster.cases.map(failure => failure.id).sort(),
     occurrenceCount: cluster.cases.length,
-    createdAt: options.now ?? cluster.cases[0]!.createdAt,
+    createdAt: options.now ?? cluster.cases.reduce((earliest, failure) => failure.createdAt < earliest ? failure.createdAt : earliest, cluster.cases[0]!.createdAt),
     status: 'open',
   }))
 }
@@ -176,9 +191,21 @@ export function diagnoseFailureCluster(
   now = new Date().toISOString(),
 ): SkillDiagnosis {
   const selected = cases.filter(failure => cluster.caseIds.includes(failure.id))
-  const hasLoadFailure = selected.some(failure => failure.failure.toLowerCase().includes('load'))
-  const hasFollowUp = selected.some(failure => failure.failure.toLowerCase().includes('follow-up'))
-  const rootCause = hasLoadFailure ? 'composition' : hasFollowUp ? 'content' : 'uncertain'
+  const hasLoadFailure = selected.some(failure => failure.origin === 'load-failure')
+  const hasImplicitFollowUp = selected.some(failure => failure.origin === 'implicit-follow-up')
+  const hasContentFeedback = selected.some(failure => failure.origin === 'explicit-feedback'
+    && (failure.feedbackKind === 'incorrect' || failure.feedbackKind === 'dissatisfied' || failure.feedbackKind === 'retry'))
+  const hasBoundaryFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'constraint')
+  const hasTaskChangeFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'goal-changed')
+  const rootCause = hasLoadFailure
+    ? 'composition'
+    : hasImplicitFollowUp || hasContentFeedback
+      ? 'content'
+      : hasBoundaryFeedback
+        ? 'boundary'
+        : hasTaskChangeFeedback
+          ? 'not-skill'
+          : 'uncertain'
   const proposedOperation = rootCause === 'content' ? 'patch-content' : rootCause === 'composition' ? 'edit-metadata' : 'observe-only'
   const supportingExperienceIds = experiences
     .filter(experience => experience.evidenceEventIds.some(id => selected.some(failure => failure.evidenceEventIds.includes(id))))
@@ -188,14 +215,18 @@ export function diagnoseFailureCluster(
     clusterId: cluster.id,
     rootCause,
     hypothesis: rootCause === 'content'
-      ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
-      : rootCause === 'composition'
-        ? 'The Skill could not be loaded; inspect catalog visibility, provider composition, and loader availability.'
+        ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
+        : rootCause === 'composition'
+          ? 'The Skill could not be loaded; inspect catalog visibility, provider composition, and loader availability.'
+          : rootCause === 'boundary'
+            ? 'The feedback identifies a constraint boundary; inspect whether the Skill declares its prerequisites and limits.'
+            : rootCause === 'not-skill'
+              ? 'The feedback describes a changed task goal rather than a Skill-owned failure.'
         : 'The available evidence does not isolate a Skill-owned cause yet.',
     supportingExperienceIds,
-    counterEvidence: [],
+    counterEvidence: unique(selected.flatMap(failure => failure.counterEvidence ?? [])),
     proposedOperation,
-    confidence: rootCause === 'uncertain' ? 'low' : cluster.occurrenceCount >= 2 ? 'medium' : 'low',
+    confidence: confidenceBand(selected, cluster.occurrenceCount),
     createdAt: now,
   }
 }
@@ -252,9 +283,19 @@ function isAttribution(value: unknown): value is Attribution {
 }
 
 function confidenceFor(events: readonly RuntimeObservation[]): number {
-  if (events.some(event => event.kind === 'task-finished')) return 0.5
-  if (events.some(event => event.kind === 'user-follow-up')) return 0.35
-  return 0.2
+  const explicitConfidence = events
+    .map(event => event.payload.attributionConfidence)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+    .map(value => Math.max(0, Math.min(1, value)))
+  if (explicitConfidence.length > 0) return Math.max(...explicitConfidence)
+  const observationStrength = Math.min(0.6, Math.log2(events.length + 1) / 5)
+  const sessionStrength = new Set(events.map(event => event.sessionId).filter((id): id is string => id !== undefined)).size > 0 ? 0.04 : 0
+  const feedbackStrength = events.some(event => event.payload.explicit === true) ? 0.15 : 0
+  const counterEvidenceCount = events.reduce((total, event) => {
+    const values = event.payload.counterEvidence
+    return total + (Array.isArray(values) ? values.length : 0)
+  }, 0)
+  return Math.max(0, Math.min(1, observationStrength + sessionStrength + feedbackStrength - Math.min(0.3, counterEvidenceCount * 0.15)))
 }
 
 function describePattern(events: readonly RuntimeObservation[]): string {
@@ -273,7 +314,17 @@ function textPayload(event: RuntimeObservation | undefined): string | undefined 
 }
 
 function tokenSet(value: string): Set<string> {
-  return new Set(value.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/u).filter(token => token.length > 1))
+  const tokens = new Set<string>()
+  for (const part of value.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]+/giu) ?? []) {
+    if (/^[\u4e00-\u9fff]+$/u.test(part)) {
+      const chars = [...part]
+      if (chars.length === 1) tokens.add(chars[0]!)
+      for (let index = 0; index < chars.length - 1; index += 1) tokens.add(`${chars[index]}${chars[index + 1]}`)
+    } else if (part.length > 1) {
+      tokens.add(part)
+    }
+  }
+  return tokens
 }
 
 function similarity(left: Set<string>, right: Set<string>): number {
@@ -282,8 +333,28 @@ function similarity(left: Set<string>, right: Set<string>): number {
   return intersection / new Set([...left, ...right]).size
 }
 
-function signatureOf(value: string): string {
-  return [...tokenSet(value)].sort().join('-') || 'unknown'
+function feedbackKindOf(value: unknown): FeedbackKind | undefined {
+  return value === 'satisfied' || value === 'dissatisfied' || value === 'incorrect' || value === 'retry'
+    || value === 'constraint' || value === 'goal-changed' || value === 'other'
+    ? value
+    : undefined
+}
+
+function compareFailureCases(left: SkillFailureCase, right: SkillFailureCase): number {
+  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+}
+
+function confidenceBand(cases: readonly SkillFailureCase[], occurrenceCount = cases.length): SkillDiagnosis['confidence'] {
+  const occurrenceStrength = Math.min(0.6, Math.log2(Math.max(cases.length, occurrenceCount) + 1) / 5)
+  const sessionCount = new Set(cases.map(failure => failure.sessionId ?? failure.evidenceEventIds[0] ?? failure.id)).size
+  const sessionStrength = Math.min(0.2, sessionCount / 5 * 0.2)
+  const explicit = cases.filter(failure => failure.origin === 'explicit-feedback')
+  const feedbackStrength = explicit.length > 0 ? 0.15 : 0
+  const attributionStrength = Math.min(0.1, Math.max(...explicit.map(failure => failure.attributionConfidence ?? 0), 0) * 0.1)
+  const counterEvidenceCount = cases.reduce((total, failure) => total + (failure.counterEvidence?.length ?? 0), 0)
+  const counterPenalty = Math.min(0.3, counterEvidenceCount * 0.15)
+  const score = occurrenceStrength + sessionStrength + feedbackStrength + attributionStrength - counterPenalty
+  return score >= 0.75 ? 'high' : score >= 0.3 ? 'medium' : 'low'
 }
 
 function unique(values: readonly string[]): string[] {
