@@ -29,7 +29,7 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以从 Observation log 完整重建的判断：Experience、Failure case、Failure cluster、Diagnosis。
+可以从 Observation log 完整重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Skill window、Skill posterior、Failure attribution。注入模型的输出另存在 memo 里，重建时一并读取（ADR-0026）。
 _Avoid_: cache, 结论
 
 **Projection**:
@@ -51,8 +51,28 @@ _Avoid_: lesson, memory, 经验总结
 _Avoid_: blame
 
 **Failure case**:
-一次能定位到某个 Skill 的失败，引用证据 Observation。
+一次能定位到某个 Skill 的失败，引用证据 Observation。多 Skill session 里的一次失败可以扇出成几个 Failure case，各带归因权重（ADR-0027）。
 _Avoid_: error, incident
+
+**Skill window**:
+一个 session 里从一次 Skill 加载开始，到下一次加载、用户新消息、task 结束或这次加载被遮蔽为止的那段 Observation；确定性的派生记录，带结束边界是否确定。
+_Avoid_: segment, span
+
+**资格区间**:
+一个 Skill 从加载到它的加载被上下文遮蔽为止可以作为隐状态的时间范围；可以跨越多个 Skill window，区间外它的后验恒为 0。
+_Avoid_: active range
+
+**Skill posterior**:
+一个 session 里每个工具步属于哪个已加载 Skill（或 none）的概率，以及汇总出的轨迹级分布；带序列模型和发射模型的版本。
+_Avoid_: skill score, 置信度
+
+**Failure attribution**:
+一个失败主体在各 Skill 和 none 之间的份额，以及份额的来源（显式、override、单 Skill、后验）；Failure case 的权重由它得出。
+_Avoid_: blame split
+
+**Context shadowing**:
+DSH 通过压缩、裁剪或移除让一段 session 事件不再出现在模型上下文里；bundle 把它记成 `context-shadowed` Observation（ADR-0025）。
+_Avoid_: unload
 
 **Failure cluster**:
 同一个 Skill 下签名相同的 Failure case 的集合。
