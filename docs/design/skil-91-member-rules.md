@@ -5,11 +5,11 @@
 ## 规则摘要
 
 - **订阅**：父 issue 在描述中记录 `需求提出人 user_id`；每个 child 继承该行。提出人按有效记录行、显式 `unresolved` 回退 Decision maker、触发评论 member 作者、`creator_type == member` 时的 `creator_id`、Decision maker 的顺序解析。需求提出人与 Decision maker 都订阅父 issue 和每张子 issue；按 `user_id` 去重。没有可解析的需求提出人时只订阅 Decision maker。
-- **提问**：业务判断问需求提出人；不可逆决策、权限或花费问 Decision maker。提出人就是 Decision maker 时只问这一人。一个问题只指定一个目标。
+- **提问**：业务判断直接采用推荐答案并记录「采用默认答案，成员可推翻」；不可逆决策、权限或花费问 Decision maker。提出人就是 Decision maker 时只问这一人。一个受保护问题只指定一个目标。
 - **回复归属**：只有被问目标的 member 回复算回答。其他成员的回复保留为上下文，不触发目标过滤的 wakeup，也不改变等待计时。
-- **无回复**：2 天提醒目标，4 天再次提醒并在目标不是 Decision maker 时转给 Decision maker，7 天对可逆业务问题按评论中明确的默认答案继续；不可逆、权限或花费问题不自动执行，置 `backlog` 等 Decision maker 安排。完整操作见 `skills/orchestrate/PATROL.md` 与 `skills/delivery-contract/SKILL.md`。
+- **无回复**：业务判断不会等待；不可逆、权限或花费问题 2 天提醒目标，4 天再次提醒并在目标不是 Decision maker 时转给 Decision maker，7 天置 `backlog` 等 Decision maker 安排。完整操作见 `skills/orchestrate/PATROL.md` 与 `skills/delivery-contract/SKILL.md`。
 
-这些规则写入 ADR-0017（订阅/提问/回复）和 ADR-0018（无回复升级）；ADR-0017 只取代 ADR-0012 的目标选择顺序，ADR-0012 的已验证 `user_id` 身份约束继续有效。
+这些规则写入 ADR-0017（订阅/提问/回复）、ADR-0018（受保护问题无回复升级）和 ADR-0019（默认业务判断与文档 PR 合并）；ADR-0017 只取代 ADR-0012 的目标选择顺序，ADR-0012 的已验证 `user_id` 身份约束继续有效。
 
 ## 成员位置盘点
 

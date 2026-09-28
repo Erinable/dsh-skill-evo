@@ -46,23 +46,22 @@ Post the round, then wait for the user's answers in the same session and continu
 
 ### Issue-async
 
-One round, one run. Each round ends with your run ending, and the member's reply is what starts the next one — handing the turn back is how the loop advances, not a failure to finish. The design tree needs no in-memory state: the issue's comment history _is_ the tree, so each run rebuilds the frontier by reading it.
+One round, one run. Each round is recorded on the issue, and the run keeps advancing through the frontier without waiting for a member. The design tree needs no in-memory state: the issue's comment history _is_ the tree, so each run rebuilds the frontier by reading it.
 
 Per round:
 
-1. Write the round to a file-backed body using the selected tracker adapter's `Conventions`. The adapter publishes it as an issue comment and replies in the thread you were triggered from by passing that `thread`.
-2. Call the selected tracker adapter's `Ask a person and wait` section with the issue, the file-backed round body, the triggering `thread`, and a `next` instruction to read the reply, recompute the frontier, and ask the next round.
+1. Write the round to a file-backed body using the selected tracker adapter's `Conventions`. The body must list every frontier question and its recommended answer.
+2. Publish the round as an issue comment, then immediately publish a decision comment for each question: `采用默认答案，成员可推翻` followed by the recommended answer. Recompute the frontier after applying those answers and continue in the same run.
+3. Repeat until the frontier is empty. Do not use `Ask a person and wait` for business judgment questions. Use that adapter operation only for `irreversible / permission / spending` questions, and end the run after registering the wait.
 
-3. End the run after the adapter operation. Follow the runtime's `## Subagents: fan out, converge before the turn ends` for fact-finding subagents; do not poll or sleep.
+If a member later replies, treat that reply as a requested override, apply it to the affected decision, and recompute the frontier. A reply is never required for the default decision to take effect.
 
-On waking: read the comments added since your last round, attribute each answer to its question number, recompute the frontier, and post the next round. A question the member did not answer stays on the frontier — carry it into the next round as still-open, in their words or not at all. Answers are the member's to give, so every round you post is a round you leave for them; supplying the missing side yourself would settle the tree against a decision nobody made.
-
-When the frontier is empty, post the shared-understanding summary and apply step 2 again — a wakeup only when the issue is not assigned to you: the member's confirmation is itself an answer, and it arrives in a later run.
+When the frontier is empty, post the shared-understanding summary and finish the issue-async run. The summary must identify every default decision and say that the member may overturn it.
 
 Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, docs), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Follow `docs/agents/runtime.md`'s `## Subagents: fan out, converge before the turn ends` while collecting those reports.
 
 Inside the round, a running sub-agent is an unsettled prerequisite: it does not stall the rest of the frontier. Ask every question that doesn't depend on it now, in this same round, and leave the questions downstream of that fact for a later round. What waits on the sub-agent is those downstream questions — never your own turn boundary.
 
-The _decisions_ are the user's: put each to them and wait.
+The _recommendations_ are the agent's: record each one and proceed. Members retain the ability to overturn a recorded default.
 
 The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.

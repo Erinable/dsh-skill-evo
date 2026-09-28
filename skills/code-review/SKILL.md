@@ -77,6 +77,10 @@ Present the two reports under `## Standards` and `## Spec` headings, verbatim or
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
 
+## Reviewer merge gate
+
+When this skill is used as the `Reviewer` for a delivery-contract PR, a PASS is followed by a mechanical filename check. Run `gh pr diff <n> --name-only`; every path must match `^(docs/|specs/).+\.md$` or `^CONTEXT\.md$` for automatic merge. If all paths match, run `gh pr merge <n> --merge` and report `已由 Reviewer 合并` on the issue. Any code, test, configuration, or `skills/**` path means the PR remains for member merge and the issue report must say `等待成员合并`.
+
 ## Why two axes
 
 A change can pass one axis and fail the other:

@@ -60,7 +60,7 @@ End the report with a **Top recommendation** section: which candidate you'd tack
 
 See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram patterns, and styling guidance.
 
-Do NOT propose interfaces yet. After the file is written, ask the user: "Which of these would you like to explore?"
+Do NOT propose interfaces yet. After the file is written, select the top recommendation, record `采用默认答案，成员可推翻`, and continue with that candidate. A later member reply may overturn the selection.
 
 ### 3. Grilling loop
 

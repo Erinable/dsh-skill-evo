@@ -237,8 +237,8 @@ multica adapter 长出 6 个别家没有的节，其中两类本不属 tracker s
 改动模块：
 - `skills/setup-matt-pocock-skills/issue-tracker-multica.md` + `docs/agents/issue-tracker.md`：新增 `## Ask a person and wait`（§4 interface，member 解析规则先临时写在这里）。两文件保持逐字节相同。
 - 另外三个 adapter：新增同名节，正文 n/a（§4 末尾）。
-- `skills/delivery-contract/SKILL.md`：「提问」一节只留调用方策略（一次问完、编号 + 默认答案、置 `blocked`、结束 run），机制改为「按 tracker 文档的 `Ask a person and wait` 执行」。删 `:11` 的成员 id 行、`:53-57` 的分支与命令。
-- `skills/grilling/SKILL.md`：issue-async 第 2 步只写「按 tracker 文档的 `Ask a person and wait` 执行，`thread` 传触发线程，`next` 传本轮指令」。删 `:55-69`。
+- `skills/delivery-contract/SKILL.md`：「提问」一节只留调用方策略（一次问完、编号 + 默认答案）；business judgment 记录默认决议并继续，只有不可逆、权限或花费才置 `blocked` 并按 tracker 文档的 `Ask a person and wait` 执行。
+- `skills/grilling/SKILL.md`：issue-async 每轮列出推荐答案并记录默认决议后继续；只有不可逆、权限或花费才按 tracker 文档的 `Ask a person and wait` 执行。
 
 验证：
 - `grep -rl 'wakeup create' skills docs/agents` 只命中两份 multica tracker 文档（模板 + 安装副本）
