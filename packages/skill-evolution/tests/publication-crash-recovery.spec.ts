@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir, uptime } from 'node:os'
 import { join, relative } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
@@ -268,6 +268,26 @@ describe('promote crash points', () => {
     const crashed = await publicationState(root)
     await service(root).healthReport()
     expect(await publicationState(root)).toEqual(crashed)
+  })
+
+  pending('H5 health and readCurrent answer while a live process holds the publication lock', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P3'))!
+    const { root } = await crashPromote(row)
+    const lockPath = join(root, '.skill-evolution', 'locks', `${skillName}.lock`)
+    await mkdir(join(root, '.skill-evolution', 'locks'), { recursive: true })
+    await writeFile(lockPath, JSON.stringify({ v: 1, token: 'live', pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
+    const crashed = await publicationState(root)
+    const health = await service(root).healthReport()
+    expect(publicationsOf(health)).toEqual([expect.objectContaining({ skillName, operation: 'promote', lock: 'held' })])
+    await expect(service(root).versions.readCurrent(skillName)).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
+    expect(await publicationState(root)).toEqual(crashed)
+  })
+
+  pending('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root, proposalRef, reference } = await crashPromote(row)
+    await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toThrow()
+    expect(await publicationState(root)).toEqual(reference)
   })
 })
 
