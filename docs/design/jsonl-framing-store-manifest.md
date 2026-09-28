@@ -1,4 +1,4 @@
-> 状态：SKIL-111 设计提案（父 issue SKIL-110，来源：架构扫描第 3 期 SKIL-109 的编号 1、2）。决策见 ADR-0020（`proposed`）。
+> 状态：SKIL-111 设计提案（父 issue SKIL-110，来源：架构扫描第 3 期 SKIL-109 的编号 1、2）。决策见 ADR-0020（`accepted`，成员确认：SKIL-111）。
 > 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
 
 本文覆盖两件事：JSONL 分帧只有一处实现，崩溃留下的残行不再和下一条记录拼在一起；`service.ts` 的 store 清单只从 `layout.stores` 读。基线是 `origin/main` @ `35930ec`。本文只出设计，不写实现代码。
@@ -203,6 +203,6 @@ cd ../dsh-bundle && npm test
 
 ## 5. 不可逆决策
 
-- **ADR-0020**：JSONL 记录以 `\n` 结尾；残行不是记录，持锁的写入方先把残行隔离到 `<path>.invalid-<ms>-<pid>-<uuid>` 再截断，然后写入；读取方跳过残行，Archive segment 遇到残行报错。**待成员确认**，ADR 当前为 `proposed`。
+- **ADR-0020**：JSONL 记录以 `\n` 结尾；残行不是记录，持锁的写入方先把残行隔离到 `<path>.invalid-<ms>-<pid>-<uuid>` 再截断，然后写入；读取方跳过残行，Archive segment 遇到残行报错。成员已确认（SKIL-111），ADR 为 `accepted`。
 
 以下取舍可逆，采用默认答案，成员可推翻：`jsonl.ts` 作为内部 module，不从 `index.ts` 导出（§2.2 A）；store 清单按 §2.3 A 处理，不改 `EvolutionLayout`；health 对当前 observation 文件加 schema 校验，输出顺序跟随 `layout.stores`。

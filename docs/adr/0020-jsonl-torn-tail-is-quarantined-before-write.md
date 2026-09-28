@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # JSONL 记录以 `\n` 结尾；残行永远不是记录，任何写入前先隔离并截断
@@ -28,4 +28,5 @@ status: proposed
 - repair 对能解析的残行，行为从「封口保留」改为「隔离」，`truncatedTrailingBytes` 统一按字节计。health 的 `completeRecords` 不再计入残行。
 - 部署期间旧版进程仍可能不先隔离就追加，把两段拼成一行。所有进程都升级之后，这个风险才消失。
 
+成员确认：SKIL-111
 来源：[docs/design/jsonl-framing-store-manifest.md §2.1](../design/jsonl-framing-store-manifest.md)
