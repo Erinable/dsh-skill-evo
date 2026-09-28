@@ -34,11 +34,11 @@ export function serializeObservation(event: RuntimeObservation): string {
 /** Parse one JSONL record and reject unsupported schema versions. */
 export function parseObservation(line: string): RuntimeObservation {
   const value: unknown = JSON.parse(line)
-  if (!isRuntimeObservation(value)) throw new Error('invalid RuntimeObservation')
+  if (!isObservationValue(value)) throw new Error('invalid RuntimeObservation')
   return value
 }
 
-function isRuntimeObservation(value: unknown): value is RuntimeObservation {
+export function isObservationValue(value: unknown): value is RuntimeObservation {
   if (typeof value !== 'object' || value === null) return false
   const record = value as Record<string, unknown>
   return record.schemaVersion === 1

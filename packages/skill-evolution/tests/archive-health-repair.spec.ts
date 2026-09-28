@@ -81,14 +81,15 @@ describe('observation archive health and repair', () => {
     await writeFile(validPath, `${JSON.stringify(observation('kept'))}\n`, 'utf8')
     await writeFile(badJsonPath, `${JSON.stringify(observation('also-kept'))}\nnot-json\n`, 'utf8')
     await writeFile(badSchemaPath, `${JSON.stringify({ id: 'bad-schema', schemaVersion: 99 })}\n`, 'utf8')
-    await writeFile(tailPath, JSON.stringify(observation('tail')), 'utf8')
+    const tailBytes = Buffer.from(JSON.stringify(observation('tail')), 'utf8')
+    await writeFile(tailPath, tailBytes)
     await writeFile(foreignPath, 'leave-this-byte-stream-alone', 'utf8')
 
     const service = new EvolutionService({ root })
     const health = await service.health()
     expect(health.find(item => item.path === badJsonPath)).toMatchObject({ readable: false })
     expect(health.find(item => item.path === badSchemaPath)).toMatchObject({ readable: false })
-    expect(health.find(item => item.path === tailPath)).toMatchObject({ readable: false, trailingPartial: true })
+    expect(health.find(item => item.path === tailPath)).toMatchObject({ readable: false, completeRecords: 0, trailingPartial: true })
     await expect(service.observations.readAll()).rejects.toThrow(badJsonPath)
     await expect(service.observations.append(observation('new'))).rejects.toThrow(badJsonPath)
 
@@ -96,11 +97,15 @@ describe('observation archive health and repair', () => {
     expect(report.jsonl.map(item => item.path)).toEqual(expect.arrayContaining([badJsonPath, badSchemaPath, tailPath]))
     expect(report.jsonl.find(item => item.path === badJsonPath)).toMatchObject({ validRecords: 1, removedInvalidLines: 1 })
     expect(report.jsonl.find(item => item.path === badSchemaPath)).toMatchObject({ validRecords: 0, removedInvalidLines: 1 })
+    expect(report.jsonl.find(item => item.path === tailPath)).toMatchObject({ validRecords: 0, removedInvalidLines: 1, truncatedTrailingBytes: tailBytes.length })
     expect(report.jsonl.find(item => item.path === badJsonPath)?.invalidQuarantine).toBeDefined()
     expect(report.jsonl.find(item => item.path === badSchemaPath)?.invalidQuarantine).toBeDefined()
-    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept', 'tail'])
+    const tailQuarantine = report.jsonl.find(item => item.path === tailPath)?.invalidQuarantine
+    expect(tailQuarantine).toBeDefined()
+    expect(await readFile(tailQuarantine!)).toEqual(tailBytes)
+    expect((await service.observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept'])
     expect(await readFile(foreignPath, 'utf8')).toBe('leave-this-byte-stream-alone')
-    expect((await new EvolutionService({ root }).observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept', 'tail'])
+    expect((await new EvolutionService({ root }).observations.readAll()).map(item => item.id)).toEqual(['kept', 'also-kept'])
   })
 
   it('waits for the observation lock before changing archive bytes', async () => {

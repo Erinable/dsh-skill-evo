@@ -1,8 +1,9 @@
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import { createContentHash, parseObservation } from './events.js'
+import { createContentHash, isObservationValue } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
+import { quarantinePath, splitFrames } from './jsonl.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -41,9 +42,9 @@ export async function repairJsonlFileUnlocked(
 
 async function repairJsonlUnlocked(path: string, options: { readonly parse?: (value: unknown) => boolean }): Promise<JsonlRepairResult> {
   await mkdir(dirname(path), { recursive: true })
-  let text = ''
+  let bytes = Buffer.alloc(0)
   try {
-    text = await readFile(path, 'utf8')
+    bytes = await readFile(path)
   } catch (error) {
     if (!isMissing(error)) {
       throw error
@@ -51,14 +52,11 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
     await appendFile(path, '', 'utf8')
     return { path, validRecords: 0, removedDuplicates: 0, removedInvalidLines: 0, truncatedTrailingBytes: 0 }
   }
-  const hadTrailingNewline = text.endsWith('\n')
-  const lines = text.split('\n')
-  if (hadTrailingNewline) lines.pop()
+  const { lines, tail } = splitFrames(bytes)
   const valid: string[] = []
   const invalid: string[] = []
   const ids = new Set<string>()
   let duplicates = 0
-  let trailingBytes = 0
   for (const line of lines) {
     if (line.trim() === '') continue
     try {
@@ -74,20 +72,21 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
       valid.push(JSON.stringify(value))
     } catch {
       invalid.push(line)
-      if (!hadTrailingNewline && line === lines.at(-1)) trailingBytes = Buffer.byteLength(line, 'utf8')
     }
   }
+  const trailingBytes = tail.length
   let invalidQuarantine: string | undefined
-  if (invalid.length > 0) {
-    invalidQuarantine = `${path}.invalid-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    await writeFile(invalidQuarantine, `${invalid.join('\n')}\n`, 'utf8')
+  if (invalid.length > 0 || tail.length > 0) {
+    invalidQuarantine = quarantinePath(path)
+    const invalidBytes = invalid.length === 0 ? Buffer.alloc(0) : Buffer.from(`${invalid.join('\n')}\n`, 'utf8')
+    await writeFile(invalidQuarantine, Buffer.concat([invalidBytes, tail]))
   }
   await atomicWrite(path, valid.length === 0 ? '' : `${valid.join('\n')}\n`)
   return {
     path,
     validRecords: valid.length,
     removedDuplicates: duplicates,
-    removedInvalidLines: invalid.length,
+    removedInvalidLines: invalid.length + (tail.length > 0 ? 1 : 0),
     truncatedTrailingBytes: trailingBytes,
     ...(invalidQuarantine === undefined ? {} : { invalidQuarantine }),
   }
@@ -102,9 +101,7 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
   for (const path of options.jsonlPaths) {
-    const parse = path === observationsPath ? (value: unknown) => {
-      try { parseObservation(JSON.stringify(value)); return true } catch { return false }
-    } : undefined
+    const parse = path === observationsPath ? isObservationValue : undefined
     jsonl.push(await repairJsonlFile(path, { ...(parse === undefined ? {} : { parse }) }))
   }
   const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')
