@@ -404,7 +404,11 @@ ADR 编号冲突（两个设计 PR 并行，都取了下一个号）：先合并
 
 ## 6. SKIL-91 成员规则与平台 skill 同步
 
-`docs/design/skil-91-member-rules.md` 是成员位置盘点和规则入口；不可逆选择记录在 ADR-0017、ADR-0018。仓库合并后，平台安装副本仍是独立的运行时缓存，按 ADR-0013 的仓库权威原则同步：
+`docs/design/skil-91-member-rules.md` 是成员位置盘点和规则入口；不可逆选择记录在 ADR-0017、ADR-0018。平台安装副本仍是独立的运行时缓存，按 ADR-0013 的仓库权威原则由「Skill 同步」autopilot 自动同步，记录票为 SKIL-112。它在 GitHub push 到 `main` 的 webhook 触发，另由每天 08:53 Asia/Shanghai 的兜底运行；模式是 `run_only`，执行者是 Mika。它保留现有 skill id 和 agent 绑定，处理仓库 skill 内容及附属文件的变更。
+
+「Skill 同步」不负责同步平台智能体指令；这仍由 Mika 按 PR 描述里的「Platform agent instruction sync after merge」手动完成。它不删除 skill（`main` 上的删除只报告），也不给新导入的 skill 绑定智能体。Mika 在 SKIL-112 上只在有改动、失败或需要成员决定时留言；无改动不留言。webhook 投递丢失时，最迟由次日 08:53 的兜底运行补上；两次 refresh 后仍不一致时，在 SKIL-112 上 @ 成员。
+
+以下手动命令只在 autopilot 失败时作为备用办法，不能替代自动同步：
 
 1. 在包含已合并 `main` 的检出目录运行 `multica skill list --output json`，按 `config.origin.path` 找到 `skills/orchestrate` 和 `skills/delivery-contract` 对应的 skill id。
 2. 首选保留现有 id 和 agent 绑定的整包同步：`multica skill refresh <orchestrate-id>`、`multica skill refresh <delivery-contract-id>`。
