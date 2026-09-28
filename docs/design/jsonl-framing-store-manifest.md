@@ -136,7 +136,7 @@ export function quarantinePath(path: string): string
 | `state-root.ts:217-224`（`rotateFile`） | `splitFrames` 加 `quarantinePath` |
 | `health.ts:21-39` | `splitFrames`；`trailingPartial = tail.length > 0`；`completeRecords` 只数 `lines` |
 | `repair.ts:54-85` | `splitFrames` 用 `Buffer` 读。残行不论能否解析，都原样写进隔离文件并计入 `removedInvalidLines`；`truncatedTrailingBytes = tail.length`；隔离文件名用 `quarantinePath` |
-| `events.ts` | 保留逐行的 `serializeObservation` / `parseObservation`。新增导出 `isObservationValue`，替换 `service.ts:215-217` 和 `repair.ts:105-107` 的两份重复实现 |
+| `events.ts` | 保留逐行的 `serializeObservation` / `parseObservation`。新增导出 `isObservationValue`，替换 `service.ts:414-416` 和 `repair.ts:105-107` 的两份重复实现 |
 
 `repair.ts` 今天把隔离内容当字符串写（`:83`），截断的 UTF-8 因此会丢字节。改为 `Buffer` 后，隔离文件的内容是「非法完整行用 `\n` 连接、末尾加 `\n`，后面接残行的原始字节」。
 
@@ -181,7 +181,7 @@ export function quarantinePath(path: string): string
 | T1 | 新增 `jsonl.ts` 和 `tests/jsonl.spec.ts`，不改调用方 | 无 | `splitFrames`：无尾、有尾、能解析的尾、截断的 UTF-8 尾、空白行、空文件；`appendFrames`：无尾时直接追加；有尾时隔离文件的字节和原尾逐字节相同，追加后文件是「完整部分 + 新行」；隔离失败时（如目录只读）文件不变 |
 | T2 | `JsonlRecordStore`、`JsonlEventStore` 改用 T1 | T1 | **probe A** 写成测试：残行之后 `append(c)` 为 `true`，`readAll` 返回 `[a, c]`，`append(d)` 成功，残行出现在一个 `.invalid-` 文件里；`JsonlEventStore` 做同样的测试 |
 | T3 | `ObservationLog`（当前文件读写、Archive segment 读取）和 `rotateFile` 改用 T1 | T1 | **probe B** 写成测试：`EvolutionService` 的 observations 在 `e1` 之后留 30 字节残行，`recordObservation(e2)` 为 `true`，`readAll` 返回 `[e1, e2]`；`repair()` 之后仍是 `[e1, e2]`，observations 那一项 `removedInvalidLines` 为 `0`。再测：同一 id 在截断之后重投递，只出现一次（ADR-0003）；Rotation 的隔离文件名用的是 `quarantinePath` |
-| T4 | `health.ts`、`repair.ts` 改用 T1，`isObservationValue` 收进 `events.ts` | T1 | **probe C** 写成测试：同一个带「能解析的尾」的文件，`readAll` 数 1 条，health 的 `completeRecords` 也是 1，repair 的 `validRecords` 也是 1，`truncatedTrailingBytes` 等于尾部字节数；截断 UTF-8 的尾部原样进隔离文件；现有 `repair.spec.ts:104-112` 和 `archive-health-repair.spec.ts:40-67` 仍然通过 |
+| T4 | `health.ts`、`repair.ts` 改用 T1，`isObservationValue` 收进 `events.ts` | T1 | **probe C** 写成测试：同一个带「能解析的尾」的文件，`readAll` 数 1 条，health 的 `completeRecords` 也是 1，repair 的 `validRecords` 也是 1，`truncatedTrailingBytes` 等于尾部字节数；截断 UTF-8 的尾部原样进隔离文件。**随 ADR-0020 改的现有断言**：`archive-health-repair.spec.ts:72`、`:74` 的期望从 `['kept', 'also-kept', 'tail']` 改为 `['kept', 'also-kept']`，并新增一条断言：`tailPath` 那一项的 `invalidQuarantine` 文件字节等于原尾部字节。**不改、仍须通过**：`archive-health-repair.spec.ts:41-75`（`:72`、`:74` 除外）、`:137-149`，`repair.spec.ts:104-112`，`core.spec.ts:172-182,248-262,264-316` |
 | T5 | `service.ts` 的 `health()` / `repair()` 改为遍历 `layout.stores` | 无，可以和 T1 并行 | `health()` 的路径集合 = `layout.stores` 的路径 ∪ Archive segment；`repair().jsonl` 的路径集合同样如此；当前 observation 文件里有一条 schema 非法的记录时，health 报 `readable: false` |
 
 顺序：T5 和 T1 可以同时开始；T2、T3、T4 都只依赖 T1，互相独立。T3 是修复 Observation 丢失的关键一步，建议排在 T2 之后、T4 之前，这样 probe B 先落地。
@@ -191,6 +191,7 @@ export function quarantinePath(path: string): string
 - **R-mixed**：部署期间旧版进程追加时不先隔离，仍然可能把残行和新记录拼成一行。所有进程都升级之后，这个风险才消失。
 - **R-foreign-tail**：外部工具写出的 JSONL 如果最后一条记录没有 `\n`，第一次 append 时这条记录会被隔离。能从隔离文件里找回，但不会自动恢复。
 - **R-double-quarantine**：写完隔离文件之后、截断之前如果崩溃，下一次 append 会再隔离一次，留下两份内容相同的隔离文件。只是多占空间，不会丢数据。
+- **R-archive-tail**（T4 需标注）：Archive segment 末尾能解析、只缺 `\n` 的记录，以前 repair 会封口后保留为记录，现在会进入隔离文件，不再自动恢复。这是现有断言 `archive-health-repair.spec.ts:72`、`:74` 所测行为的变更。`specs/evolution-state-root/tasks.md:31` 写的是「有效记录保留」；按 ADR-0020，残行不是记录，所以这条不冲突，但 Spec Writer 要在 T4 写明这个解释。
 - health 输出顺序改变（T5），CLI 和 bundle 的 `health` JSON 里数组顺序会变。仓库内的测试都按路径 `find`，不依赖顺序。
 
 验收时要跑的命令：
