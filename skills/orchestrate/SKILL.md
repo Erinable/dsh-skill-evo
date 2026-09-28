@@ -130,7 +130,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
   3. **最后一步**：`multica issue assign <原 issue id> --to-id <Mika 的 id>`，再 `multica issue status <原 issue id> in_progress`。
 
   指派放在最后：指派不会起新 run，前面几步做完 issue 才有负责人，stage 完成后也才能唤醒到 Mika。
-- **Architect @Mika**（成员在架构扫描 issue 上回复了编号）：按成员选的编号，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步。建之前查重：问题关键词用编号，来源锚点用架构扫描 issue 的 KEY，两者都对上的已有父 issue 才不再建。
+- **Architect @Mika**（架构扫描自动选题后）：按性价比第一的选题，以路由表「涉及模块边界或接口设计」一行建父 issue，走入口第 2 步；记录「采用默认答案，成员可推翻」。建之前查重：问题关键词用选题编号，来源锚点用架构扫描 issue 的 KEY，两者都对上的已有父 issue 才不再建。
 
 ## 故障
 
@@ -149,4 +149,4 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 |---|---|---|---|---|
 | 每日巡检 | 每天 09:07 Asia/Shanghai | run_only | Mika | 读 `PATROL.md` |
 | 每日分诊 | 每天 09:37 Asia/Shanghai | run_only | Triager | 捞没有负责人也没有父 issue 的 issue，分诊后 @Mika，走「交接入口」 |
-| 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；成员回复编号后 Architect @Mika，走「交接入口」；成员不回复就什么都不发生 |
+| 每周架构扫描 | 每周一 10:13 Asia/Shanghai | create_issue | Architect | 报告作为附件挂在它建的 issue 上；Architect 自动选性价比第一的选题并记录「采用默认答案，成员可推翻」，@Mika 走「交接入口」后将扫描 issue 置 `done`；没有值得做的就写「本期不立项」并将扫描 issue 置 `done` |
