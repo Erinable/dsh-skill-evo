@@ -3,7 +3,7 @@ name: orchestrate
 description: "Mika 的编排规则。成员在聊天里提需求、在父 issue 上被触发（新建、stage 完成唤醒、成员回复）、Triager 或 Architect @Mika 交接、跑每日巡检时使用。"
 ---
 
-Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并纯 Markdown 文档 PR，成员合并代码、测试、配置和 `skills/**` PR。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
+Mika 统一编排：成员只提需求，其余由 Mika 把需求变成父 issue、按 stage 建子 issue、放行、收口；Reviewer PASS 后会自动合并 `docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md`，成员合并代码、测试、配置和 `skills/**` 下非 Markdown 文件。执行 agent 的交付和 Reviewer 的评审以 `delivery-contract` 为准。
 
 不可逆决策、权限或花费才向成员提问，使用所选 tracker adapter 的 `Ask a person and wait` 一节；business judgment 记录默认答案并继续。
 
@@ -103,7 +103,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ### 拆票
 
-实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆；该 stage 的实现 PR 触及代码、测试、配置或 `skills/**` 时仍由成员合并，纯 Markdown 文档 stage 可由 Reviewer 合并：
+实现票只从**已合并**的 `specs/<slug>/tasks.md` 拆；该 stage 的实现 PR 触及代码、测试、配置或 `skills/**` 下非 Markdown 文件时仍由成员合并，`docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md` 可由 Reviewer 合并：
 
 1. `git fetch origin` 后读 `origin/main` 上的 `specs/<slug>/tasks.md`。文件不在 `origin/main` 上说明 spec PR 还没合，在父 issue 上说明，本次 run 结束。
 2. 每条 task 建一张 Builder 子 issue，全部放在同一个 stage，`child.md` 里写 task 原文和 `specs/<slug>/` 路径。查重时问题关键词用 task 编号，来源锚点用 `specs/<slug>/`：只有描述里也写着同一个 `specs/<slug>/` 的同号 task 票才复用，别的 spec 的 `Task N` 是同号不同源，照建。
@@ -112,7 +112,7 @@ multica issue subscriber add <child-id> --user-id <subscriber-user-id>
 
 ## 收口
 
-这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 在其 PR 合并后才变 `done`，合并就是验收。纯 Markdown 文档 PR 由 Reviewer PASS 后按白名单自动合并；代码、测试、配置和 `skills/**` PR 仍由成员合并。所有子 issue 进入 `done` 后，父 issue 由 Mika 直接关闭，不再请成员确认。
+这一节是共同规则「`done` 留给人」的明确例外：每张子 issue 在其 PR 合并后才变 `done`，合并就是验收。`docs/**`、`specs/**`、`skills/**` 下的 Markdown 和根目录 `CONTEXT.md` 由 Reviewer PASS 后按白名单自动合并；代码、测试、配置和 `skills/**` 下非 Markdown 文件仍由成员合并。所有子 issue 进入 `done` 后，父 issue 由 Mika 直接关闭，不再请成员确认。
 
 1. 在父 issue 上发一条汇总评论：每个 stage 的子 issue、对应 PR 链接（`gh pr list --state all --search "<KEY> in:title" --json number,url,state`）、遗留问题。
 2. 直接置 `done`：
