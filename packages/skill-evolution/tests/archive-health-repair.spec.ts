@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EvolutionService, createObservation, fingerprintOf, readCursor, repairEvolutionRoot, type RuntimeObservation } from '../src/index.js'
@@ -38,6 +38,35 @@ function failedObservation(id: string, error: string): RuntimeObservation {
 }
 
 describe('observation archive health and repair', () => {
+  it.each(['default', 'override'] as const)('uses the %s layout store order and matching archive paths', async variant => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-layout-health-'))
+    dirs.push(root)
+    const store = variant === 'override' ? join(root, 'custom', 'events.jsonl') : undefined
+    const service = new EvolutionService({ root, ...(store === undefined ? {} : { store }) })
+    const observationPath = service.layout.observations.path
+    const archive = join(dirname(observationPath), 'archive')
+    await mkdir(archive, { recursive: true })
+    const segment = join(archive, `${basename(observationPath)}.2026-09-25T00-00-00.000Z.1.jsonl`)
+    const foreign = join(archive, 'other.jsonl.2026-09-25T00-00-00.000Z.1.jsonl')
+    await writeFile(segment, `${JSON.stringify(observation('archived'))}\n`, 'utf8')
+    await writeFile(foreign, 'not-json\n', 'utf8')
+
+    const currentPaths = service.layout.stores.map(item => item.path)
+    expect((await service.health()).map(item => item.path)).toEqual([...currentPaths, segment])
+    expect((await service.repair()).jsonl.map(item => item.path).sort()).toEqual([...currentPaths, segment].sort())
+    expect(await readFile(foreign, 'utf8')).toBe('not-json\n')
+  })
+
+  it('reports a complete observation with an invalid schema as unreadable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-observation-health-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await mkdir(join(root, '.skill-evolution'), { recursive: true })
+    await writeFile(service.layout.observations.path, `${JSON.stringify({ id: 'invalid', schemaVersion: 99 })}\n`, 'utf8')
+
+    expect((await service.health()).find(item => item.path === service.layout.observations.path)).toMatchObject({ readable: false, completeRecords: 0 })
+  })
+
   it('reports and repairs malformed matching archive segments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-archive-health-'))
     dirs.push(root)
@@ -101,12 +130,14 @@ describe('observation archive health and repair', () => {
     expect(await readFile(segment)).toEqual(Buffer.alloc(0))
   })
 
-  it('handles health and repair without an archive directory', async () => {
+  it.each(['default', 'override'] as const)('handles %s layout without an archive directory', async variant => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-no-archive-'))
     dirs.push(root)
-    const service = new EvolutionService({ root })
-    expect(await service.health()).toHaveLength(9)
-    expect((await service.repair()).jsonl).toHaveLength(9)
+    const store = variant === 'override' ? join(root, 'custom', 'events.jsonl') : undefined
+    const service = new EvolutionService({ root, ...(store === undefined ? {} : { store }) })
+    const paths = service.layout.stores.map(store => store.path)
+    expect((await service.health()).map(item => item.path)).toEqual(paths)
+    expect((await service.repair()).jsonl.map(item => item.path).sort()).toEqual([...paths].sort())
   })
 
   it('forces projection repair and keeps standalone repair from changing the cursor', async () => {
