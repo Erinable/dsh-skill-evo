@@ -11,7 +11,7 @@ status: accepted
 ## Considered Options
 
 - 所有业务判断都置为 `blocked` 等成员回复被拒绝，因为可逆判断会让 stage 和 grilling 无谓停滞，且推荐答案已经能推进工作。
-- Reviewer 合并所有 PASS 的 PR 被拒绝，因为代码、测试、配置和 skill 变更仍需要成员承担最终合并责任。
+- Reviewer 合并所有 PASS 的 PR 被拒绝，因为代码、测试、配置和 `skills/**` 下的非 Markdown 文件仍需要成员承担最终合并责任。
 - 用人工判断「像文档」的 PR 被拒绝，因为文件名白名单可以机械执行并避免误合并。
 
 ## Consequences
