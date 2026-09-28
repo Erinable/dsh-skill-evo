@@ -39,7 +39,7 @@ Phase 2/3 APIs:
 Failure cases carry a structured `origin`: `load-failure`, `implicit-follow-up`, or
 `explicit-feedback`; explicit feedback also carries its `feedbackKind` and any
 provided `attributionConfidence`. Clustering sorts cases by `createdAt` and `id`,
-uses CJK unigram/bigram tokens with an overlap coefficient, and derives each
+uses CJK unigram/bigram tokens with a length-sensitive Dice coefficient, and derives each
 cluster id from its earliest case id,
 so projection output is independent of observation input order. Existing derived
 records are rebuilt with the new ids; consumers must resolve old cluster ids by

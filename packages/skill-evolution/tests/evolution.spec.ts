@@ -149,6 +149,22 @@ describe('phase 2 evidence workflow', () => {
     expect(clusterFailureCases(cases)).toHaveLength(1)
   })
 
+  it('keeps unrelated short CJK replies in separate clusters', () => {
+    const cases = (texts: readonly [string, string]) => texts.map((failure, index) => ({
+      id: `negative-${index}`,
+      skillName: 'api-debugging',
+      task: 'debug',
+      failure,
+      evidenceEventIds: [`negative-${index}`],
+      severity: 'medium' as const,
+      createdAt: `2026-09-25T00:00:0${index}.000Z`,
+      status: 'open' as const,
+      origin: 'implicit-follow-up' as const,
+    }))
+    expect(clusterFailureCases(cases(['不对', '不对，数据库连接串写错了，应该用只读副本']))).toHaveLength(2)
+    expect(clusterFailureCases(cases(['数据库对账不通过', '不对']))).toHaveLength(2)
+  })
+
   it('uses evidence strength for diagnosis confidence and explicit attribution confidence', () => {
     const two = Array.from({ length: 2 }, (_, index) => [
       event({ id: `two-loaded-${index}`, sessionId: `two-session-${index}`, kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),

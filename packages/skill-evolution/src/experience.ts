@@ -337,7 +337,7 @@ function tokenSet(value: string): Set<string> {
 function similarity(left: Set<string>, right: Set<string>): number {
   if (left.size === 0 || right.size === 0) return left.size === right.size ? 1 : 0
   const intersection = [...left].filter(token => right.has(token)).length
-  if ([...left, ...right].some(isCjkToken)) return intersection / Math.min(left.size, right.size)
+  if ([...left, ...right].some(isCjkToken)) return (2 * intersection) / (left.size + right.size)
   return intersection / new Set([...left, ...right]).size
 }
 
