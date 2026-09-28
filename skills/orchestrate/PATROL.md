@@ -68,7 +68,7 @@
 
 ## 文档 PR 自动合并查
 
-巡检不代替 Reviewer 合并。对已出现 Reviewer `评审结论：PASS`、状态仍为 `OPEN` 的 PR，运行 `gh pr view <n> --json files --jq '.files[] | .path, (.previousFilename // empty)'`，逐行检查是否匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。白名单全部命中时列入摘要「文档 PR 已 PASS 但仍 OPEN，交回 Reviewer 合并」；任一文件不匹配时不因等待成员合并而列入本查，代码、测试、配置和 `skills/**` PR 继续等待成员。重复巡检只保留一条同 PR 摘要。
+巡检不代替 Reviewer 合并。对已出现 Reviewer `评审结论：PASS`、状态仍为 `OPEN` 的 PR，运行 `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`，逐行检查是否匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。白名单全部命中时列入摘要「文档 PR 已 PASS 但仍 OPEN，交回 Reviewer 合并」；任一文件不匹配时不因等待成员合并而列入本查，代码、测试、配置和 `skills/**` PR 继续等待成员。重复巡检只保留一条同 PR 摘要。
 
 完成判据：每个 PASS 后仍 OPEN 且白名单全命中的文档 PR 都已合并或列入一次「交回 Reviewer 合并」摘要；非文档 PR 不因正常等待成员合并进入本查。
 

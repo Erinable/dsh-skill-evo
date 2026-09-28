@@ -34,7 +34,7 @@ description: "交付契约。接到指派的子 issue 就先读，开 PR、发�
 
 ## 被评审之后
 
-- **PASS**：Reviewer 已把 PR 转为正式 PR。Reviewer 先运行 `gh pr view <n> --json files --jq '.files[] | .path, (.previousFilename // empty)'`，逐行确认每个当前路径和重命名前路径都匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。全部匹配时执行 `gh pr merge <n> --merge`，并在 issue 上说明已自动合并；任何代码、测试、配置或 `skills/**` 路径都不匹配，Reviewer 只在 issue 上写「等待成员合并」。
+- **PASS**：Reviewer 已把 PR 转为正式 PR。Reviewer 先运行 `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`，逐行确认每个当前路径和重命名前路径都匹配 `^(docs/|specs/).+\.md$` 或 `^CONTEXT\.md$`。全部匹配时执行 `gh pr merge <n> --merge`，并在 issue 上说明已自动合并；任何代码、测试、配置或 `skills/**` 路径都不匹配，Reviewer 只在 issue 上写「等待成员合并」。
 - **BLOCK**：Reviewer 在 issue 上写明哪条验收标准没过、在哪、改什么，并 @ 你。回到**原任务分支**返工、推送（同一个 PR 自动更新），再按交付步骤 5、6 先置 `in_review`、再发交接评论并 @Reviewer。
 - **第 3 次 BLOCK**：Reviewer 会把 issue 置为 `blocked` 并写明需要成员决定什么。此时等成员回复，回复到来时按回复继续。
 - **GitHub 意见**：issue 上出现以 `GitHub 意见：#<n>` 开头、@ 你的评论，是每日巡检把成员留在 GitHub PR 上的意见转了过来。把引用的每条意见当作成员在 issue 上的评论处理：要改就回原任务分支返工、推送，再按交付步骤 5、6 置 `in_review`、发交接评论并 @Reviewer，交接评论里逐条写每个意见链接怎么处理的；只是提问就在 issue 上回答，不改状态。不要去 GitHub 上回复。
@@ -43,7 +43,7 @@ description: "交付契约。接到指派的子 issue 就先读，开 PR、发�
 ## 评审契约（Reviewer）
 
 1. **只读检出**：`git fetch origin` 后执行 `git diff origin/main...origin/<分支>`，工作区保持无提交。
-2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论。按「被评审之后」的机械白名单检查 `gh pr view <n> --json files --jq '.files[] | .path, (.previousFilename // empty)'`：纯 Markdown 文档路径由 Reviewer 执行 `gh pr merge <n> --merge`，并在子 issue 上评论「已由 Reviewer 合并」；否则在子 issue 上评论「等待成员合并」。
+2. **PASS**：先 `gh pr view <n> --json mergeable,mergeStateStatus`，`mergeable` 为 `CONFLICTING` 时不判 PASS，改判 BLOCK，理由写「与 main 冲突，按『PR 冲突时』处理」（`UNKNOWN` 等 10 秒再查一次）。然后 `gh pr ready <n>` 把 draft 转为正式 PR，`gh pr comment <n> --body-file <file>` 贴结论。按「被评审之后」的机械白名单检查 `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`：纯 Markdown 文档路径由 Reviewer 执行 `gh pr merge <n> --merge`，并在子 issue 上评论「已由 Reviewer 合并」；否则在子 issue 上评论「等待成员合并」。
 3. **BLOCK**：在子 issue 上评论，写清哪条验收标准没过、在哪个位置、要改什么，用「交接」一节的交接命令发出，`TO=<原执行 agent 名>`、`PARENT=<触发你的交接评论 id>`。
 4. **ADR 检查**：PR 引入的不可逆决策（数据格式、公开接口、依赖方向）有没有对应的 `docs/adr/` 文件；PR 与已有 ADR 冲突时，有没有按 `docs/agents/domain.md` 的「Flag ADR conflicts」显式标出；新 ADR 的编号是否与 `origin/main` 上已有的编号冲突，冲突时后合并的 PR 改号。任何一项没满足就判 BLOCK，理由写明缺的是哪一项。
 5. **冲突复核**：执行 agent 解完冲突后 @ 你，交接评论第一行是 `冲突已解决：#<n>`。按「PR 冲突时」的复核规则只核对合并本身。

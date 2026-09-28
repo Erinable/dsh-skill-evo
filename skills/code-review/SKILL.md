@@ -79,7 +79,7 @@ End with a one-line summary: total findings per axis, and the worst issue _withi
 
 ## Reviewer merge gate
 
-When this skill is used as the `Reviewer` for a delivery-contract PR, a PASS is followed by a mechanical filename check. Run `gh pr view <n> --json files --jq '.files[] | .path, (.previousFilename // empty)'`; every current or previous path must match `^(docs/|specs/).+\.md$` or `^CONTEXT\.md$` for automatic merge. If all paths match, run `gh pr merge <n> --merge` and report `已由 Reviewer 合并` on the issue. Any code, test, configuration, or `skills/**` path means the PR remains for member merge and the issue report must say `等待成员合并`.
+When this skill is used as the `Reviewer` for a delivery-contract PR, a PASS is followed by a mechanical filename check. Run `gh api "repos/{owner}/{repo}/pulls/<n>/files?per_page=100" --paginate --jq '.[] | .filename, (.previous_filename // empty)'`; every current or previous path must match `^(docs/|specs/).+\.md$` or `^CONTEXT\.md$` for automatic merge. If all paths match, run `gh pr merge <n> --merge` and report `已由 Reviewer 合并` on the issue. Any code, test, configuration, or `skills/**` path means the PR remains for member merge and the issue report must say `等待成员合并`.
 
 ## Why two axes
 
