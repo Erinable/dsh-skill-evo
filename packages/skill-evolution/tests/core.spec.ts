@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 
 import { tmpdir } from 'node:os'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -20,12 +20,16 @@ import {
   repairJsonlFile,
   rotateJsonl,
   resolveLayout,
+  classifyFollowUps,
+  MaintenanceWorker,
+  readCursor,
 } from '../src/index.js'
 
 const dirs: string[] = []
 const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
+  vi.useRealTimers()
   await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
@@ -425,5 +429,67 @@ describe('validateAdoptionBase', () => {
 
   it('rejects a stale base without modifying anything', () => {
     expect(() => validateAdoptionBase(candidate, { current: skill(createContentHash('newer')) })).toThrow(StaleAdoptionBaseError)
+  })
+})
+
+
+describe('follow-up classification memo', () => {
+  async function setup(classify = vi.fn(async () => ({ intent: 'goal-changed' as const, confidence: 0.9 })), version = 'fake-v1') {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifications-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root, followUpClassifier: { version, classify }, classifierTimeoutMs: 20 })
+    await service.observations.appendMany([
+      observation('loaded', 'skill-loaded'),
+      observation('correction', 'user-follow-up', skill(), { text: 'wrong, please correct this' }),
+      observation('finished', 'task-finished'),
+    ])
+    return { root, service, classify }
+  }
+
+  it('changes projection only after classification and restores the entire rule snapshot when removed', async () => {
+    const { root, service, classify } = await setup()
+    const original = await new EvolutionService({ root }).refreshDerived()
+    expect(original.followUps[0]).toMatchObject({ source: 'rule', intent: 'incorrect' })
+    expect(original.failures).toHaveLength(1)
+    const cursorRule = await readCursor(service.layout.cursorPath)
+    await service.refreshDerived()
+    const cursorInjected = await readCursor(service.layout.cursorPath)
+    expect(cursorInjected?.derivationKey).not.toBe(cursorRule?.derivationKey)
+    await service.listFailures()
+    await service.metrics()
+    await new MaintenanceWorker({ service }).runOnce()
+    expect(classify).not.toHaveBeenCalled()
+    expect(await classifyFollowUps(service)).toMatchObject({ classified: 1, cached: 0, failed: [] })
+    const classified = await service.refreshDerived()
+    expect(classified.followUps[0]).toMatchObject({ source: 'classifier', intent: 'goal-changed', attribution: 'task-change' })
+    expect(classified.failures).toEqual([])
+    expect((await readCursor(service.layout.cursorPath))?.derivationKey).not.toBe(cursorInjected?.derivationKey)
+    expect(await classifyFollowUps(service)).toMatchObject({ classified: 0, cached: 1 })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2030-01-02T00:00:00Z'))
+    expect(await new EvolutionService({ root }).refreshDerived()).toEqual(original)
+    const nextVersion = new EvolutionService({ root, followUpClassifier: { version: 'fake-v2', classify } })
+    expect((await nextVersion.refreshDerived()).followUps[0]).toMatchObject({ source: 'rule', fallbackReason: 'not-classified' })
+    expect(classify).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves valid memo bytes and isolates malformed rows during repair without model calls', async () => {
+    const { service, classify } = await setup()
+    await classifyFollowUps(service)
+    const path = service.classifications.filePath
+    const entries = await service.classifications.readAll()
+    const bytes = `  ${JSON.stringify(entries[0], null, 0)}  \r\n`
+    await writeFile(path, bytes)
+    await service.repair()
+    expect(await readFile(path, 'utf8')).toBe(bytes)
+    await writeFile(path, `${bytes}{"id":"bad-schema"}\nnot-json\n{"unterminated":`)
+    const report = await service.repair()
+    const memoRepair = report.jsonl.find(item => item.path === path)!
+    expect(memoRepair.removedInvalidLines).toBe(3)
+    expect(await readFile(path, 'utf8')).toBe(bytes)
+    expect(await readFile(memoRepair.invalidQuarantine!, 'utf8')).toContain('bad-schema')
+    expect((await service.health()).find(item => item.path === path)?.readable).toBe(true)
+    expect(classify).toHaveBeenCalledTimes(1)
+    expect((await service.refreshDerived()).followUps[0]?.source).toBe('classifier')
   })
 })

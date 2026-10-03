@@ -20,8 +20,6 @@ export interface EvolutionMetrics {
   readonly skills: readonly SkillUsageMetric[]
   readonly proposals: { readonly total: number; readonly promoted: number; readonly rejected: number; readonly rolledBack: number }
   readonly contextCost: number
-  readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', Readonly<Record<string, number>>>>
-  readonly followUpFailures: number
 }
 
 /** Aggregate exportable operational metrics without assigning causal credit. */
@@ -33,7 +31,6 @@ export function aggregateMetrics(
 ): EvolutionMetrics {
   const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string>; resolutions: FollowUpResolution[] }>()
   const sessions = new Set<string>()
-  const followUpIntents = { explicit: {} as Record<string, number>, classifier: {} as Record<string, number>, rule: {} as Record<string, number> }
   let contextCost = 0
   for (const event of events) {
     if (event.sessionId !== undefined) sessions.add(event.sessionId)
@@ -57,11 +54,6 @@ export function aggregateMetrics(
     metric.resolutions.push(resolution)
     bySkill.set(resolution.skillName, metric)
   }
-  for (const resolution of resolutions) {
-    const source = followUpIntents[resolution.source]
-    source[resolution.intent] = (source[resolution.intent] ?? 0) + 1
-  }
-  const followUpFailures = resolutions.filter(item => ['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(item.intent)).length
   const skills = [...bySkill.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([skillName, metric]) => ({
     skillName,
     exposed: metric.exposed.size,
@@ -89,8 +81,6 @@ export function aggregateMetrics(
       rolledBack: rolledBack.size,
     },
     contextCost,
-    followUpIntents,
-    followUpFailures,
   }
 }
 

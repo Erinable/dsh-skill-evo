@@ -13,7 +13,8 @@ import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
-import type { ClassificationMemoEntry, FollowUpClassifier } from './types.js'
+import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEntry } from './follow-up.js'
+import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
@@ -55,7 +56,7 @@ export class EvolutionService {
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
   readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
-  readonly followUps: JsonlRecordStore<import('./types.js').FollowUpResolution>
+  readonly followUps: JsonlRecordStore<FollowUpResolution>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
@@ -152,7 +153,7 @@ export class EvolutionService {
   async health(): Promise<readonly JsonlHealth[]> {
     const reports = await Promise.all(this.layout.stores.map(store => inspectJsonlHealth(
       store.path,
-      store.name === 'observations' ? { parse: isObservationValue } : {},
+      store.name === 'observations' ? { parse: isObservationValue } : store.name === 'classifications' ? { parse: isClassificationMemoEntry } : {},
     )))
     const archives = await archivePaths(this.layout.observations.path)
     const archiveReports = await Promise.all(archives.map(path => inspectJsonlHealth(path, { parse: isObservationValue, requireTrailingNewline: true })))
@@ -179,7 +180,8 @@ export class EvolutionService {
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
     await this.refreshDerived()
-    const workflow = new EvolutionWorkflow()
+    const memo = new Map((await this.classifications.readAll()).map(entry => [entry.id, entry]))
+    const workflow = new EvolutionWorkflow({ memo, classifierVersion: this.followUpClassifier?.version })
     workflow.add(await this.observations.readAll())
     const proposal = await workflow.propose(clusterId, designer)
     return this.stageProposal(proposal)
@@ -393,9 +395,15 @@ export class EvolutionService {
     const memoEntries = await this.classifications.readAll()
     const memo = new Map(memoEntries.map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
-    const derivationKey = createContentHash(JSON.stringify({ rules: 'follow-up-rules-v1', policy: 'intent-policy-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
+    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
-      return { experiences: await this.experiences.readAll(), failures: await this.failures.readAll(), clusters: await this.clusters.readAll(), diagnoses: await this.diagnoses.readAll(), followUps: await this.followUps.readAll() }
+      return {
+        experiences: await this.experiences.readAll(),
+        failures: await this.failures.readAll(),
+        clusters: await this.clusters.readAll(),
+        diagnoses: await this.diagnoses.readAll(),
+        followUps: await this.followUps.readAll(),
+      }
     }
     const workflow = new EvolutionWorkflow({ memo, ...(this.followUpClassifier === undefined ? {} : { classifierVersion: this.followUpClassifier.version }) })
     workflow.add(observations)
