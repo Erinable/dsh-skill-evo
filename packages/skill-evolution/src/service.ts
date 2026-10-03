@@ -257,7 +257,7 @@ export class EvolutionService {
     if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
     const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
     const current = await this.versions.readCurrent(proposal.skillName)
-    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy as never), now: Date.now() })
+    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = proposalRootId(proposal.id)
     await this.versions.promote(proposal, { scope })

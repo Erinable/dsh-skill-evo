@@ -33,7 +33,8 @@ describe('file publication journals', () => {
     await value.writeCandidate(p)
     const publication = join(root, '.skill-evolution', 'publications'); await (await import('node:fs/promises')).mkdir(publication, { recursive: true })
     await writeFile(join(publication, 'api-debugging.json'), JSON.stringify({ v: 1, operation: 'promote', skillName: '../escaped', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z', proposalId: 'target' }))
-    await expect(value.promote(p, { scope: 'project' })).resolves.toBeDefined()
+    const layout = resolveLayout({ root }); const journal = { v: 1 as const, operation: 'promote' as const, skillName: 'api-debugging', scope: 'project' as const, proposalId: 'manifest-target', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z' }
+    await expect(completePublication(journal, { root, layout, manifestFor: async () => ({ name: 'api-debugging', version: '1.0.0', contentHash: journal.to.contentHash, status: 'stable', scope: 'project', createdBy: 'human', createdAt: journal.startedAt, updatedAt: journal.startedAt }) })).rejects.toThrow()
     await expect(readFile(join(root, '..', 'escaped', 'SKILL.md'))).rejects.toMatchObject({ code: 'ENOENT' })
     const target = join(root, 'api-debugging', 'versions', '1.1.0'); await (await import('node:fs/promises')).mkdir(target, { recursive: true })
     await writeFile(join(target, 'SKILL.md'), 'tampered')
@@ -76,10 +77,23 @@ describe('file publication journals', () => {
   })
 
   it('rejects invalid journal field types, scope, filename, and candidate hash', async () => {
-    const { root } = await store(); const directory = join(root, '.skill-evolution', 'publications'); await (await import('node:fs/promises')).mkdir(directory, { recursive: true })
+    const { root: validationRoot } = await store(); const directory = join(validationRoot, '.skill-evolution', 'publications'); await (await import('node:fs/promises')).mkdir(directory, { recursive: true })
     const valid = { v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z' }
-    for (const [name, value] of [['bad-v', { ...valid, v: 2 }], ['bad-scope', { ...valid, scope: 'bad' }], ['bad-time', { ...valid, startedAt: 1 }], ['bad-name', { ...valid, skillName: 'other' }]]) {
-      const path = join(directory, `${name}.json`); await writeFile(path, JSON.stringify(value)); await expect(readPublication(path)).rejects.toThrow()
+    for (const value of [{ ...valid, v: 2 }, { ...valid, scope: 'bad' }, { ...valid, startedAt: 1 }, { ...valid, from: { version: 'unversioned' } }]) {
+      const path = join(directory, 'api-debugging.json'); await writeFile(path, JSON.stringify(value)); await expect(readPublication(path)).rejects.toThrow()
     }
+    await writeFile(join(directory, 'other.json'), JSON.stringify(valid)); await expect(readPublication(join(directory, 'other.json'))).rejects.toThrow()
+    const { root, value: storeValue } = await store(); const p = proposal('candidate-hash'); await storeValue.writeCandidate(p)
+    const journal = { ...valid, proposalId: 'candidate-hash', to: { ...valid.to, contentHash: createContentHash('wrong') } } as const
+    await expect(completePublication(journal, { root, layout: resolveLayout({ root }), manifestFor: async () => ({ name: 'api-debugging', version: '1.0.0', contentHash: journal.to.contentHash, status: 'stable', scope: 'project', createdBy: 'human', createdAt: journal.startedAt, updatedAt: journal.startedAt }) })).rejects.toThrow()
+  })
+
+  it('quarantines a pre-existing target manifest with the wrong hash', async () => {
+    const { root, value } = await store(); const p = proposal('manifest-target'); await value.writeCandidate(p)
+    const target = join(root, 'api-debugging', 'versions', '1.0.0'); await (await import('node:fs/promises')).mkdir(target, { recursive: true })
+    await writeFile(join(target, 'SKILL.md'), candidate); await writeFile(join(target, 'manifest.json'), JSON.stringify({ contentHash: 'tampered' }))
+    const layout = resolveLayout({ root }); const journal = { v: 1 as const, operation: 'promote' as const, skillName: 'api-debugging', scope: 'project' as const, proposalId: 'manifest-target', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z' }
+    await expect(completePublication(journal, { root, layout, manifestFor: async () => ({ name: 'api-debugging', version: '1.0.0', contentHash: journal.to.contentHash, status: 'stable', scope: 'project', createdBy: 'human', createdAt: journal.startedAt, updatedAt: journal.startedAt }) })).rejects.toThrow()
+    await expect(readFile(join(target, 'manifest.json'), 'utf8')).resolves.toContain('tampered')
   })
 })
