@@ -153,7 +153,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[], supplie
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
         ...counterEvidence,
-        severity: resolution.attributionSource === 'tool' ? 'low' : resolution.intent === 'constraint' ? 'low' : 'medium',
+        severity: resolution.attribution === 'tool' ? 'low' : resolution.intent === 'constraint' ? 'low' : 'medium',
         createdAt: event.occurredAt,
         status: 'open',
       })

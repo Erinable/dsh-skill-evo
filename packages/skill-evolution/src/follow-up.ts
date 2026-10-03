@@ -83,7 +83,7 @@ export function resolveFollowUps(events: readonly RuntimeObservation[], options:
     const hasPayloadToolKind = Object.prototype.hasOwnProperty.call(event.payload, 'precedingToolKind')
     const hasPayloadToolFailed = Object.prototype.hasOwnProperty.call(event.payload, 'precedingToolFailed')
     let prior: RuntimeObservation | undefined
-    if (event.sessionId !== undefined && !hasPayloadToolKind && !hasPayloadToolFailed) {
+    if (event.sessionId !== undefined && !explicit && (!hasPayloadToolKind || !hasPayloadToolFailed)) {
       for (const candidate of events.slice(0, eventIndex).reverse()) {
         if (candidate.sessionId !== event.sessionId) continue
         if (candidate.kind === 'user-follow-up' && candidate.payload.explicit !== true) break
@@ -95,8 +95,8 @@ export function resolveFollowUps(events: readonly RuntimeObservation[], options:
     let resolvedAttribution: Attribution = override ?? (intent === 'incorrect' || intent === 'constraint' ? 'content' : intent === 'goal-changed' ? 'task-change' : intent === 'not-attributable' ? 'not-attributable' : 'unknown')
     let attributionSource: FollowUpResolution['attributionSource'] = override ? 'override' : 'intent'
     const evidence = [event.id]
-    if (!override && toolFailed && toolKind === 'skill-load-failed') { resolvedAttribution = 'composition'; attributionSource = 'tool'; evidence.push(prior?.id ?? '') }
-    else if (!override && toolFailed && toolKind === 'tool-result') { resolvedAttribution = 'tool'; attributionSource = 'tool'; evidence.push(prior?.id ?? ''); confidence = Math.min(confidence, 0.5) }
+    if (!explicit && !override && toolFailed && toolKind === 'skill-load-failed') { resolvedAttribution = 'composition'; attributionSource = 'tool'; evidence.push(prior?.id ?? '') }
+    else if (!explicit && !override && toolFailed && toolKind === 'tool-result') { resolvedAttribution = 'tool'; attributionSource = 'tool'; evidence.push(prior?.id ?? ''); confidence = Math.min(confidence, 0.5) }
     result.push({ id: `follow-up:${event.id}`, observationId: event.id, ...(event.sessionId ? { sessionId: event.sessionId } : {}), ...(target ? { skillName: target } : {}), intent, confidence, source, version, ...(ruleId ? { ruleId } : {}), ...(fallbackReason ? { fallbackReason } : {}), ...(inputHash && source === 'classifier' ? { inputHash } : {}), attribution: resolvedAttribution, attributionSource, policyVersion: INTENT_POLICY_VERSION, evidenceEventIds: evidence.filter(Boolean) })
   }
   return result
