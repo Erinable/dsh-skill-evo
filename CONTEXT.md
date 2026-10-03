@@ -115,12 +115,24 @@ _Avoid_: audit log
 ## 评估与发布
 
 **Evaluation**:
-在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。
+在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。每个 Evaluation case 在两侧各跑 R 次（ADR-0030）。
 _Avoid_: score, benchmark
 
 **Evaluation case**:
 参与比较的一个用例，分为 original-failure、historical-success、boundary 三类。
 _Avoid_: test
+
+**Sample**:
+一个 Evaluation case 在 Base 或 Candidate 一侧的一次运行；用例是否通过按 R 个 Sample 的多数判定（ADR-0030）。
+_Avoid_: trial, run
+
+**Execution cost**:
+一条轨迹的步数（工具调用次数）和 token（输入加输出，含缓存命中）；只在双方都通过的用例的通过 Sample 上比较（ADR-0029）。
+_Avoid_: 总成本, latency
+
+**Context cost**:
+一份 Skill 正文在目录曝光（name 与 description）和加载（整份 SKILL.md）时占用的 token 估计，由 core 从正文确定性算出，评测和 metrics 共用（ADR-0031）。
+_Avoid_: prompt size, 运行时 inputTokens
 
 **Evaluation artifact**:
 一次 Evaluation 的持久结果，只对它所评估的那个 Proposal、Base 和 Candidate content 有效；是 Promote 的前置证据。
