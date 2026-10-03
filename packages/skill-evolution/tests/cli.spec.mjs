@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { measureSkillContext } from '../lib/index.js'
 
 const packageDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const cli = join(packageDir, 'bin', 'dsh-skill-evolution.mjs')
@@ -63,6 +64,38 @@ describe('CLI command help', () => {
 })
 
 describe('CLI maintenance lifecycle', () => {
+  it('exports content-derived context metrics for current Skills and preserves host context cost', async () => {
+    const root = await setup()
+    const skill = { name: 'api-debugging', provider: 'unknown', source: 'runtime' }
+    const missing = { name: 'missing-skill', provider: 'unknown', source: 'runtime' }
+    await mkdir(join(root, '.skill-evolution'), { recursive: true })
+    await writeFile(join(root, '.skill-evolution', 'observations.jsonl'), [
+      { schemaVersion: 1, id: 'catalog-1', kind: 'catalog-visible', occurredAt: '2026-01-01T00:00:00.000Z', sessionId: 's1', skill, correlationIds: [], payload: {}, source: 'runtime' },
+      { schemaVersion: 1, id: 'catalog-2', kind: 'catalog-visible', occurredAt: '2026-01-01T00:00:01.000Z', sessionId: 's2', skill, correlationIds: [], payload: {}, source: 'runtime' },
+      { schemaVersion: 1, id: 'loaded-1', kind: 'skill-loaded', occurredAt: '2026-01-01T00:00:02.000Z', sessionId: 's1', skill, correlationIds: [], payload: { inputTokens: 7 }, source: 'runtime' },
+      { schemaVersion: 1, id: 'missing', kind: 'catalog-visible', occurredAt: '2026-01-01T00:00:03.000Z', sessionId: 's3', skill: missing, correlationIds: [], payload: {}, source: 'runtime' },
+    ].map(value => JSON.stringify(value)).join('\n') + '\n')
+
+    const result = await run(root, 'metrics', '--root', root)
+    expect(result.code).toBe(0)
+    const metrics = JSON.parse(result.stdout)
+    const expected = measureSkillContext(base)
+    const current = metrics.skills.find(skillMetric => skillMetric.skillName === 'api-debugging')
+    expect(current.context).toEqual({
+      catalogTokens: expected.catalogTokens,
+      loadTokens: expected.loadTokens,
+      exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens,
+    })
+    expect(metrics.skills.find(skillMetric => skillMetric.skillName === 'missing-skill')).not.toHaveProperty('context')
+    expect(metrics.skillContext).toEqual({
+      estimator: expected.estimator,
+      catalogTokens: expected.catalogTokens,
+      loadTokens: expected.loadTokens,
+      exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens,
+    })
+    expect(metrics.contextCost).toBe(7)
+  })
+
   it('delegates lifecycle commands and validates promote dry-runs', async () => {
     const root = await setup()
     const feedback = await run(root, 'feedback', '--session', 's1', '--kind', 'incorrect', '--skill', 'api-debugging', '--note', 'n', '--attribution', 'content')

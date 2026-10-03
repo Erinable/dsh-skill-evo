@@ -20,6 +20,7 @@ import {
   evaluateCandidate,
   mergePortfolioEntries,
   aggregateMetrics,
+  measureSkillContext,
   portfolioDecision,
   renderFailuresMarkdown,
   renderProposalMarkdown,
@@ -785,12 +786,14 @@ describe('phase workflow orchestration', () => {
     const content = '---\nname: api-debugging\ndescription: Debug APIs\n---\n\nUse curl.\n'
     const measured = aggregateMetrics([
       event({ id: 'catalog', kind: 'catalog-visible', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'catalog-2', kind: 'catalog-visible', sessionId: 's2', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
       event({ id: 'loaded', kind: 'skill-loaded', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { inputTokens: 7 } }),
     ], [], [], [], [{ name: 'api-debugging', content }])
     const skill = measured.skills[0]!
-    expect(skill.context).toMatchObject({ catalogTokens: expect.any(Number), loadTokens: expect.any(Number), exposureWeightedTokens: expect.any(Number) })
+    const expected = measureSkillContext(content)
+    expect(skill.context).toEqual({ catalogTokens: expected.catalogTokens, loadTokens: expected.loadTokens, exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens })
     expect(measured.skillContext.estimator).toBe('utf8-bytes-div4-v1')
     expect(measured.contextCost).toBe(7)
-    expect(measured.skillContext.exposureWeightedTokens).toBe((skill.context?.catalogTokens ?? 0) + (skill.context?.loadTokens ?? 0))
+    expect(measured.skillContext).toEqual({ ...expected, exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens })
   })
 })

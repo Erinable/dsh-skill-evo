@@ -87,18 +87,18 @@ export function aggregateMetrics(
       return result
     })()
     return {
-    skillName,
-    exposed: metric.exposed.size,
-    loadRequested: metric.requested.size,
-    loadSucceeded: metric.succeeded.size,
-    loadFailed: metric.failed.size,
-    followUps: metric.followUps.size,
-    exposureToLoadRate: rate(metric.requested.size, metric.exposed.size),
-    loadFailureRate: rate(metric.failed.size, metric.requested.size),
-    followUpRate: rate(metric.followUps.size, metric.succeeded.size),
-    followUpIntents: intentMetrics(metric.resolutions),
-    ...(context === undefined ? {} : { context }),
-  }
+      skillName,
+      exposed: metric.exposed.size,
+      loadRequested: metric.requested.size,
+      loadSucceeded: metric.succeeded.size,
+      loadFailed: metric.failed.size,
+      followUps: metric.followUps.size,
+      exposureToLoadRate: rate(metric.requested.size, metric.exposed.size),
+      loadFailureRate: rate(metric.failed.size, metric.requested.size),
+      followUpRate: rate(metric.followUps.size, metric.succeeded.size),
+      followUpIntents: intentMetrics(metric.resolutions),
+      ...(context === undefined ? {} : { context }),
+    }
   })
   const latestProposals = latestProposalsByRoot(proposals)
   const promoted = decisionKeys(decisions, 'promoted', 'promoted')
