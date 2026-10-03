@@ -573,15 +573,16 @@ function toolSummary(toolName, args) {
   const command = typeof args?.command === 'string' ? args.command : typeof args?.script === 'string' ? args.script : undefined
   if (command === undefined) return summary
   const redacted = redactSensitiveText(command)
-  const tokens = tokenize(redacted).slice(0, 16).map(token => token.slice(0, 64))
+  const rawTokens = tokenize(redacted)
+  const tokens = rawTokens.slice(0, 16).map(token => token.slice(0, 64))
   const joined = tokens.join(' ')
   const bounded = joined.slice(0, 240)
-  return { ...summary, command: bounded, ...(tokens.length < tokenize(redacted).length || joined.length > 240 ? { commandTruncated: true } : {}) }
+  return { ...summary, command: bounded, ...(tokens.length < rawTokens.length || rawTokens.some(token => token.length > 64) || joined.length > 240 ? { commandTruncated: true } : {}) }
 }
 
 function commandResultSummary(toolName, data) {
   if (!COMMAND_TOOLS.has(toolName)) return {}
-  const structured = findResultMetadata(data)
+  const structured = structuredResultMetadata(data)
   const text = textFromToolResult(data) ?? textFromAny(data)
   const marker = parseExitMarkers(text)
   const exitCode = Number.isInteger(structured.exitCode) ? structured.exitCode : marker.exitCode
@@ -600,20 +601,14 @@ function commandResultSummary(toolName, data) {
   return summary
 }
 
-function findResultMetadata(value, depth = 0) {
-  if (depth > 5 || value === null || typeof value !== 'object') return {}
-  if (!Array.isArray(value)) {
-    const result = {}
-    if (Number.isInteger(value.exitCode)) result.exitCode = value.exitCode
-    if (typeof value.signal === 'string') result.signal = value.signal
-    if (value.timedOut === true) result.timedOut = true
-    for (const child of Object.values(value)) {
-      const nested = findResultMetadata(child, depth + 1)
-      Object.assign(result, nested)
-    }
-    return result
+function structuredResultMetadata(data) {
+  const result = asRecord(data?.result) ?? asRecord(data?.foreground) ?? asRecord(asRecord(data?.message)?.result)
+  if (result === undefined) return {}
+  return {
+    ...(Number.isInteger(result.exitCode) ? { exitCode: result.exitCode } : {}),
+    ...(typeof result.signal === 'string' ? { signal: result.signal } : {}),
+    ...(result.timedOut === true ? { timedOut: true } : {}),
   }
-  return value.reduce((result, child) => Object.assign(result, findResultMetadata(child, depth + 1)), {})
 }
 
 function parseExitMarkers(text) {
@@ -633,12 +628,16 @@ function errorLine(data, text) {
   if (typeof source !== 'string') return undefined
   const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:stdout|exit code|killed by signal|timed out)|$)/i)?.[1]
   const stdout = source.match(/\[stdout\]([\s\S]*?)(?=\n\[(?:stderr|exit code|killed by signal|timed out)|$)/i)?.[1]
-  for (const block of [stderr, stdout, source]) {
+  for (const block of [stderr]) {
     if (typeof block !== 'string') continue
-    const lines = block.split(/\r?\n/).filter(line => line.trim()).slice(-64)
+    const lines = block.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
     candidates.push(...lines.filter(line => /error|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line)))
-    if (candidates.length === 0) candidates.push(...lines.slice(0, 1))
     if (candidates.length > 0) return candidates[0]
+  }
+  if (typeof stdout === 'string') {
+    const lines = stdout.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
+    const match = lines.find(line => /error|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line))
+    if (match !== undefined) return match
   }
   return undefined
 }
