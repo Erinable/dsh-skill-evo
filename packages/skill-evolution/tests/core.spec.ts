@@ -13,6 +13,7 @@ import {
   buildExposureView,
   createContentHash,
   createObservation,
+  parseObservation,
   validateAdoptionBase,
   type AdoptionCandidate,
   type RuntimeObservation,
@@ -104,13 +105,13 @@ describe('EvolutionLayout', () => {
 
 describe('context shadowing vocabulary', () => {
   it('accepts the core kind without interpreting DSH event names', () => {
-    const event = observation('shadowed', 'context-shadowed', skill(), {
-      eventType: 'renamed-by-host',
+    const event = parseObservation(JSON.stringify(observation('shadowed', 'context-shadowed', skill(), {
       shadowedSeqRanges: [[6, 6]],
       mechanism: 'prune',
-    })
+      shadowedTokenCount: 42,
+    })))
     expect(event.kind).toBe('context-shadowed')
-    expect(event.payload.eventType).toBe('renamed-by-host')
+    expect(event.payload).toMatchObject({ shadowedSeqRanges: [[6, 6]], mechanism: 'prune', shadowedTokenCount: 42 })
   })
 })
 

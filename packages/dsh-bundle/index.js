@@ -47,7 +47,7 @@ export function createDefaultEventMapper() {
     }
 
     if (event.type === 'tool/call') {
-      return mapToolCall(base, event, sessionId, toolCalls, sessions)
+      return markSurfaceReplacement(mapToolCall(base, event, sessionId, toolCalls, sessions), event)
     }
 
     if (event.type === 'tool/result') {
@@ -57,15 +57,15 @@ export function createDefaultEventMapper() {
 
     if (event.type === 'turn/end') {
       clearToolCalls(toolCalls, sessionId)
-      return mapTurnEnd(base, event)
+      return markSurfaceReplacement(mapTurnEnd(base, event), event)
     }
 
     if (event.type === 'session/end' || event.type === 'session/close') {
       clearSession(sessions, toolCalls, sessionId)
-      return base
+      return markSurfaceReplacement(base, event)
     }
 
-    return base
+    return markSurfaceReplacement(base, event)
   }
 }
 
@@ -98,7 +98,7 @@ export function mapFileObservation(target, observation, { id } = {}) {
 function mapContextShadowed(base, event) {
   const data = asRecord(event.data)
   const mechanism = event.type === 'compaction/summary' ? 'summary' : 'prune'
-  const seqs = Array.isArray(data?.shadowedSeqs) ? data.shadowedSeqs : []
+  const seqs = Array.isArray(data?.shadowedSeqs) ? data.shadowedSeqs : undefined
   const ranges = mergeSeqRanges(seqs, data?.shadowedRange)
   return {
     ...base,
@@ -113,11 +113,10 @@ function mapContextShadowed(base, event) {
 }
 
 function mergeSeqRanges(seqs, range) {
-  const values = seqs.filter(value => Number.isInteger(value)).map(Number)
-  if (Array.isArray(range) && range.length === 2 && range.every(Number.isInteger)) {
-    for (let value = range[0]; value <= range[1]; value += 1) values.push(value)
-  } else if (range && typeof range === 'object' && Number.isInteger(range.start) && Number.isInteger(range.end)) {
-    for (let value = range.start; value <= range.end; value += 1) values.push(value)
+  const values = Array.isArray(seqs) ? seqs.filter(value => Number.isInteger(value)).map(Number) : []
+  if (values.length === 0) {
+    if (Array.isArray(range) && range.length === 2 && range.every(Number.isInteger)) return [[range[0], range[1]]]
+    if (range && typeof range === 'object' && Number.isInteger(range.start) && Number.isInteger(range.end)) return [[range.start, range.end]]
   }
   values.sort((left, right) => left - right)
   const result = []

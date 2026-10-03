@@ -179,20 +179,39 @@ test('maps context shadowing ranges and replacement results without pairing', ()
     type: 'compaction/prune',
     data: { shadowedSeqs: [1, 2, 3, 6, 7, 9], shadowedTokenCount: 42 },
   }, { id: 'session-shadow:9' })
+  const summary = mapEvent(session, {
+    seq: 11,
+    type: 'compaction/summary',
+    data: { shadowedRange: [1, 8], shadowedSeqs: [2, 4], shadowedTokenCount: 12 },
+  }, { id: 'session-shadow:11' })
   const replacement = mapEvent(session, {
     seq: 10,
     type: 'tool/result',
     data: { callId: 'c1', surfaceOp: { op: 'replace' }, message: { content: [] } },
   }, { id: 'session-shadow:10' })
+  const contextRemove = mapEvent(session, {
+    seq: 12,
+    type: 'user/message',
+    data: { source: { kind: 'plugin', plugin: 'context-remove' }, surfaceOp: { op: 'replace' }, content: [] },
+  }, { id: 'session-shadow:12' })
+  const genericReplacement = mapEvent(session, {
+    seq: 13,
+    type: 'agent/step',
+    data: { surfaceOp: { op: 'replace' } },
+  }, { id: 'session-shadow:13' })
   assert.equal(loaded.kind, 'skill-loaded')
   assert.equal(loaded.payload.shadowTracked, true)
   assert.equal(shadowed.kind, 'context-shadowed')
   assert.deepEqual(shadowed.payload.shadowedSeqRanges, [[1, 3], [6, 7], [9, 9]])
   assert.equal(shadowed.payload.shadowedTokenCount, 42)
   assert.equal(shadowed.payload.mechanism, 'prune')
+  assert.deepEqual(summary.payload.shadowedSeqRanges, [[2, 2], [4, 4]])
+  assert.equal(summary.payload.mechanism, 'summary')
   assert.equal(replacement.kind, 'tool-result')
   assert.equal(replacement.payload.surfaceReplace, true)
   assert.deepEqual(replacement.correlationIds, [])
+  assert.equal(contextRemove.payload.surfaceReplace, true)
+  assert.equal(genericReplacement.payload.surfaceReplace, true)
 })
 
 test('marks user Skill invocation loads as shadow tracked', () => {
