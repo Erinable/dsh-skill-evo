@@ -51,4 +51,19 @@ describe('file publication journals', () => {
     expect(live).toMatchObject({ parentVersion: '0.0.0', createdBy: 'evolution-agent' }); expect(live.createdAt).toBe(live.updatedAt)
     const rolled = await value.rollback('api-debugging', '1.0.0', { scope: 'project' }); expect(rolled.manifest.updatedAt).toBe(JSON.parse(await readFile(join(root, 'api-debugging', 'manifest.json'), 'utf8')).updatedAt)
   })
+
+  it('keeps explicit-only publication out of live files and versions', async () => {
+    const invalidations: string[] = []; const { root } = await store(); const value = new SkillVersionStore(root, { invalidate: async name => { invalidations.push(name) } })
+    await value.promote(proposal('explicit'), { scope: 'explicit-only' })
+    await expect(readdir(join(root, 'api-debugging', 'versions'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8')).resolves.toBe(base)
+    expect(invalidations).toEqual([])
+  })
+
+  it('leaves an active journal untouched on read paths', async () => {
+    const { root, value } = await store(); const p = proposal('read-only'); await value.writeCandidate(p)
+    const path = join(root, '.skill-evolution', 'publications', 'api-debugging.json'); await (await import('node:fs/promises')).mkdir(join(root, '.skill-evolution', 'publications'), { recursive: true })
+    const raw = JSON.stringify({ v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z', proposalId: 'read-only' })
+    await writeFile(path, raw); await value.readCurrent('api-debugging'); await value.healthIssues(); expect(await readFile(path, 'utf8')).toBe(raw)
+  })
 })
