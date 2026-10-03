@@ -31,6 +31,18 @@ const dirs: string[] = []
 const execFileAsync = promisify(execFile)
 
 describe('tool summary redaction', () => {
+  it('returns promptly for unterminated quoted headers', () => {
+    const cases = [
+      `'Authorization: ${'a\\'.repeat(5000)}`,
+      `"Cookie: ${'a\\'.repeat(5000)}`,
+    ]
+    for (const input of cases) {
+      const started = performance.now()
+      redactSensitiveText(input)
+      expect(performance.now() - started).toBeLessThan(100)
+    }
+  })
+
   it('matches the approved probes exactly and is idempotent', () => {
     const cases = [
       ['https_proxy=http://alice:s3cret@10.0.0.1:7890 git push', 'https_proxy=http://[REDACTED]@10.0.0.1:7890 git push'],
