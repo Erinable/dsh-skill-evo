@@ -239,7 +239,3 @@ function addCategory(
   if (passed) categories[category].passed += 1
   else categories[category].failed += 1
 }
-
-function rate(category: { total: number; passed: number }): number {
-  return category.total === 0 ? 1 : category.passed / category.total
-}
