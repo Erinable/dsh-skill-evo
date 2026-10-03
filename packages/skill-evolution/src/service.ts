@@ -1,12 +1,12 @@
 import { join, basename } from 'node:path'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { createContentHash, isObservationValue, redactSensitiveText } from './events.js'
 import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
 import { validateEvaluationPolicy } from './policy.js'
-import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot } from './proposal.js'
+import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot, ProposalLedgerError } from './proposal.js'
 import { ProposalLedger } from './ledger.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
@@ -19,7 +19,7 @@ import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEnt
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
-import { readPublication } from './publication.js'
+import { PublicationPermanentError, quarantinePublication, readPublication, removePublication } from './publication.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -231,15 +231,30 @@ export class EvolutionService {
         // Retryable failures keep their journal for a later repair. Permanent
         // publication errors are quarantined by recoverPublication; either way
         // one bad Skill must not prevent other journals or JSONL from repairing.
+        const permanent = this.isPermanentPublicationError(error)
         reports.push({
           skillName,
           ...(journal === undefined ? {} : { operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
-          outcome: 'failed',
+          outcome: permanent ? 'quarantined' : 'failed',
           error: error instanceof Error ? error.message : String(error),
         })
+        if (permanent && journal !== undefined) {
+          const path = this.layout.publicationJournalPath(journal.skillName)
+          try {
+            const raw = await readFile(path, 'utf8')
+            await quarantinePublication(this.layout.publicationQuarantineDir, journal.skillName, raw, error, 'repair')
+            await removePublication(path)
+          } catch { /* recoverPublication may already have isolated it */ }
+        }
       }
     }
     return reports
+  }
+
+  private isPermanentPublicationError(error: unknown): boolean {
+    return error instanceof PublicationPermanentError
+      || (error instanceof OperationError && error.code === 'publication-conflict')
+      || (error instanceof ProposalLedgerError && error.code === 'conflict')
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
@@ -324,9 +339,9 @@ export class EvolutionService {
     return (await this.ledger.transition(proposal, 'accepted', { reason, action: 'accepted', evidenceIds })).record
   }
 
-  async promote(
+  async publishPromotion(
     proposal: SkillProposal,
-    evaluation: SkillEvalResult,
+    evaluation: SkillEvalResult | EvaluationArtifact | undefined,
     scope: PublicationScope,
     reason = 'evaluation gate passed',
   ): Promise<void> {
@@ -346,7 +361,12 @@ export class EvolutionService {
     if (pending?.proposalId !== rootId) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = rootId
-    await this.versions.promote(proposal, { scope, retainJournal: true })
+    try {
+      await this.versions.promote(proposal, { scope, retainJournal: true })
+    } catch (error) {
+      if (error instanceof PublicationPermanentError) throw new OperationError('publication-conflict', error.message, error)
+      throw error
+    }
     if (!(await this.observations.readAll()).some(item => item.id === `adoption:${proposalId}`)) await this.observations.append({
       id: `adoption:${proposalId}`,
       schemaVersion: 1,
@@ -368,6 +388,10 @@ export class EvolutionService {
     await this.versions.finalizePublication(proposal.skillName)
   }
 
+  async promote(proposal: SkillProposal, evaluation: SkillEvalResult, scope: PublicationScope, reason = 'evaluation gate passed'): Promise<void> {
+    return this.publishPromotion(proposal, evaluation, scope, reason)
+  }
+
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
     return resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
   }
@@ -386,7 +410,12 @@ export class EvolutionService {
     if (pending?.operation === 'rollback') {
       await this.versions.recoverPublication(skillName, true)
     } else if (before?.manifest.version !== version) {
-      await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
+      try {
+        await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
+      } catch (error) {
+        if (error instanceof PublicationPermanentError) throw new OperationError('publication-conflict', error.message, error)
+        throw error
+      }
     } else {
       const alreadyRolledBack = (await this.proposals.readAll()).filter(item => item.skillName === skillName && item.status === 'rolled-back' && item.proposedVersion === version).at(-1)
       if (alreadyRolledBack !== undefined) {

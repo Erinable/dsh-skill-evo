@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   EvolutionService,
   OperationError,
+  PublicationPermanentError,
   ProposalLedgerError,
   createProposal,
   evaluateProposal,
@@ -177,6 +178,30 @@ describe('core maintenance operations', () => {
     expect(published).toMatchObject({ promoted: true, version: '1.1.0', scope: 'project' })
     expect((await service.observations.readAll()).some(item => item.id === `adoption:${proposed.proposal.id}`)).toBe(true)
     expect((await service.proposals.readAll()).some(item => item.id === `${proposed.proposal.id}:promoted`)).toBe(true)
+  })
+
+  it('reruns a completed Promote through the shared publishPromotion seam without writes', async () => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    await promoteProposal(service, { proposalRef, scope: 'project' })
+    const before = {
+      observations: await service.observations.readAll(),
+      proposals: await service.proposals.readAll(),
+      decisions: await service.decisions.readAll(),
+      files: await readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8'),
+    }
+    await expect(promoteProposal(service, { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
+    expect(await service.observations.readAll()).toEqual(before.observations)
+    expect(await service.proposals.readAll()).toEqual(before.proposals)
+    expect(await service.decisions.readAll()).toEqual(before.decisions)
+    expect(await readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8')).toBe(before.files)
+  })
+
+  it('classifies a permanent publication mismatch as publication-conflict', async () => {
+    const { service, proposalRef } = await acceptedProposal()
+    const original = service.versions.promote
+    service.versions.promote = (async () => { throw new PublicationPermanentError('target manifest does not match journal') }) as typeof original
+    await expect(promoteProposal(service, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'publication-conflict' })
+    service.versions.promote = original
   })
 
   it('keeps one encoded root-keyed candidate directory when promoting a ledger record', async () => {

@@ -338,6 +338,22 @@ describe('promote crash points', () => {
     await writeFile(evaluationsPath, invalidArtifact)
     await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'gate-failed' })
   })
+
+  it('R0 rerun completes from the pre-journal failure without duplicate facts', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P0'))!
+    const { root, proposalRef, reference } = await crashPromote(row)
+    await promoteProposal(service(root), { proposalRef, scope: 'project' })
+    expect(await publicationState(root)).toEqual(reference)
+  })
+
+  it('H3 rerun is idempotent even when the persisted artifact is expired', async () => {
+    const { root, proposalRef } = await promoteScenario('expired-rerun')
+    await promoteProposal(service(root), { proposalRef, scope: 'project' })
+    const artifacts = await service(root).evaluations.readAll()
+    const artifact = artifacts.at(-1)!
+    await service(root).evaluations.append({ ...artifact, id: `${artifact.id}:expired-rerun`, expiresAt: '2020-01-01T00:00:00.000Z' })
+    await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
+  })
 })
 
 describe('rollback crash points', () => {

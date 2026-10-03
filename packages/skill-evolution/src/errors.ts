@@ -8,6 +8,7 @@ export type OperationErrorCode =
   | 'evaluation-missing'
   | 'evaluation-mismatch'
   | 'gate-failed'
+  | 'publication-conflict'
   | 'classifier-unavailable'
 
 export class OperationError extends Error {
