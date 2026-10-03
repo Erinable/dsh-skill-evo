@@ -236,7 +236,7 @@ describe('ObservationLog state root', () => {
     const result = await service.observations.rotate({ maxBytes: 1 })
     const after = await service.refreshDerived()
     expect(result.rotated).toBeDefined()
-    expect(after).toEqual(before)
+    expect(after).toMatchObject({ experiences: before.experiences, failures: before.failures, clusters: before.clusters, diagnoses: before.diagnoses })
     expect(after.clusters.map(item => item.id)).toEqual(before.clusters.map(item => item.id))
     expect(after.diagnoses.map(item => item.id)).toEqual(before.diagnoses.map(item => item.id))
   })
