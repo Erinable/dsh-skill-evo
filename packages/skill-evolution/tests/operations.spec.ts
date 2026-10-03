@@ -12,6 +12,8 @@ import {
   promoteProposal,
   proposeSkillChange,
   reviewProposal,
+  renderEvaluationMarkdown,
+  renderProposalMarkdown,
 } from '../src/index.js'
 
 const dirs: string[] = []
@@ -42,6 +44,26 @@ async function expectNoPublication(root: string): Promise<void> {
 }
 
 describe('core maintenance operations', () => {
+  it('renders operation cost statistics and every check, including legacy reports', async () => {
+    const { root, service } = await setup()
+    const proposed = await proposeSkillChange(service, { root, skillName: 'api-debugging', baseContent: base, candidateContent: base, proposedVersion: '1.1.0', intent: 'cost report' })
+    const policy = { schema: 2 as const, version: '2', maxRegressionCount: 0, maxSecurityViolations: 0, requireNoNewSideEffects: true, sampling: { runs: 5 }, originalFailure: { costMetric: 'steps' as const, minCostReduction: 0.2 }, historicalSuccess: { maxStepIncrease: null, maxTokenIncrease: null }, context: { maxCatalogIncreaseTokens: null, maxLoadIncreaseTokens: null } }
+    const modern = new EvolutionService({ root, evaluationPolicy: policy })
+    const evaluated = await evaluateProposal(modern, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'cost', category: 'original-failure', task: 'debug', expected: { contains: ['Use curl.'] } }], runner: async (_content, _item, context) => ({ passed: true, toolCalls: context!.exposure === 'base' ? 6 : 2 }) })
+    expect(evaluated.result.cost?.categories['original-failure'].steps).toMatchObject({ relativeChange: -2 / 3, pValue: 1 / 252 })
+    const report = await readFile(evaluated.reportPath, 'utf8')
+    expect(report).toContain('change -0.6666666666666666; p=0.003968253968253968')
+    for (const check of evaluated.result.cost!.checks) expect(report).toContain(check.id)
+    const legacy = renderProposalMarkdown({ proposal: evaluated.proposal, evaluation: { ...evaluated.result, cost: undefined } })
+    expect(legacy).toContain('Execution cost: not recorded')
+    expect(renderEvaluationMarkdown({ ...evaluated.result, cost: undefined })).toContain('Execution cost: not recorded')
+    const unstableProposal = await proposeSkillChange(service, { root, skillName: 'api-debugging', baseContent: base, candidateContent: base, proposedVersion: '1.2.0', intent: 'unstable report' })
+    const unstable = await evaluateProposal(new EvolutionService({ root, evaluationPolicy: policy }), { root, proposalRef: unstableProposal.proposal.id, cases: [{ id: 'cost', category: 'original-failure', task: 'debug', expected: { contains: ['Use curl.'] } }], runner: async (_content, _item, context) => ({ passed: context!.sample < 3, toolCalls: 2 }) })
+    expect(unstable.result.cost?.unstable).toContainEqual({ caseId: 'cost', exposure: 'base', passRate: 0.6 })
+    const unstableReport = await readFile(unstable.reportPath, 'utf8')
+    expect(unstableReport).toContain('`cost` base: pass rate 0.6')
+    expect(renderEvaluationMarkdown(unstable.result)).toContain('`cost` base: pass rate 0.6')
+  })
   it('rejects a stale base before staging a candidate or report', async () => {
     const { root, service } = await setup()
     await expect(proposeSkillChange(service, {

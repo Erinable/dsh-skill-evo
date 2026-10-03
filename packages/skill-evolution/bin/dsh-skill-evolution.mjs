@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import {
   EvolutionService,
   renderFailuresMarkdown,
+  renderEvaluationMarkdown,
   MaintenanceWorker,
   rotateJsonl,
   resolveLayout,
@@ -131,7 +132,8 @@ async function evaluate() {
     ...(output === undefined ? {} : { evaluationPath: resolve(output) }),
     ...(report === undefined ? {} : { reportPath: resolve(report) }),
   })
-  console.log(JSON.stringify(result.result, null, 2))
+  if (value('--format') === 'markdown') console.log(renderEvaluationMarkdown(result.result))
+  else console.log(JSON.stringify(result.result, null, 2))
 }
 
 async function promote() {
