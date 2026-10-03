@@ -75,6 +75,7 @@ export interface PublicationContext {
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
   readonly manifestFor: (journal: PublicationJournal) => Promise<SkillManifest>
   readonly legacyRecovery?: (skillName: string) => Promise<void>
+  readonly retainJournal?: boolean
 }
 
 export class PublicationPermanentError extends Error { readonly permanent = true }
@@ -102,7 +103,7 @@ export async function completePublication(journal: PublicationJournal, context: 
   assertSafeName(journal.skillName); assertSafeVersion(journal.to.version)
   const directory = join(context.root, journal.skillName)
   const versions = context.layout.skillVersionsDir(journal.skillName)
-  if (journal.scope === 'explicit-only') { await removePublication(context.layout.publicationJournalPath(journal.skillName)); return }
+  if (journal.scope === 'explicit-only') { if (context.retainJournal !== true) await removePublication(context.layout.publicationJournalPath(journal.skillName)); return }
   const source = journal.operation === 'promote' ? join(context.layout.candidateDir(journal.proposalId ?? ''), 'SKILL.md') : join(versions, journal.to.version, 'SKILL.md')
   const content = await readText(source)
   if (content === undefined || createContentHash(content) !== journal.to.contentHash) throw new PublicationPermanentError(`publication content does not match journal for "${journal.skillName}"`)
@@ -116,7 +117,7 @@ export async function completePublication(journal: PublicationJournal, context: 
       if (previousContent === undefined) await writeAtomic(join(previous, 'SKILL.md'), current)
       if (await readText(join(previous, 'manifest.json')) === undefined) {
         const oldManifest = await readJson<SkillManifest>(join(directory, 'manifest.json'))
-        if (oldManifest !== undefined) await writeAtomic(join(previous, 'manifest.json'), `${JSON.stringify(oldManifest, null, 2)}\n`)
+        if (oldManifest !== undefined) await writeAtomic(join(previous, 'manifest.json'), `${JSON.stringify(oldManifest.contentHash === journal.from.contentHash ? oldManifest : { ...oldManifest, contentHash: journal.from.contentHash }, null, 2)}\n`)
       }
       const previousManifest = await readJson<SkillManifest>(join(previous, 'manifest.json'))
       if (previousManifest !== undefined && previousManifest.contentHash !== journal.from.contentHash) throw new PublicationPermanentError('publication snapshot manifest does not match journal')
@@ -134,7 +135,7 @@ export async function completePublication(journal: PublicationJournal, context: 
     await writeIfDifferent(join(directory, 'SKILL.md'), content); await writeIfDifferent(join(directory, 'manifest.json'), `${JSON.stringify({ ...manifest, scope: journal.scope, status: 'stable', updatedAt: journal.startedAt }, null, 2)}\n`); await writeIfDifferent(join(directory, 'current.json'), `${JSON.stringify({ version: journal.to.version, contentHash: journal.to.contentHash }, null, 2)}\n`)
   }
   await context.invalidate?.(journal.skillName, journal.scope)
-  await removePublication(context.layout.publicationJournalPath(journal.skillName))
+  if (context.retainJournal !== true) await removePublication(context.layout.publicationJournalPath(journal.skillName))
 }
 
 function assertSafeName(value: string): void { if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) throw new PublicationPermanentError(`invalid Skill name "${value}"`) }

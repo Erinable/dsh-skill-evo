@@ -113,16 +113,17 @@ function arm(crash: Crash, root: string, evolution: EvolutionService): void {
   if (crash.kind === 'file') fault.paths = [join(root, crash.file)]
   else if (crash.kind === 'journal') fault.paths = [join(root, skillName, '.publish.json'), join(root, '.skill-evolution', 'publications', `${skillName}.json`)]
   else if (crash.kind === 'invalidate') fault.invalidate = true
-  else crashOnCall(evolution[crash.store], crash.call ?? 1)
+  else crashOnCall(evolution[crash.store], crash.call ?? 1, crash.store === 'proposals')
 }
 
-function crashOnCall(store: { append(record: never): Promise<boolean> }, call: number): void {
-  const original = store.append.bind(store) as (record: unknown) => Promise<boolean>
+function crashOnCall(store: { append(record: never): Promise<boolean>; appendComputed?: (...args: never[]) => Promise<unknown> }, call: number, computed = false): void {
+  const method = computed && store.appendComputed !== undefined ? 'appendComputed' : 'append'
+  const original = store[method]!.bind(store) as (...args: unknown[]) => Promise<unknown>
   let count = 0
-  vi.spyOn(store, 'append').mockImplementation(async (record: never) => {
+  vi.spyOn(store, method as 'append').mockImplementation(async (...args: never[]) => {
     count += 1
     if (count === call) throw new Error('injected crash in append')
-    return original(record)
+    return original(...args)
   })
 }
 
@@ -210,6 +211,35 @@ const convergesToday = new Set<string>([
   'P1a W1 before versions/1.1.0/SKILL.md:rerun',
   'P1b W1 before live SKILL.md:rerun',
   'P1f W1 before versions/1.0.0/manifest.json (versioned base):rerun',
+  'P1a W1 before versions/1.1.0/SKILL.md:repair',
+  'P1b W1 before live SKILL.md:repair',
+  'P1c W1 before live manifest.json:rerun',
+  'P1c W1 before live manifest.json:repair',
+  'P1d W1 before current.json:rerun',
+  'P1d W1 before current.json:repair',
+  'P1e W1 invalidate before .publish.json unlink:rerun',
+  'P1e W1 invalidate before .publish.json unlink:repair',
+  'P1f W1 before versions/1.0.0/manifest.json (versioned base):repair',
+  'P2 after W1, before W2 observation:rerun',
+  'P2 after W1, before W2 observation:repair',
+  'P4 after W3, before W4 decision:rerun',
+  'P4 after W3, before W4 decision:repair',
+  'R1a R1 before live manifest.json:rerun',
+  'R1b R1 before current.json:rerun',
+  'R1c R1 invalidate after current.json:rerun',
+  'R2 after R1, before R2 observation:rerun',
+  'R3 after R2, before R3 rollback decision:rerun',
+  'R4 after R3, before R4 ledger record:rerun',
+  'R5 after R4, before R5 transition decision:rerun',
+  'P3 after W2, before W3 ledger record:rerun',
+  'P3 after W2, before W3 ledger record:repair',
+  'R1a R1 before live manifest.json:repair',
+  'R1b R1 before current.json:repair',
+  'R1c R1 invalidate after current.json:repair',
+  'R2 after R1, before R2 observation:repair',
+  'R3 after R2, before R3 rollback decision:repair',
+  'R4 after R3, before R4 ledger record:repair',
+  'R5 after R4, before R5 transition decision:repair',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -255,7 +285,7 @@ describe('promote crash points', () => {
     })
   }
 
-  pending('health reports the unfinished promote and repair reports completing it', async () => {
+  it('health reports the unfinished promote and repair reports completing it', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P3'))!
     const { root } = await crashPromote(row)
     const health = await service(root).healthReport()
@@ -287,11 +317,26 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(crashed)
   })
 
-  pending('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
+  it('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root, proposalRef, reference } = await crashPromote(row)
     await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toMatchObject({ code: expect.stringMatching(/^(invalid-transition|conflict)$/) })
     expect(await publicationState(root)).toEqual(reference)
+  })
+
+  it('does not skip promotion checks for a different proposal with a pending journal', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root } = await crashPromote(row)
+    vi.restoreAllMocks()
+    fault.paths = []
+    const evolution = service(root)
+    const currentBase = await readFile(join(root, skillName, 'SKILL.md'), 'utf8')
+    const proposalRef = await accept(evolution, root, 'proposal-other', currentBase, `${currentBase}Another change.\n`, '1.2.0', 'Another change')
+    const evaluationsPath = join(root, '.skill-evolution', 'evaluations.jsonl')
+    const evaluations = await readFile(evaluationsPath, 'utf8')
+    const invalidArtifact = evaluations.split('\n').map(line => line.includes('proposal-other') ? line.replace('\"passedGate\":true', '\"passedGate\":false') : line).join('\n')
+    await writeFile(evaluationsPath, invalidArtifact)
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'gate-failed' })
   })
 })
 
@@ -310,7 +355,7 @@ describe('rollback crash points', () => {
     })
   }
 
-  pending('a second rollback to the version that is already current writes nothing', async () => {
+  it('a second rollback to the version that is already current writes nothing', async () => {
     const { root } = await rollbackScenario('double')
     await rollbackSkill(service(root), { skillName, version: '1.0.0' })
     const once = await publicationState(root)

@@ -16,6 +16,7 @@ export interface JsonlRepairResult {
 }
 
 export interface EvolutionRepairReport {
+  readonly publications?: readonly Record<string, unknown>[]
   readonly jsonl: readonly JsonlRepairResult[]
   readonly projectionCursorRebuilt: boolean
   readonly orphanLocksRemoved: readonly string[]
