@@ -1,4 +1,4 @@
-> 状态：SKIL-124 设计提案（父 issue SKIL-122）。决策见 ADR-0025（`proposed`，待成员确认）。台账转移与 record id 依赖 SKIL-121（设计 SKIL-123，PR #78 已合并，ADR-0021 已接受）。
+> 状态：SKIL-124 设计提案（父 issue SKIL-122）。决策见 ADR-0032（`proposed`，待成员确认）。台账转移与 record id 依赖 SKIL-121（设计 SKIL-123，PR #78 已合并，ADR-0021 已接受）。
 > 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
 
 本文要解决三件事。第一，Promote / Rollback 在任一写入点崩溃后，重跑或 repair 都能收敛到「成功跑过一次」的状态。第二，两份晋升校验收成一份。第三，health 能报告没做完的发布，repair 能把它做完。复现基线是 `origin/main` @ `2a442af`；返工时合入了 `6accc8b`（只有 SKIL-123 的文档），重跑结果不变。本文只出设计，不写实现代码；随 PR 附带的复现测试 `packages/skill-evolution/tests/publication-crash-recovery.spec.ts` 同时是回归测试。
@@ -142,7 +142,7 @@ Rollback 没有 journal。R1 之后，「这次回滚的是谁、从哪个版本
 
 ## 2. 设计问题与选项
 
-### 2.1 恢复协议（ADR-0025）
+### 2.1 恢复协议（ADR-0032）
 
 **A. 按写入顺序幂等，不加 journal**
 
@@ -292,7 +292,7 @@ Rollback 没有 journal。R1 之后，「这次回滚的是谁、从哪个版本
 - 可逆性：journal 是临时状态文件，不是 Fact record，做完就删。回退到 A 只要停止写 journal；落盘数据没有长期形态。
 - 迁移成本：`.publish.json` 兼容读一段时间；现有 3 条依赖「读时恢复」的测试要改（§3.2）。
 
-**推荐 B。** 理由是 Rollback：只有在 R1 覆盖 live 之前把「从哪来、回滚谁、什么时间」持久化下来，重跑和 repair 才可能得到同一个结果；A 做到这一点时已经等于 B，却没有统一的完成标记。不可逆（数据格式和位置），写入 ADR-0025，待成员确认。
+**推荐 B。** 理由是 Rollback：只有在 R1 覆盖 live 之前把「从哪来、回滚谁、什么时间」持久化下来，重跑和 repair 才可能得到同一个结果；A 做到这一点时已经等于 B，却没有统一的完成标记。不可逆（数据格式和位置），写入 ADR-0032，待成员确认。
 
 ### 2.2 一份晋升校验
 
@@ -405,7 +405,7 @@ Module 边界：
 
 它们都只改 `publication.ts`，不改调用方。
 
-**推荐 A。** 位置本身属于 ADR-0025 的数据格式决策。
+**推荐 A。** 位置本身属于 ADR-0032 的数据格式决策。
 
 ### 2.4 health 与 repair 接口
 
@@ -643,4 +643,6 @@ G2–G4 用已有 1.0.0 manifest 的场景（与 P1f 相同）：P1c 崩溃时 `
 
 ## 6. 不可逆决策
 
-- **ADR-0025**：Promote / Rollback 采用先写 intent journal（`.skill-evolution/publications/<skill>.json`）再前滚提交的恢复协议。收尾由操作本身、同一 Skill 的下一次 Promote / Rollback / reject 或 `repair()` 完成；从 `accepted` / `promoted` 出发的转移受发布锁守卫；收尾不可完成时隔离到 `publications/quarantine/`；纯读路径不写文件、不取发布锁。状态为 `proposed`，待成员确认。
+- **ADR-0032**：Promote / Rollback 采用先写 intent journal（`.skill-evolution/publications/<skill>.json`）再前滚提交的恢复协议。收尾由操作本身、同一 Skill 的下一次 Promote / Rollback / reject 或 `repair()` 完成；从 `accepted` / `promoted` 出发的转移受发布锁守卫；收尾不可完成时隔离到 `publications/quarantine/`；Rollback 的回滚对象按 live 正文推断并写进 journal；纯读路径不写文件、不取发布锁。状态为 `proposed`，待成员确认。
+
+编号 0032 取自 SKIL-126 上的 ADR 统一号段表（Mika 协调、成员 ack7 授权）：#84 用 0025–0028，#83 用 0029–0031，#81 已合并为 0033–0035。
