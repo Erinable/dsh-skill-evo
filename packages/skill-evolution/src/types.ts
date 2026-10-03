@@ -15,6 +15,7 @@ export type ObservationKind =
   | 'skill-load-failed'
   | 'agent-step'
   | 'tool-result'
+  | 'context-shadowed'
   | 'user-follow-up'
   | 'task-finished'
   | 'skill-file-observed'

@@ -102,6 +102,18 @@ describe('EvolutionLayout', () => {
   })
 })
 
+describe('context shadowing vocabulary', () => {
+  it('accepts the core kind without interpreting DSH event names', () => {
+    const event = observation('shadowed', 'context-shadowed', skill(), {
+      eventType: 'renamed-by-host',
+      shadowedSeqRanges: [[6, 6]],
+      mechanism: 'prune',
+    })
+    expect(event.kind).toBe('context-shadowed')
+    expect(event.payload.eventType).toBe('renamed-by-host')
+  })
+})
+
 describe('JsonlEventStore', () => {
   it('creates an append-only file and ignores duplicate event IDs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-'))
