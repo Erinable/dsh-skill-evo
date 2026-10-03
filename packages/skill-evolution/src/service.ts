@@ -15,6 +15,7 @@ import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEntry } from './follow-up.js'
+import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
@@ -57,6 +58,7 @@ export class EvolutionService {
   readonly failures: JsonlRecordStore<SkillFailureCase>
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
+  readonly skillWindows: JsonlRecordStore<SkillWindow>
   readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
   readonly followUps: JsonlRecordStore<FollowUpResolution>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
@@ -83,6 +85,7 @@ export class EvolutionService {
     this.failures = new JsonlRecordStore(path('failures'))
     this.clusters = new JsonlRecordStore(path('clusters'))
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
+    this.skillWindows = new JsonlRecordStore(path('skill-windows'))
     this.classifications = new JsonlRecordStore(path('classifications'))
     this.followUps = new JsonlRecordStore(path('follow-ups'))
     this.feedback = new JsonlRecordStore(path('feedback'))
@@ -354,7 +357,7 @@ export class EvolutionService {
     const memoEntries = await this.classifications.readAll()
     const memo = new Map(memoEntries.map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
-    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
+    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
       return {
         experiences: await this.experiences.readAll(),
@@ -367,6 +370,7 @@ export class EvolutionService {
     const workflow = new EvolutionWorkflow({ memo, ...(this.followUpClassifier === undefined ? {} : { classifierVersion: this.followUpClassifier.version }) })
     workflow.add(observations)
     const snapshot = workflow.snapshot()
+    await this.skillWindows.replaceAll(buildSkillWindows(observations))
     await this.experiences.replaceAll(snapshot.experiences)
     await this.followUps.replaceAll(snapshot.followUps)
     await this.failures.replaceAll(snapshot.failures)
