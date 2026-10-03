@@ -51,117 +51,50 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   const changeValidation = validateSkillCandidate(input.baseContent, input.candidateContent, input.expectedSkillName)
   const invocationPolicyUnchanged = sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
   const runner = input.runner ?? runContentChecks
-  const policy: EvaluationPolicy = {
-    version: normalizedPolicy.version,
-    maxRegressionCount: normalizedPolicy.maxRegressionCount,
-    maxSecurityViolations: normalizedPolicy.maxSecurityViolations,
-    requireNoNewSideEffects: normalizedPolicy.requireNoNewSideEffects,
-    requirePositiveFeedback: normalizedPolicy.requirePositiveFeedback,
-    requireOriginalFailureImprovement: normalizedPolicy.originalFailure.requireImprovement,
-    ...(normalizedPolicy.legacy.maxTokenIncreaseRatio === undefined ? {} : { maxTokenIncreaseRatio: normalizedPolicy.legacy.maxTokenIncreaseRatio }),
-    ...(normalizedPolicy.legacy.maxContextIncreaseRatio === undefined ? {} : { maxContextIncreaseRatio: normalizedPolicy.legacy.maxContextIncreaseRatio }),
+  const runs = normalizedPolicy.sampling.runs; const createdAt = new Date().toISOString()
+  const samples: import('./evaluation-cost.js').EvaluationSample[] = []
+  const raw = new Map<string, { base: CaseRunResult[]; candidate: CaseRunResult[] }>()
+  let securityViolations = 0; let candidateSideEffects = 0; let baselineSideEffects = 0; let positiveFeedback = false
+  for (let sample = 0; sample < runs; sample++) for (const evaluationCase of input.cases) {
+    const entry = raw.get(evaluationCase.id) ?? { base: [], candidate: [] }
+    const call = async (exposure: 'base' | 'candidate', content: string, valid: boolean) => valid ? runner(content, evaluationCase, { exposure, sample }) : { passed: false, status: 'unknown' as const, reason: `${exposure} Skill document is invalid` }
+    const baselineRun = await call('base', input.baseContent, baseValidation.valid); entry.base.push(baselineRun)
+    const candidateRun = await call('candidate', input.candidateContent, validation.valid); entry.candidate.push(candidateRun)
+    const addSample = (exposure: 'base' | 'candidate', result: CaseRunResult) => samples.push({ caseId: evaluationCase.id, category: evaluationCase.category, exposure, sample, passed: result.passed === true, status: result.status ?? (result.passed ? 'passed' : 'failed'), ...(result.toolCalls === undefined ? {} : { toolCalls: result.toolCalls }), ...(result.modelTurns === undefined ? {} : { modelTurns: result.modelTurns }), ...(result.tokenCost === undefined ? {} : { tokenCost: result.tokenCost }), ...(result.contextCost === undefined ? {} : { contextCost: result.contextCost }) })
+    addSample('base', baselineRun); addSample('candidate', candidateRun); raw.set(evaluationCase.id, entry)
+    securityViolations += candidateRun.securityViolations?.length ?? 0; candidateSideEffects += candidateRun.sideEffects?.length ?? 0; baselineSideEffects += baselineRun.sideEffects?.length ?? 0; positiveFeedback ||= candidateRun.positiveFeedback === true
   }
-  const createdAt = new Date().toISOString()
-  const baseline = emptyCategoryCounts()
-  const categories = emptyCategoryCounts()
-  const results: CaseEvaluation[] = []
-  const regressions: string[] = []
-  let securityViolations = 0
-  let candidateSideEffects = 0
-  let baselineSideEffects = 0
-  let candidateTokenCost = 0
-  let baselineTokenCost = 0
-  let candidateContextCost = 0
-  let baselineContextCost = 0
-  let positiveFeedback = false
-
+  const baseline = emptyCategoryCounts(); const categories = emptyCategoryCounts(); const results: CaseEvaluation[] = []; const regressions: string[] = []
   for (const evaluationCase of input.cases) {
-    const baselineRun = baseValidation.valid
-      ? await runner(input.baseContent, evaluationCase, { exposure: 'base', sample: 0 })
-      : { passed: false, status: 'unknown' as const, reason: 'base Skill document is invalid' }
-    const candidateStarted = input.now?.() ?? Date.now()
-    const candidateRun = validation.valid
-      ? await runner(input.candidateContent, evaluationCase, { exposure: 'candidate', sample: 0 })
-      : { passed: false, status: 'unknown' as const, reason: 'candidate Skill document is invalid' }
-    const durationMs = Math.max(0, (input.now?.() ?? Date.now()) - candidateStarted)
-    addCategory(baseline, evaluationCase.category, baselineRun.passed === true)
-    addCategory(categories, evaluationCase.category, candidateRun.passed === true)
-    securityViolations += candidateRun.securityViolations?.length ?? 0
-    candidateSideEffects += candidateRun.sideEffects?.length ?? 0
-    baselineSideEffects += baselineRun.sideEffects?.length ?? 0
-    candidateTokenCost += candidateRun.tokenCost ?? 0
-    baselineTokenCost += baselineRun.tokenCost ?? 0
-    candidateContextCost += candidateRun.contextCost ?? 0
-    baselineContextCost += baselineRun.contextCost ?? 0
-    positiveFeedback ||= candidateRun.positiveFeedback === true
-    if (baselineRun.passed && !candidateRun.passed && evaluationCase.category !== 'original-failure') {
-      regressions.push(evaluationCase.id)
-    }
-    results.push({
-      caseId: evaluationCase.id,
-      category: evaluationCase.category,
-      passed: candidateRun.passed === true,
-      status: candidateRun.status ?? (candidateRun.passed ? 'passed' : 'failed'),
-      reason: candidateRun.reason ?? (candidateRun.passed ? 'passed' : 'failed'),
-      evidence: [...candidateRun.evidence ?? []],
-      durationMs,
-    })
+    const entry = raw.get(evaluationCase.id)!; const baseFold = foldSamples(entry.base); const candidateFold = foldSamples(entry.candidate)
+    addCategory(baseline, evaluationCase.category, baseFold.passed); addCategory(categories, evaluationCase.category, candidateFold.passed)
+    if (baseFold.passed && !candidateFold.passed && evaluationCase.category !== 'original-failure') regressions.push(evaluationCase.id)
+    results.push({ caseId: evaluationCase.id, category: evaluationCase.category, passed: candidateFold.passed, status: candidateFold.status, reason: candidateFold.reason, evidence: [...candidateFold.evidence], durationMs: 0 })
   }
-
+  const { analyzeEvaluationCost } = await import('./evaluation-cost.js')
+  const cost = analyzeEvaluationCost({ cases: input.cases, samples, baseContent: input.baseContent, candidateContent: input.candidateContent, candidateContentHash: createContentHash(input.candidateContent), policy: normalizedPolicy })
   const gateReasons: string[] = []
-  if (!validation.valid) gateReasons.push(...validation.errors.map(error => `schema: ${error}`))
-  gateReasons.push(...changeValidation.errors.map(error => `candidate: ${error}`))
-  if (!invocationPolicyUnchanged) gateReasons.push('invocation policy changed')
-  if (securityViolations > policy.maxSecurityViolations) gateReasons.push('security violation limit exceeded')
-  if (policy.requireNoNewSideEffects && candidateSideEffects > baselineSideEffects) gateReasons.push('new side effects detected')
-  if (regressions.length > policy.maxRegressionCount) gateReasons.push('regression limit exceeded')
-  if (policy.maxTokenIncreaseRatio !== undefined && baselineTokenCost > 0 && candidateTokenCost / baselineTokenCost - 1 > policy.maxTokenIncreaseRatio) gateReasons.push('token cost increase exceeded policy')
-  if (policy.maxContextIncreaseRatio !== undefined && baselineContextCost > 0 && candidateContextCost / baselineContextCost - 1 > policy.maxContextIncreaseRatio) gateReasons.push('context cost increase exceeded policy')
-  if (policy.requirePositiveFeedback && !positiveFeedback) gateReasons.push('positive feedback required')
-  const originalBaseline = baseline['original-failure']
-  const originalCandidate = categories['original-failure']
-  if (originalCandidate.total === 0) {
-    gateReasons.push('no original-failure cases')
-  } else if (policy.requireOriginalFailureImprovement && originalCandidate.passed <= originalBaseline.passed) {
-    gateReasons.push('original-failure pass count did not improve')
+  if (!validation.valid) gateReasons.push(...validation.errors.map(error => `schema: ${error}`)); gateReasons.push(...changeValidation.errors.map(error => `candidate: ${error}`))
+  if (!invocationPolicyUnchanged) gateReasons.push('invocation policy changed'); if (securityViolations > normalizedPolicy.maxSecurityViolations) gateReasons.push('security violation limit exceeded'); if (normalizedPolicy.requireNoNewSideEffects && candidateSideEffects > baselineSideEffects) gateReasons.push('new side effects detected'); if (regressions.length > normalizedPolicy.maxRegressionCount) gateReasons.push('regression limit exceeded'); if (normalizedPolicy.requirePositiveFeedback && !positiveFeedback) gateReasons.push('positive feedback required')
+  for (const check of cost.checks.filter(check => check.status === 'failed' || check.status === 'no-data')) gateReasons.push(costGateReason(check.id, check.detail))
+  const baseOriginalPassed = input.cases.filter(item => item.category === 'original-failure').filter(item => foldSamples(raw.get(item.id)!.base).passed).length
+  const candidateOriginalPassed = input.cases.filter(item => item.category === 'original-failure').filter(item => foldSamples(raw.get(item.id)!.candidate).passed).length
+  if (normalizedPolicy.schema === 1 && normalizedPolicy.originalFailure.requireImprovement && candidateOriginalPassed <= baseOriginalPassed) gateReasons.push('original-failure pass count did not improve')
+  if (normalizedPolicy.schema === 1) { if (normalizedPolicy.legacy.maxTokenIncreaseRatio !== undefined && !hasMetric(samples, 'tokenCost')) gateReasons.push('token cost: no data'); if (normalizedPolicy.legacy.maxContextIncreaseRatio !== undefined && !hasMetric(samples, 'contextCost')) gateReasons.push('context cost: no data') }
+  if (normalizedPolicy.schema === 1) {
+    const sum = (key: 'tokenCost' | 'contextCost', exposure: 'base' | 'candidate') => samples.filter(item => item.exposure === exposure && item[key] !== undefined).reduce((total, item) => total + item[key]!, 0)
+    const baseTokens = sum('tokenCost', 'base'); const candidateTokens = sum('tokenCost', 'candidate'); const baseContext = sum('contextCost', 'base'); const candidateContext = sum('contextCost', 'candidate')
+    if (normalizedPolicy.legacy.maxTokenIncreaseRatio !== undefined && baseTokens > 0 && candidateTokens / baseTokens - 1 > normalizedPolicy.legacy.maxTokenIncreaseRatio) gateReasons.push('token cost increase exceeded policy')
+    if (normalizedPolicy.legacy.maxContextIncreaseRatio !== undefined && baseContext > 0 && candidateContext / baseContext - 1 > normalizedPolicy.legacy.maxContextIncreaseRatio) gateReasons.push('context cost increase exceeded policy')
   }
-  const historicalBaseline = baseline['historical-success']
-  const historicalCandidate = categories['historical-success']
-  if (rate(historicalCandidate) + 0.05 < rate(historicalBaseline)) {
-    gateReasons.push('historical-success pass rate regressed by more than five points')
-  }
-  const boundaryBaseline = await boundaryHighFailures(input.cases, input.baseContent, runner, baseValidation.valid)
-  const boundaryCandidateFailures = results.filter(result => result.category === 'boundary'
-    && !result.passed
-    && input.cases.find(item => item.id === result.caseId)?.severity === 'high').length
-  if (boundaryCandidateFailures > boundaryBaseline) gateReasons.push('new high-severity boundary failure')
-
-  const total = results.length
-  const passed = results.filter(result => result.passed).length
-  const unknown = results.filter(result => result.status === 'unknown').length
-  return {
-    candidateId: input.candidateId,
-    total,
-    passed,
-    failed: total - passed - unknown,
-    unknown,
-    categories,
-    baseline,
-    regressions,
-    gateReasons,
-    caseResults: results,
-    durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started),
-    schemaValid: validation.valid,
-    invocationPolicyUnchanged,
-    passedGate: gateReasons.length === 0,
-    decision: gateReasons.length === 0 ? 'passed' : (securityViolations > policy.maxSecurityViolations || regressions.length > policy.maxRegressionCount ? 'rejected' : 'needs-review'),
-    policyVersion: policy.version,
-    baseContentHash: createContentHash(input.baseContent),
-    candidateContentHash: createContentHash(input.candidateContent),
-    caseIds: input.cases.map(item => item.id),
-    createdAt,
-  }
+  if (categories['original-failure'].total === 0) gateReasons.push('no original-failure cases')
+  const total = results.length; const passed = results.filter(result => result.passed).length; const unknown = results.filter(result => result.status === 'unknown').length; const hardReject = securityViolations > normalizedPolicy.maxSecurityViolations || regressions.length > normalizedPolicy.maxRegressionCount
+  return { candidateId: input.candidateId, total, passed, failed: total - passed - unknown, unknown, categories, baseline, regressions, gateReasons, caseResults: results, durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started), schemaValid: validation.valid, invocationPolicyUnchanged, passedGate: gateReasons.length === 0, decision: gateReasons.length === 0 ? 'passed' : (hardReject ? 'rejected' : 'needs-review'), policyVersion: normalizedPolicy.version, baseContentHash: createContentHash(input.baseContent), candidateContentHash: createContentHash(input.candidateContent), caseIds: input.cases.map(item => item.id), createdAt, cost, samples }
 }
+
+function foldSamples(values: readonly CaseRunResult[]): { passed: boolean; status: 'passed' | 'failed' | 'unknown'; reason: string; evidence: readonly string[] } { const passed = values.filter(value => value.passed === true).length; const unknown = values.filter(value => value.status === 'unknown').length; if (unknown * 2 >= values.length && passed * 2 <= values.length) return { passed: false, status: 'unknown', reason: 'unknown', evidence: values.flatMap(value => value.evidence ?? []) }; if (passed * 2 > values.length) return { passed: true, status: 'passed', reason: 'passed', evidence: values.flatMap(value => value.evidence ?? []) }; return { passed: false, status: 'failed', reason: values.find(value => value.reason)?.reason ?? 'failed', evidence: values.flatMap(value => value.evidence ?? []) } }
+function hasMetric(samples: readonly import('./evaluation-cost.js').EvaluationSample[], key: 'tokenCost' | 'contextCost'): boolean { return samples.some(sample => sample[key] !== undefined) }
+function costGateReason(id: string, detail: string): string { if (id === 'original-failure-improvement') return 'original-failure did not improve'; if (id === 'original-failure-regressed') { const match = detail.match(/case ([^ ]+)/); return `original-failure case regressed: ${match?.[1] ?? 'unknown'}` }; if (id.endsWith('-no-data')) { const stem = id.replace(/-no-data$/, ''); return `${stem.startsWith('original-failure') ? stem : stem}: no data` }; if (id.startsWith('historical-success-pass-rate')) return 'historical-success pass rate regressed by more than five points'; if (id === 'historical-success-steps') return 'historical-success steps increase exceeded policy'; if (id === 'historical-success-tokens') return 'historical-success tokens increase exceeded policy'; if (id === 'catalog-context') return 'catalog context increase exceeded policy'; if (id === 'load-context') return 'load context increase exceeded policy'; return detail }
 
 function validateEvaluationInput(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')

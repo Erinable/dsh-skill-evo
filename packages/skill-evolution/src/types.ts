@@ -229,6 +229,8 @@ export interface SkillEvalResult {
   readonly candidateContentHash: string
   readonly caseIds: readonly string[]
   readonly createdAt: string
+  readonly cost?: import('./evaluation-cost.js').EvaluationCostReport
+  readonly samples?: readonly import('./evaluation-cost.js').EvaluationSample[]
 }
 
 /** Persisted evaluation evidence that promotion is allowed to consume. */
