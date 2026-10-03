@@ -203,7 +203,7 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
 export async function promoteProposal(service: EvolutionService, options: PromoteProposalOptions): Promise<PromoteResult> {
   const scope = assertScope(options.scope)
   const proposal = await resolveProposal(service, options.proposalRef)
-  if (proposal.status !== 'accepted' && !(await service.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
+  await service.assertPromotionAllowed(proposal)
   const artifact = options.evaluationPath === undefined
     ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)
     : resolvePromotionArtifact(await service.evaluations.readAll(), proposal, await readEvaluationFile(options.evaluationPath))

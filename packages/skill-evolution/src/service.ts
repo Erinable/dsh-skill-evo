@@ -183,7 +183,7 @@ export class EvolutionService {
     const paths = this.layout.stores.filter(store => store.name !== 'observations').map(store => store.path)
     const jsonl: JsonlRepairResult[] = []
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath, layout: this.layout })
-    await this.repairPublications()
+    const publications = await this.repairPublications()
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
       for (const path of await archivePaths(this.observations.filePath)) {
@@ -191,7 +191,7 @@ export class EvolutionService {
       }
     })
     await this.refreshDerived({ force: true })
-    return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true, publications: pendingPublications.map(item => ({ ...item, outcome: 'completed' })) }
+    return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true, publications: publications.length > 0 ? publications : pendingPublications.map(item => ({ ...item, outcome: 'completed' })) }
   }
 
   private async publicationReports(): Promise<readonly Record<string, unknown>[]> {
@@ -206,27 +206,40 @@ export class EvolutionService {
     return reports
   }
 
-  private async repairPublications(): Promise<void> {
+  private async repairPublications(): Promise<readonly Record<string, unknown>[]> {
     let entries: string[] = []
-    try { entries = await readdir(this.layout.publicationsDir) } catch { return }
+    try { entries = await readdir(this.layout.publicationsDir) } catch { return [] }
+    const reports: Record<string, unknown>[] = []
     for (const entry of entries.filter(item => item.endsWith('.json'))) {
       const skillName = basename(entry, '.json')
+      let journal: Awaited<ReturnType<typeof readPublication>>
       try {
-        const journal = await readPublication(join(this.layout.publicationsDir, entry))
+        journal = await readPublication(join(this.layout.publicationsDir, entry))
         if (journal === undefined) continue
         if (journal.operation === 'promote' && journal.proposalId !== undefined) {
           const proposal = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(journal.proposalId))
-          if (proposal !== undefined) {
-            await this.versions.recoverPublication(journal.skillName, true)
-            if (proposal.status === 'promoted') await this.ensurePromoteLedgerDecision(proposal)
-            else await this.completePromoteFromJournal(proposal, journal)
-            await this.versions.finalizePublication(journal.skillName)
-          }
+          if (proposal === undefined) throw new Error(`publication proposal ${journal.proposalId} is missing`)
+          await this.versions.recoverPublication(journal.skillName, true)
+          if (proposal.status === 'promoted') await this.ensurePromoteLedgerDecision(proposal)
+          else await this.completePromoteFromJournal(proposal, journal)
+          await this.versions.finalizePublication(journal.skillName)
         } else if (journal.operation === 'rollback') {
           await this.rollback(journal.skillName, journal.to.version)
         }
-      } catch (error) { throw error }
+        reports.push({ skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt, outcome: 'completed' })
+      } catch (error) {
+        // Retryable failures keep their journal for a later repair. Permanent
+        // publication errors are quarantined by recoverPublication; either way
+        // one bad Skill must not prevent other journals or JSONL from repairing.
+        reports.push({
+          skillName,
+          ...(journal === undefined ? {} : { operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
+          outcome: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
+    return reports
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
@@ -357,6 +370,12 @@ export class EvolutionService {
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
     return resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
+  }
+
+  /** Validate the proposal state before resolving an evaluation artifact. */
+  async assertPromotionAllowed(proposal: SkillProposal): Promise<void> {
+    if (proposal.status === 'accepted' || await this.versions.hasPendingPublication(proposal.skillName)) return
+    throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
   }
 
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {
