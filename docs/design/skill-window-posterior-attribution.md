@@ -74,7 +74,7 @@ user/message | agent-step | {"eventType":"user/message","sessionSeq":12} | []
 
 需求给的四个结束条件里，「用户新消息」和 `task-finished` 并不会把 Skill 正文移出上下文：下一个 task 里模型仍然能照着它做。所以设计里分开两个概念：
 
-- **Skill window**（确定性，Derived record）：从 `skill-loaded` 开始，遇到下面任一条就结束：同一 session 的下一条 `skill-loaded`（包括同一个 Skill 重新加载）、`user-follow-up`、`task-finished`、遮蔽了本次加载的 `context-shadowed`。结束它的那条 Observation 记作 `endObservationId`，不算窗口内的步骤。
+- **Skill window**（确定性，Derived record）：从 `skill-loaded` 开始，遇到下面任一条就结束：同一 session 的下一条 `skill-loaded`（包括同一个 Skill 重新加载）、`user-follow-up`（不含没有 `sessionSeq` 的显式反馈，见 §5.2）、`task-finished`、遮蔽了本次加载的 `context-shadowed`。结束它的那条 Observation 记作 `endObservationId`，不算窗口内的步骤。
 - **资格区间**（HMM 的约束，不单独存）：一个 Skill 从加载开始，到它的加载 Observation 的 `sessionSeq` 被 `context-shadowed` 遮蔽为止，一直是可选的隐状态；在这个区间外它的后验恒为 0。区间可以跨越多个窗口、多个 task。
 
 | 选项 | 做法 | 复杂度 | 可测性 | 可逆性 | 迁移成本 |
@@ -344,6 +344,8 @@ interface FailureAttribution {
   readonly margin: number                      // 最大份额减第二大份额；未校准的强度分，不是概率
   readonly uncovered: boolean
   readonly stepObservationIds: readonly string[]   // 汇总用到的步骤
+  readonly anchor: 'tool-call' | 'step' | 'correlation' | 'position' | 'session'   // §5.2
+  readonly anchorObservationId?: string
   readonly posteriorId?: string
 }
 ```
@@ -358,15 +360,15 @@ interface FailureAttribution {
 
 1. **explicit**：显式反馈带 `skill`（`recordFeedback` 给了 `skillName`）。目标就是这个 Skill，份额 1。后验不参与。
 2. **override**：Observation 带 `attributionOverride`。Attribution 类别取 override 的值；目标 Skill 若同时给出则同上，没给出时目标照下面的规则算，但类别不被后验改动。
-3. **single-skill**：这个 session 在失败之前只加载过一个 Skill。目标是这个 Skill，份额 1，与 SKIL-126 的「follow-up 之前恰好加载一个 Skill」规则、以及今天 `experience.ts:121` 的结果一致。`uncovered` 仍按 §5.3 计算并展示，但不删掉这个 case。
+3. **single-skill**：这个 session 在失败之前只加载过一个 Skill。目标是这个 Skill，份额 1，与 SKIL-126 的「follow-up 之前恰好加载一个 Skill」规则、以及今天 `experience.ts:132-148` 的结果一致。`uncovered` 仍按 §5.3 计算并展示，但不删掉这个 case。
 4. **none-loaded**：失败之前没有加载任何 Skill。份额全给 none，`uncovered: true`。
-5. **posterior**：其余情况，也就是多 Skill session。份额按 §5.2 从后验汇总。
+5. **posterior**：其余情况，也就是多 Skill session。份额按 §5.2 从后验汇总。没带 `skillName` 的显式反馈也走这一条，失败位置按 §5.2 的锚点规则定位。
 
 失败主体：
 
 | origin | 什么时候产生 | severity |
 |---|---|---|
-| `explicit-feedback` | 与 SKIL-134 相同 | 与 SKIL-134 相同 |
+| `explicit-feedback` | 与 SKIL-134 相同 | 与 SKIL-134 相同（`incorrect` 为 `high`，`experience.ts:107`）；扇出的 case 照抄主体的 severity，门槛靠 `dominant` 挡住少数份额的 case（§5.4） |
 | `implicit-follow-up` | SKIL-126 判为失败类意图的 `user-follow-up` | `medium`（不变） |
 | `load-failure` | 与今天相同，走 composition，不经后验 | `high`（不变） |
 | `tool-failure`（新） | task 以失败结束（`task-finished` 的 outcome 为 failed），且这个 task 里最后一次失败的 ToolAttempt 之后没有同意图的成功 | `low` |
@@ -379,10 +381,34 @@ interface FailureAttribution {
 | 选项 | 做法 | 取舍 |
 |---|---|---|
 | K1 只看失败那一步 | 取失败位置上一个工具步的后验 | follow-up 前如果是一次中性的 `cat`，份额几乎是平局（§3.6） |
-| **K2 最近 K 步平均（推荐）** | 同一 task 里、失败之前最近 K = 3 个工具步的平滑后验取平均；没有工具步时取 HMM 在失败位置的前向预测分布 | 简单、可解释，平滑后验已经带了前后文 |
+| **K2 最近 K 步平均（推荐）** | 同一 task 里、截至锚点的最近 K = 3 个工具步的平滑后验取平均；没有工具步时取 HMM 在锚点位置的前向预测分布 | 简单、可解释，平滑后验已经带了前后文 |
 | K3 按距离指数衰减 | 所有之前的步按 `γ^d` 加权 | 多一个参数，原型上和 K2 差别不大 |
 
-选 K2。`tool-failure` 以失败那一步为最后一步；episode 用它引用的全部失败、纠正、成功步骤。
+选 K2。
+
+**锚点**（失败位置）按主体分别定：
+
+| 主体 | 锚点 | K 步怎么取 |
+|---|---|---|
+| `tool-failure` | 这个 task 里最后一次失败的 ToolAttempt | 锚点和它之前的 2 步 |
+| `implicit-follow-up` | 这条 `user-follow-up` 在 §3.1 顺序里的位置（bundle 写了 `sessionSeq`） | 锚点之前的 3 步 |
+| `explicit-feedback`（没带 Skill） | 按下面的顺序找被评价的那一步 | 找到时：锚点和它之前的 2 步 |
+| Correction episode | 它引用的全部失败、纠正、成功步骤 | 全部，不截 K |
+
+显式反馈是 `recordFeedback` 事后写进来的：`occurredAt` 是写入时的墙钟时间（`service.ts:111`），没有 `taskId` 和 `sessionSeq`（`service.ts:114-125`）。按 §3.1 排序，它会落在 session 末尾或任意位置，和它评价的那一步无关。所以显式反馈不按自己的排序位置定锚点，按它带的引用找：
+
+1. `payload.toolCallId`：同一 session 里，call Observation 的 `payload.toolCallId` 等于它的 ToolAttempt（bundle 在 `dsh-bundle/index.js:425` 写这个字段）。
+2. `payload.stepId`：等于某个 ToolAttempt 的 `callObservationId` 或 `resultObservationId`。今天没有宿主写 `stepId`，这一条留给以后按 Observation id 指步骤的宿主。
+3. `correlationIds`：引用到的 ToolAttempt（按 call 或 result 的 Observation id 匹配）里，顺序最靠后的那个。
+4. 都找不到：锚点取整个 session，份额用这个 session 所有工具步平滑后验的平均，也就是归一化后的 `expectedSteps`（§6.1）。不取 session 末尾的 3 步，因为末尾和被评价的那一步没有关系。
+
+找到的方式写进 `FailureAttribution.anchor`：`'tool-call' | 'step' | 'correlation' | 'position' | 'session'`，前三种对应显式反馈的 1–3，`position` 是另外三种主体，`session` 是第 4 条回退。锚点 Observation 写进 `anchorObservationId`，回退时不写。
+
+带 `explicit: true` 却没有 `sessionSeq` 的 `user-follow-up` 不结束 Skill window（§2.3）。它的墙钟时间可能落在 session 中间，参与切窗会把窗口截断在一个任意位置。
+
+「同一 task」：锚点和候选步都有 `taskId` 时，按 `taskId` 比较。有一方缺 `taskId` 时，task 边界取 §3.1 顺序里锚点之前最近的一条 `task-finished`，只取它之后的步；没有这样的 `task-finished` 就从 session 开头取。session 回退（第 4 条）不看 task。
+
+以上锚点规则都是可逆的，采用默认答案，成员可推翻。
 
 汇总后：
 
@@ -407,11 +433,31 @@ readonly noneShare?: number
 readonly uncovered?: boolean
 readonly attributionSource?: FailureAttribution['source']
 readonly attributionId?: string         // 指回 failure-attributions
+readonly dominant?: boolean             // 缺省等于 true
 ```
 
 - id：份额 1 的 case（explicit、override 给了 Skill、single-skill）保持 `failure:<subjectId>`，与今天一致；后验分摊出来的 case 用 `failure:<subjectId>#<skillName>`。
-- Failure cluster 仍然按 Skill 分（`experience.ts:143`），一个主体的多个 case 各进各的 Skill 的簇，簇本身不用改。
-- 簇上新增 `weightedOccurrence = Σ attributionWeight`，诊断的证据加权按 SKIL-133 的公式读它。`isClusterReadyForProposal`（`proposal.ts:141`）的 `occurrenceCount` 只数这个 Skill 份额最大的 case（主导 case），少数份额的 case 能看到但不单独触发提案。理由：后验还没校准（§7），少数份额的 case 触发提案等于让一个未校准的数进了门槛。采用默认答案，成员可推翻。
+- `dominant`：一个主体的 case 里份额最大的那个是 `true`，其余是 `false`。份额并列时取 `skillName` 字典序最小的那个，保证重投影确定。份额为 1 的 case（explicit、override 给了 Skill、single-skill）都是 `true`。老数据没有这个字段，视为 `true`。
+- Failure cluster 仍然按 Skill 分（`clusterFailureCases`，`experience.ts:160-172`），一个主体的多个 case 各进各的 Skill 的簇。簇的分组规则不变，记录上加两个字段：
+  - `occurrenceCount` **语义不变**，仍等于 `cases.length`（`experience.ts:186`）。`confidenceBand`（`experience.ts:236`）和报告（`report.ts:37`）照旧读它。
+  - 新增 `dominantOccurrence`：这个簇里 `dominant !== false` 的 case 个数。新增 `weightedOccurrence = Σ attributionWeight`，诊断的证据加权按 SKIL-133 的公式读它。
+  - 选新增字段、不改 `occurrenceCount` 的语义，是因为 `FailureCluster` 是公开类型（`types.ts:120-128`），改义会让读它的报告和宿主拿到一个悄悄变了口径的数。
+- **提案门槛**只看主导 case，数量分支和 severity 分支都是：
+
+  ```ts
+  // proposal.ts，签名只加可选字段
+  export function isClusterReadyForProposal(
+    cluster: FailureCluster,
+    cases: readonly { readonly severity: 'low' | 'medium' | 'high'; readonly dominant?: boolean }[],
+  ): boolean {
+    const counted = cases.filter(item => item.dominant !== false)
+    return (cluster.dominantOccurrence ?? cluster.occurrenceCount) >= 2 || counted.some(item => item.severity === 'high')
+  }
+  ```
+
+  门槛今天有两份：`proposal.ts:145` 和 `workflow.ts:43`（`propose()` 里同样的判断）。`workflow.ts:43` 改成调用 `isClusterReadyForProposal(cluster, <这个簇的 case>)`，只留一份实现，以后改门槛不会漏一处。少数份额的 case 照抄主体的 severity，在 `failures` 输出里能看到，但两个分支都不数它。主导 case 和今天单 Skill 的 case 一样，可以单独靠 `high` 过门槛。理由：后验还没校准（§7），少数份额的 case 触发提案，等于让一个未校准的数进了门槛。采用默认答案，成员可推翻。
+- 被否的做法：把扇出 case 的 severity 降成 `low`。这样 severity 就不再表示失败本身有多严重，报告会显示错的严重度；`evaluator.ts` 以后要是读 case 的 severity，也会被带偏。用一个单独的 `dominant` 标记，含义更清楚。
+- 票面要求「Failure case 带权重和置信度」：权重是 case 上的 `attributionWeight`，置信度是 `failure-attributions` 里的 `margin`，通过 `attributionId` 取。`margin` 不写进已有的 `attributionConfidence`，原因是 `confidenceBand` 会读那个字段（`experience.ts:372`，加进诊断置信度）。写进去，就等于让未校准的后验进了诊断置信度，违反 SKIL-133 的交接要求（§4.3）。
 - `margin` 不写进 case，也不参与上面任何计算，只在 `failure-attributions` 和输出里展示。
 
 ### 5.5 Experience 的变化
@@ -420,7 +466,7 @@ readonly attributionId?: string         // 指回 failure-attributions
 
 - 多 Skill session 里，工具步按它的 MAP 状态分进 `session\0<skill>` 组；follow-up、`task-finished` 按对应 `FailureAttribution` 份额最大的一方分组；MAP 为 none 的进一个 none 组（键与 Skill 名不冲突），Attribution 为 `unknown`。
 - `attributionFor` 不再因为「follow-up 跨多个 Skill」返回 `not-attributable`；`not-attributable` 只在显式 override 给出时出现。
-- `withAttribution`（`experience.ts:222-227`）的「只加载一个 Skill 才填 skill」改为读 `FailureAttribution`。
+- `withAttribution`（`experience.ts:260-265`）的「只加载一个 Skill 才填 skill」改为读 `FailureAttribution`。
 - `Experience.confidence` 由 SKIL-133 改，本设计不动。
 
 ## 6. 下游对接
@@ -492,7 +538,7 @@ interface CounterfactualReplay {
 ```
 
 - core 定义 `CounterfactualReplay`，dsh-adapter 用 `DshEvaluationExecutor`（`dsh-adapter/src/evaluator.ts:52`）实现一个 adapter。`DshEvaluationRunInput` 今天只带一个 `skillContent`，adapter 需要支持「一组 Skill、去掉其中一个」，这属于 dsh-adapter 的改动，由 S3 Builder 做，不影响 core。
-- 抽样：从有 `posterior` 来源的多 Skill session 里，按 `seed` 确定性地抽 `sessions` 个（默认 20）。每个 session 对每个被加载的 Skill k 跑两次：全部 Skill，和去掉 k。任务文本取 `payload.taskSummary`，也就是 `taskText`（`experience.ts:312`）读的那个字段；取不到的 session 跳过并计数。已合并的 SKIL-128 没有定义任务文本的采集。在 `9975647` 上，bundle 和 dsh-adapter 都不写 `taskSummary`，第一条用户消息也不落正文（`mapUserMessage` 只给 follow-up 记 `text`，`dsh-bundle/index.js:377-394`）。所以今天每个 session 都会被跳过。补任务文本的采集属于采集层，要另立一张票，并且要先过 ADR-0023 那样的隐私确认，本设计不定义（见 §13 待定项）。
+- 抽样：从有 `posterior` 来源的多 Skill session 里，按 `seed` 确定性地抽 `sessions` 个（默认 20）。每个 session 对每个被加载的 Skill k 跑两次：全部 Skill，和去掉 k。任务文本取 `payload.taskSummary`，也就是 `taskText`（`experience.ts:312`）读的那个字段；取不到的 session 跳过并计数。已合并的 SKIL-128 没有定义任务文本的采集。在 `9975647` 上，bundle 和 dsh-adapter 都不写 `taskSummary`，第一条用户消息也不落正文（`mapUserMessage` 只给 follow-up 记 `text`，`dsh-bundle/index.js:377-394`）。所以今天每个 session 都会被跳过。补任务文本的采集属于采集层，要另立一张票，并且要先过 ADR-0023 那样的隐私确认，本设计不定义（见 §15 待定项）。
 - 花钱：每次调用最多 `sessions × (1 + 加载的 Skill 数)` 次重放。只在成员显式运行时发生，不在 `refreshDerived`、worker 或评测里调用。
 
 ### 7.2 比较什么
@@ -536,7 +582,7 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 | §6.3 分流 | `CorrectionEpisode` 的 `failureObservationIds`、`correctionObservationIds`、`successObservationId`、`loadedSkills`；§6.2 的规则 0–4 | §4.2、§4.4、§6.2 | 一致 |
 | §3.3 注入接口 | `DerivedJudge<Input, Output>` | §4.2 | 一致，已定稿；SKIL-126 的 `FollowUpClassifier` 是另一个形状（`classify(input, signal)`），本设计不依赖它 |
 | §3.4 重投影 | cursor 的 `judges` | §4.5 | 本设计加 4 个键，memo 指纹进 SKIL-126 的 `derivationKey`（§3.4） |
-| §7.1 任务文本 | `payload.taskSummary` | SKIL-128 没有定义 | 依赖缺口，见 §13 |
+| §7.1 任务文本 | `payload.taskSummary` | SKIL-128 没有定义 | 依赖缺口，见 §15 |
 
 字段名都对上了，`EmissionStep` 的映射是一对一的字段拷贝，没有改名。
 
@@ -557,6 +603,15 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 8. **确定性**：同一份 Observation log 和 memo，投影两次的 `skill-posteriors` 逐字节相同；Observation 顺序打乱（`sessionSeq` 不变）后结果相同。
 9. **未覆盖**：withNone 轨迹里 npm 段内的一次失败，断言 `uncovered: true` 且不产生 Failure case，出现在 `failures` 输出的「未覆盖」一节；给同一 session 设 `unknownPrefix` 后断言不再标 `uncovered`。
 10. **metrics**：第 4 项的 session 里断言每个 Skill 的 `windows`、`dominantStepShare`、`attributedFailures` 与手算值相等，`Σ_k expectedSteps(k) + noneExpectedSteps` 等于总工具步数。
+11. **少数份额的 case 不过门槛**：在第 4 项的 session 里加一条不带 Skill 的 `recordFeedback({ kind: 'incorrect', toolCallId })`，`toolCallId` 指向 api-debugging 主导段里的一步，再注入一个 judge，让 git-workflow 在那附近的份额落在 [0.1, 0.5)。断言：
+    - 扇出后有两个 case，severity 都是 `high`；api-debugging 的 case `dominant: true`，git-workflow 的 `dominant: false`。
+    - git-workflow 的 case 单独所在的簇，`occurrenceCount === 1`、`dominantOccurrence === 0`，`isClusterReadyForProposal` 返回 false，`workflow.propose()` 抛出 `does not have enough evidence`。
+    - api-debugging 那个簇的 `isClusterReadyForProposal` 返回 true。
+12. **显式反馈按引用定位**：同一个双 Skill session，前半段 git-workflow 主导，后半段 api-debugging 主导。一条不带 Skill 的 `incorrect` 反馈，`toolCallId` 指向前半段中间的一步，Observation 的 `occurredAt` 晚于 session 里所有事件，而且没有 `sessionSeq`。断言：
+    - `FailureAttribution.anchor === 'tool-call'`，`anchorObservationId` 是那一步的 call Observation，`stepObservationIds` 是那一步和它之前的 2 步。
+    - 份额最大的是 git-workflow。
+    - Skill window 的切分和没有这条反馈时相同。
+    - 把 `toolCallId` 换成一个不存在的值，断言 `anchor === 'session'`，份额等于整个 session 归一化后的 `expectedSteps`。
 
 ## 10. Seam 清单
 
@@ -576,7 +631,7 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 | B1 | bundle 遮蔽映射；core 增加 `context-shadowed` kind（ADR-0025） | 无 |
 | B2 | Skill window 切分与 `skill-windows` store；验收 1、7 的 core 部分 | B1 |
 | B3 | 序列模型、`rule-1`、`SkillContentSource`、`skill-posteriors` store、cursor 版本键；验收 2、3、8 | B2、SKIL-128 S3 第 1 张（采集）和第 2 张（`ToolAttempt` 与意图规则）的实现 |
-| B4 | `failure-attributions`、Failure case 扇出、Experience 与 `failures` / `metrics` 输出；验收 4、5、9、10 | B3、SKIL-126 实现（SKIL-134 已在 main） |
+| B4 | `failure-attributions`、Failure case 扇出、提案门槛（`proposal.ts:145` 和 `workflow.ts:43` 合成一份）、Experience 与 `failures` / `metrics` 输出；验收 4、5、9、10、11、12 | B3、SKIL-126 实现（SKIL-134 已在 main） |
 | B5 | judge 注入、`emissions` memo、`scoreSkillEmissions`；验收 6 | B3、SKIL-126 的 memo |
 | B6 | `tool-correction-create-skill.md` §6.2 分流对齐、SKIL-129 步数和 token 分摊 | B4、SKIL-128 S3 第 3 张、SKIL-130 实现 |
 | B7 | `calibrateSkillPosteriors` 和 dsh-adapter 的重放 adapter | B3 |
@@ -592,20 +647,21 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 - ADR-0023（SKIL-128，已合并）：只读它定义的字段，不新增采集，不另外脱敏（§8）。
 - ADR-0024（SKIL-128，已合并）：Correction episode 留在 `episodes` store，不冒充 Failure case；「未覆盖」的主体同样不产生 Failure case（§5.3），一致。
 - SKIL-126（`follow-up-intent-classification.md`，已合并）：它的归因目标规则是「按 log 顺序在它之前加载过的 Skill；恰好有一个时才归」，与 §5.1 single-skill 的结果一致；多于一个时它不归因，由本设计补上。
+- SKIL-126 §2.3（`follow-up-intent-classification.md:135`）写的是「`buildExperiences` 的分组不变」，本设计 §5.5 去掉了 `unattributed` 组，修改了这一句。两份都还没实现。S2 以本设计为准：SKIL-126 的规则管 single-skill 的情况，多 Skill session 的 Experience 分组按 §5.5 来。
 - `tool-correction-create-skill.md`（SKIL-128，已合并）：§6.3 修改了它 §6.2 的规则 2。那条规则在原设计稿里写明可逆，不涉及 ADR。
 
 ## 13. 不可逆决策
 
 - **ADR-0025**：bundle 把 DSH 的上下文遮蔽记为 `context-shadowed` Observation，替换事件标 `surfaceReplace`，加载标 `shadowTracked`。
 - **ADR-0026**：Skill window、Skill posterior、Failure attribution 是按 session 的派生记录，带模型和发射版本；注入 judge 的输出只进 `emissions` memo，Projection 不调模型。
-- **ADR-0027**：多 Skill 失败扇出成按 Skill 的 Failure case，带 `attributionWeight`，id 为 `failure:<subject>#<skill>`；提案门槛只数主导 case。
+- **ADR-0027**：多 Skill 失败扇出成按 Skill 的 Failure case，带 `attributionWeight` 和 `dominant`，id 为 `failure:<subject>#<skill>`；提案门槛的数量分支和 severity 分支都只数主导 case，`occurrenceCount` 的语义不变，另加 `dominantOccurrence`。
 - **ADR-0028**：发射模型的注入 interface 是按 session 的 `SkillEmissionJudge`，输出相对 none 的对数似然比；硬约束和跳过步骤由 core 计算。
 
 ADR 编号：由 Mika 在 SKIL-132 上统一分配（本 PR 开的时候 `origin/main` 最大号是 0024）：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 都是 `status: proposed`，成员确认后在本 PR 里改成 `accepted`。
 
 ## 14. 可逆取舍（采用默认答案，成员可推翻）
 
-§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.4 门槛只数主导 case；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳；§3.4 `judges` 与 `derivationKey` 合成一个、新键写进 `judges`；§12 只含 `tool-failure` 的簇只看不提案。
+§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.2 锚点规则（显式反馈按 `toolCallId` / `stepId` / `correlationIds` 定位，找不到时回退到整个 session）；§5.4 门槛只数主导 case，`dominant` 标记，不降 severity；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳；§3.4 `judges` 与 `derivationKey` 合成一个、新键写进 `judges`；§12 只含 `tool-failure` 的簇只看不提案。
 
 ## 15. 待定项
 
