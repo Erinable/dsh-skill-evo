@@ -29,12 +29,16 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以从 Observation log 完整重建的判断：Experience、Correction episode、Correction pattern、Failure case、Failure cluster、Diagnosis。
+可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution。没注入分类器时只依赖 Observation log；注入后，分类器来源的结论还依赖 Classification memo 和推导版本（ADR-0034）。
 _Avoid_: cache, 结论
 
 **Projection**:
-从 Observation log 确定性地重建全部 Derived record 的过程。
+从 Observation log、Classification memo 和推导版本确定性地重建全部 Derived record 的过程；没注入分类器时只读 Observation log。Projection 从不调用分类器。
 _Avoid_: sync, 刷新
+
+**Classification memo**:
+分类器输出的缓存，按分类器版本和输入哈希存放，供 Projection 复现分类结论；它不是 Fact record，不当作证据，也不是 Derived record，Projection 和 repair 都不删它（ADR-0034）。
+_Avoid_: 分类结果事实, cache（它不能随意丢弃）
 
 **Exposure view**:
 一个 Skill 在一次 session 里「可见 → 请求加载 → 加载成功/失败」的三段证据；它不是成功率。
@@ -46,29 +50,17 @@ _Avoid_: usage rate, 成功率
 从 Observation 压缩出来的局部经验片段，保留上下文和证据 Observation 的 id；它不是 Skill。
 _Avoid_: lesson, memory, 经验总结
 
-**ToolAttempt**:
-同一个工具调用及其结果组成的一次尝试，包含脱敏后的命令摘要、结果状态和对应 Observation 引用；它是投影输入，不是事实记录的新种类。
-_Avoid_: tool event, command log
-
-**Correction episode**:
-同一 session 中，同一意图连续失败达到策略门槛后又成功的一段 ToolAttempt 序列，属于 Derived record，引用失败、纠正和成功的 Observation。
-_Avoid_: retry, incident
-
-**Correction pattern**:
-具有相同纠正签名的多个 Correction episode 的跨 session 聚合，属于 Derived record；它只有在聚合门槛满足时才可成为 Proposal 来源。
-_Avoid_: correction cluster, candidate
-
-**Correction policy**:
-规定 Correction episode 的失败次数、跨 session 聚合、时间窗口和允许发布范围的版本化规则。
-_Avoid_: correction config, threshold
-
-**Derived judge**:
-对 Observation 投影输入作可注入、带版本判断的组件；其输出属于 Derived record，可因版本变化重建。
-_Avoid_: model decision, runtime hook
-
 **Attribution**:
 把一个结果归到某类原因（routing、content、tool 等）的判断；属于派生，可以修正。
 _Avoid_: blame
+
+**Follow-up intent**:
+对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0035）。显式反馈的 kind 优先于任何推断。
+_Avoid_: sentiment, 情绪
+
+**Follow-up resolution**:
+一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
+_Avoid_: label, 标注
 
 **Failure case**:
 一次能定位到某个 Skill 的失败，引用证据 Observation。
@@ -100,10 +92,6 @@ _Avoid_: draft
 Proposal 所针对的那一版 Skill 内容；Skill 当前内容已不是 Base 时，Proposal 过期（stale）。
 _Avoid_: parent version, original
 
-**Absent Base**:
-表示 Proposal 针对的 Skill 当前不存在；它是 Base 的一种明确状态，不能与省略 Base 混同。
-_Avoid_: empty base, missing base
-
 **Proposal root**:
 一个 Proposal 在所有状态记录之间共享的逻辑身份。
 _Avoid_: proposal id 前缀
@@ -127,12 +115,24 @@ _Avoid_: audit log
 ## 评估与发布
 
 **Evaluation**:
-在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。
+在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。每个 Evaluation case 在两侧各跑 R 次（ADR-0030）。
 _Avoid_: score, benchmark
 
 **Evaluation case**:
 参与比较的一个用例，分为 original-failure、historical-success、boundary 三类。
 _Avoid_: test
+
+**Sample**:
+一个 Evaluation case 在 Base 或 Candidate 一侧的一次运行；用例是否通过按 R 个 Sample 的多数判定（ADR-0030）。
+_Avoid_: trial, run
+
+**Execution cost**:
+一条轨迹的步数（工具调用次数）和 token（输入加输出，含缓存命中）；只在双方都通过的用例的通过 Sample 上比较（ADR-0029）。
+_Avoid_: 总成本, latency
+
+**Context cost**:
+一份 Skill 正文在目录曝光（name 与 description）和加载（整份 SKILL.md）时占用的 token 估计，由 core 从正文确定性算出，评测和 metrics 共用（ADR-0031）。
+_Avoid_: prompt size, 运行时 inputTokens
 
 **Evaluation artifact**:
 一次 Evaluation 的持久结果，只对它所评估的那个 Proposal、Base 和 Candidate content 有效；是 Promote 的前置证据。
