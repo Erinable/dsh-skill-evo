@@ -324,7 +324,7 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(reference)
   })
 
-  it('does not skip promotion checks for a different proposal with a pending journal', async () => {
+  it('G2 other Proposal Promote keeps the pending journal and rejects the stale branch', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     vi.restoreAllMocks()
@@ -337,6 +337,21 @@ describe('promote crash points', () => {
     const invalidArtifact = evaluations.split('\n').map(line => line.includes('proposal-other') ? line.replace('\"passedGate\":true', '\"passedGate\":false') : line).join('\n')
     await writeFile(evaluationsPath, invalidArtifact)
     await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'gate-failed' })
+    await expect(readFile(join(root, '.skill-evolution', 'publications', `${skillName}.json`), 'utf8')).resolves.toContain('proposal-crash')
+  })
+
+  it('G3 direct Rollback completes the pending Promote before changing live state', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root } = await crashPromote(row)
+    await expect(rollbackSkill(service(root), { skillName, version: 'unversioned' })).resolves.toMatchObject({ version: 'unversioned' })
+    await expect(readFile(join(root, skillName, 'SKILL.md'), 'utf8')).resolves.toBe(first)
+  })
+
+  it('G4 Rollback isolates a pending Promote and a later Promote can be retried', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root, proposalRef } = await crashPromote(row)
+    await expect(rollbackSkill(service(root), { skillName, version: '1.1.0' })).resolves.toMatchObject({ version: '1.1.0' })
+    await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'stale-base' })
   })
 
   it('R0 rerun completes from the pre-journal failure without duplicate facts', async () => {
