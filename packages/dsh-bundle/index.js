@@ -575,9 +575,13 @@ function toolSummary(toolName, args) {
   const redacted = redactSensitiveText(command)
   const rawTokens = tokenize(redacted)
   const tokens = rawTokens.slice(0, 16).map(token => token.slice(0, 64))
-  const joined = tokens.join(' ')
+  const joined = tokens.map(formatCommandToken).join(' ')
   const bounded = joined.slice(0, 240)
   return { ...summary, command: bounded, ...(tokens.length < rawTokens.length || rawTokens.some(token => token.length > 64) || joined.length > 240 ? { commandTruncated: true } : {}) }
+}
+
+function formatCommandToken(token) {
+  return /\s/.test(token) ? `'${token.replaceAll("'", "'\\''")}'` : token
 }
 
 function commandResultSummary(toolName, data) {
@@ -613,30 +617,33 @@ function structuredResultMetadata(data) {
 
 function parseExitMarkers(text) {
   if (typeof text !== 'string') return {}
-  const exit = text.match(/\[exit code:\s*(-?\d+)\]\s*$/i)
-  const signal = text.match(/\[killed by signal:\s*([^\]]+)\]\s*$/i)
-  return {
-    ...(exit === null ? {} : { exitCode: Number(exit[1]) }),
-    ...(signal === null ? {} : { signal: signal[1].trim() }),
-    ...( /\[timed out after [^\]]+\]\s*$/i.test(text) ? { timedOut: true } : {}),
+  const markers = [...text.matchAll(/\[(?:timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]/gi)]
+  const result = {}
+  for (const marker of markers) {
+    const value = marker[0]
+    if (/^\[timed out after/i.test(value)) result.timedOut = true
+    else if (/^\[killed by signal:/i.test(value)) result.signal = value.replace(/^\[killed by signal:\s*/i, '').replace(/\]$/, '').trim()
+    else result.exitCode = Number(value.replace(/^\[exit code:\s*/i, '').replace(/\]$/, ''))
   }
+  return result
 }
 
 function errorLine(data, text) {
   const candidates = []
   const source = typeof text === 'string' ? text : textFromAny(data)
   if (typeof source !== 'string') return undefined
-  const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:stdout|exit code|killed by signal|timed out)|$)/i)?.[1]
-  const stdout = source.match(/\[stdout\]([\s\S]*?)(?=\n\[(?:stderr|exit code|killed by signal|timed out)|$)/i)?.[1]
+  const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:exit code|killed by signal|timed out)|$)/i)?.[1]
+  const stdout = source.split(/\[stderr\]/i, 1)[0].replace(/\n?\[(?:exit code|killed by signal|timed out)[^\]]*\]\s*$/i, '')
   for (const block of [stderr]) {
     if (typeof block !== 'string') continue
     const lines = block.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
-    candidates.push(...lines.filter(line => /error|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line)))
+    candidates.push(...lines.filter(line => /error|err!?\b|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line)))
     if (candidates.length > 0) return candidates[0]
+    if (lines.length > 0) return lines[0]
   }
-  if (typeof stdout === 'string') {
+  if (typeof stdout === 'string' && stdout.length > 0) {
     const lines = stdout.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
-    const match = lines.find(line => /error|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line))
+    const match = lines.find(line => /error|err!?\b|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line))
     if (match !== undefined) return match
   }
   return undefined

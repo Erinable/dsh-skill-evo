@@ -384,11 +384,26 @@ test('covers successful and signalled command markers without complete output', 
   assert.equal('errorLine' in success.payload, false)
   assert.equal(JSON.stringify(success).includes('stdout that must not persist'), false)
   call(3, 'bash', 'kill -TERM $$')
-  const signalled = result(4, 'c-3', 'fatal: stopped\n[killed by signal: SIGTERM]')
+  const signalled = result(4, 'c-3', 'partial\n[timed out after 1000ms]\n[killed by signal: SIGTERM]')
   assert.equal(signalled.payload.signal, 'SIGTERM')
+  assert.equal(signalled.payload.timedOut, true)
   call(5, 'bash', 'sleep 1')
-  const timedOut = result(6, 'c-5', '[timed out after 1000ms]')
+  const timedOut = result(6, 'c-5', 'partial\n[timed out after 1000ms]\n[exit code: 124]')
+  assert.equal(timedOut.payload.exitCode, 124)
   assert.equal(timedOut.payload.timedOut, true)
+})
+
+test('extracts DSH stdout and stderr error lines', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-error-lines' }
+  const call = (seq, id) => mapper(session, { seq, type: 'tool/call', data: { callId: id, name: 'bash', arguments: JSON.stringify({ command: 'run' }) } }, { id: `session-error-lines:${seq}` })
+  const result = (seq, id, text) => mapper(session, { seq, type: 'tool/result', data: { callId: id, message: { content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text }] }] } } }, { id: `session-error-lines:${seq}` })
+  call(1, 'stdout-match')
+  assert.equal(result(2, 'stdout-match', 'npm ERR! missing script: build\n[exit code: 1]').payload.errorLine, 'npm ERR! missing script: build')
+  call(3, 'stderr-fallback')
+  assert.equal(result(4, 'stderr-fallback', 'out\n[stderr]\nwarning: something odd\n[exit code: 2]').payload.errorLine, 'warning: something odd')
+  call(5, 'stderr-match')
+  assert.equal(result(6, 'stderr-match', 'out\n[stderr]\nwarning: odd\nerror: denied\n[exit code: 3]').payload.errorLine, 'error: denied')
 })
 
 test('enforces all summary caps', () => {
@@ -416,6 +431,8 @@ test('redacts credentials from both command and error observations', () => {
     assert.equal(value.includes('auth-secret'), false)
     assert.equal(value.includes('quoted-pass'), false)
   }
+  assert.match(call.payload.command, /https:\/\/x\.test/)
+  assert.equal(call.payload.command, mapper(session, { seq: 3, type: 'tool/call', data: { callId: 'redact-2', name: 'bash', arguments: JSON.stringify({ command: call.payload.command }) } }, { id: 'session-redaction-fixture:3' }).payload.command)
 })
 
 test('omits precedingToolFailed after successful tool activity', () => {
