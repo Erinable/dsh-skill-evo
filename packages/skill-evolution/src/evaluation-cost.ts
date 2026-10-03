@@ -104,7 +104,7 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
     const ids = input.cases.filter(item => item.category === category).map(item => item.id)
     const entries = ids.map(id => byCase.get(id) ?? { base: [], candidate: [] })
     categories[category] = {
-      passRate: { base: casePassRate(entries, 'base'), candidate: casePassRate(entries, 'candidate') },
+      passRate: { base: passRate(entries.flatMap(item => item.base)), candidate: passRate(entries.flatMap(item => item.candidate)) },
       steps: compareMetric(entries, 'toolCalls', input.candidateContentHash, category),
       tokens: compareMetric(entries, 'tokenCost', input.candidateContentHash, category),
       modelTurns: compareMetric(entries, 'modelTurns', input.candidateContentHash, category),
@@ -116,6 +116,7 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
   const checks: CostCheck[] = []
   const original = categories['original-failure']
   const historical = categories['historical-success']
+  const historicalEntries = input.cases.filter(item => item.category === 'historical-success').map(item => byCase.get(item.id) ?? { base: [], candidate: [] })
   const originalEntries = input.cases.filter(item => item.category === 'original-failure').map(item => ({ id: item.id, ...(byCase.get(item.id) ?? { base: [], candidate: [] }) }))
   const basePassed = originalEntries.filter(item => majority(item.base)).length
   const candidatePassed = originalEntries.filter(item => majority(item.candidate)).length
@@ -145,7 +146,7 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
       }
     }
   }
-  checks.push(...historicalChecks(historical, input.policy))
+  checks.push(...historicalChecks(historical, historicalEntries, input.policy))
   checks.push(contextCheck('catalog-context', context.delta.catalogTokens, input.policy.context.maxCatalogIncreaseTokens, 'catalog context increase exceeded policy'))
   checks.push(contextCheck('load-context', context.delta.loadTokens, input.policy.context.maxLoadIncreaseTokens, 'load context increase exceeded policy'))
   return { method: 'stratified-permutation-v1', context, categories, checks, unstable }
@@ -156,9 +157,9 @@ function contextCheck(id: string, delta: number, limit: number | null, message: 
   return delta > limit ? { id, status: 'failed', detail: `delta = ${delta}, limit = ${limit}` } : { id, status: 'passed', detail: `delta = ${delta}, limit = ${limit}` }
 }
 
-function historicalChecks(category: EvaluationCostReport['categories'][EvaluationCategory], policy: NormalizedEvaluationPolicy): CostCheck[] {
+function historicalChecks(category: EvaluationCostReport['categories'][EvaluationCategory], entries: { base: EvaluationSample[]; candidate: EvaluationSample[] }[], policy: NormalizedEvaluationPolicy): CostCheck[] {
   const checks: CostCheck[] = []
-  const drop = category.passRate.base - category.passRate.candidate
+  const drop = casePassRate(entries, 'base') - casePassRate(entries, 'candidate')
   const passLimit = policy.historicalSuccess.maxPassRateDrop
   const passDetail = `schema ${policy.schema}; base = ${category.passRate.base}, candidate = ${category.passRate.candidate}, drop = ${drop}${policy.schema === 2 ? `, limit = ${passLimit}` : ''}`
   checks.push(drop > passLimit ? { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'failed', detail: passDetail } : { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'passed', detail: passDetail })
@@ -194,6 +195,7 @@ function summary(values: number[]): MetricSummary {
 
 function majority(values: EvaluationSample[]): boolean { return values.length > 0 && values.filter(item => item.passed).length * 2 > values.length }
 function itemPassCount(values: EvaluationSample[]): number { return values.filter(item => item.passed).length }
+function passRate(values: EvaluationSample[]): number { return values.length ? itemPassCount(values) / values.length : 0 }
 function casePassRate(entries: { base: EvaluationSample[]; candidate: EvaluationSample[] }[], exposure: 'base' | 'candidate'): number { return entries.length ? entries.filter(entry => majority(entry[exposure])).length / entries.length : 0 }
 function metricsFor(metric: NonNullable<NormalizedEvaluationPolicy['originalFailure']['costMetric']>): ('steps' | 'tokens')[] { return metric === 'steps' ? ['steps'] : metric === 'tokens' ? ['tokens'] : ['steps', 'tokens'] }
 function metricComparisonFor(metric: NonNullable<NormalizedEvaluationPolicy['originalFailure']['costMetric']>, category: EvaluationCostReport['categories'][EvaluationCategory]): MetricComparison | undefined { return metric === 'tokens' ? category.tokens : category.steps }

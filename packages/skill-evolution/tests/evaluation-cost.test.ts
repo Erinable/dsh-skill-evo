@@ -53,7 +53,8 @@ describe('evaluation cost analysis', () => {
 
   it('uses case-level historical pass rates and exact zero-baseline rules', () => {
     const mixed = report([...samples('h', [1, 1, 1], [1, 0, 0]).map(item => item.exposure === 'candidate' && item.sample > 0 ? { ...item, passed: false } : item)], cases(['h'], 'historical-success'))
-    expect(mixed.categories['historical-success'].passRate).toEqual({ base: 1, candidate: 0 })
+    expect(mixed.categories['historical-success'].passRate).toEqual({ base: 1, candidate: 1 / 3 })
+    expect(mixed.checks.find(check => check.id === 'historical-success-pass-rate-schema2')?.detail).toContain('drop = 1')
     const zero = report(samples('h', [0, 0, 0], [1, 1, 1]), cases(['h'], 'historical-success'))
     expect(zero.checks.find(check => check.id === 'historical-success-steps')?.status).toBe('failed')
     const bothZero = report(samples('h', [0, 0, 0], [0, 0, 0]), cases(['h'], 'historical-success'))
