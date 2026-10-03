@@ -155,9 +155,74 @@ test('correlates Skill tool requests and successful loads with a content hash', 
     assert.equal(events[1].kind, 'skill-loaded')
     assert.deepEqual(events[1].correlationIds, ['session-4:10'])
     assert.match(events[1].skill.contentHash, /^[a-f0-9]{64}$/)
+    assert.equal(events[1].payload.shadowTracked, true)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('maps context shadowing ranges and replacement results without pairing', () => {
+  const mapEvent = createDefaultEventMapper()
+  const session = { id: 'session-shadow' }
+  mapEvent(session, {
+    seq: 5,
+    type: 'tool/call',
+    data: { callId: 'c1', name: 'skill', arguments: '{"name":"git-workflow"}' },
+  }, { id: 'session-shadow:5' })
+  const loaded = mapEvent(session, {
+    seq: 6,
+    type: 'tool/result',
+    data: { callId: 'c1', message: { content: [{ type: 'tool-result', content: [{ type: 'text', text: '<skill_instructions>Use git.</skill_instructions>' }] }] } },
+  }, { id: 'session-shadow:6' })
+  const shadowed = mapEvent(session, {
+    seq: 9,
+    type: 'compaction/prune',
+    data: { shadowedSeqs: [1, 2, 3, 6, 7, 9], shadowedTokenCount: 42 },
+  }, { id: 'session-shadow:9' })
+  const summary = mapEvent(session, {
+    seq: 11,
+    type: 'compaction/summary',
+    data: { shadowedRange: [1, 8], shadowedSeqs: [2, 4], shadowedTokenCount: 12 },
+  }, { id: 'session-shadow:11' })
+  const replacement = mapEvent(session, {
+    seq: 10,
+    type: 'tool/result',
+    data: { callId: 'c1', surfaceOp: { op: 'replace' }, message: { content: [] } },
+  }, { id: 'session-shadow:10' })
+  const contextRemove = mapEvent(session, {
+    seq: 12,
+    type: 'user/message',
+    data: { source: { kind: 'plugin', plugin: 'context-remove' }, surfaceOp: { op: 'replace' }, content: [] },
+  }, { id: 'session-shadow:12' })
+  const genericReplacement = mapEvent(session, {
+    seq: 13,
+    type: 'agent/step',
+    data: { surfaceOp: { op: 'replace' } },
+  }, { id: 'session-shadow:13' })
+  assert.equal(loaded.kind, 'skill-loaded')
+  assert.equal(loaded.payload.shadowTracked, true)
+  assert.equal(shadowed.kind, 'context-shadowed')
+  assert.deepEqual(shadowed.payload.shadowedSeqRanges, [[1, 3], [6, 7], [9, 9]])
+  assert.equal(shadowed.payload.shadowedTokenCount, 42)
+  assert.equal(shadowed.payload.mechanism, 'prune')
+  assert.deepEqual(summary.payload.shadowedSeqRanges, [[2, 2], [4, 4]])
+  assert.equal(summary.payload.mechanism, 'summary')
+  assert.equal(replacement.kind, 'tool-result')
+  assert.equal(replacement.payload.surfaceReplace, true)
+  assert.deepEqual(replacement.correlationIds, [])
+  assert.equal(contextRemove.payload.surfaceReplace, true)
+  assert.equal(genericReplacement.payload.surfaceReplace, true)
+})
+
+test('marks user Skill invocation loads as shadow tracked', () => {
+  const mapEvent = createDefaultEventMapper()
+  const result = mapEvent({ id: 'session-invocation' }, {
+    seq: 1,
+    type: 'user/message',
+    data: { source: { kind: 'skill-invocation', name: 'api-debugging' }, content: [{ type: 'text', text: '<skill_instructions>Debug.</skill_instructions>' }] },
+  }, { id: 'session-invocation:1' })
+  assert.equal(result.kind, 'skill-loaded')
+  assert.equal(result.payload.shadowTracked, true)
 })
 
 test('records later human messages as user-follow-up observations', () => {
