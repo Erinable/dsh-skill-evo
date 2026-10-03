@@ -206,6 +206,8 @@ const convergesToday = new Set<string>([
   'P0 before the publication journal is written:rerun',
   'P0 before the publication journal is written:repair',
   'P1a W1 before versions/1.1.0/SKILL.md:rerun',
+  'P1b W1 before live SKILL.md:rerun',
+  'P1f W1 before versions/1.0.0/manifest.json (versioned base):rerun',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -262,7 +264,7 @@ describe('promote crash points', () => {
     expect(await latestStatus(root, 'proposal-crash')).toBe('promoted')
   })
 
-  pending('health reads a half-written promote without changing any file', async () => {
+  it('health reads a half-written promote without changing any file', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     const crashed = await publicationState(root)

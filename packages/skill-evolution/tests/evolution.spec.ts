@@ -316,8 +316,8 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     await writeFile(join(root, '.publish.json'), `${JSON.stringify({ proposalId: next.id, version: next.proposedVersion, contentHash: createContentHash(next.candidateContent) })}\n`)
 
     await expect(store.readCurrent('api-debugging')).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
-    await expect(readdir(join(root, 'versions', next.proposedVersion))).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(readFile(join(root, '.publish.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(join(root, 'versions', next.proposedVersion))).resolves.toEqual([])
+    await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('contentHash')
     await expect(store.promote(next, { scope: 'project' })).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
   })
 
@@ -425,6 +425,7 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     const deadPid = spawnSync(process.execPath, ['-e', '']).pid
     if (!deadPid) throw new Error('child pid unavailable')
     await writeFile(join(dir, '.skill-evolution', 'locks', 'api-debugging.lock'), JSON.stringify({ v: 1, token: 'dead', pid: deadPid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
+    await store.promote(proposal, { scope: 'project' })
     expect((await store.readCurrent('api-debugging'))?.content).toContain('Recovered.')
     await expect(readFile(join(root, '.publish.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(JSON.parse(await readFile(join(root, 'current.json'), 'utf8')).version).toBe('1.0.0')
@@ -445,11 +446,14 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     const root = join(dir, 'api-debugging')
     const lockPath = join(dir, '.skill-evolution', 'locks', 'api-debugging.lock')
     expect(JSON.parse(await readFile(lockPath, 'utf8')).operation).toBe('promote')
-    await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('1.0.0')
+    await expect(readFile(join(dir, '.skill-evolution', 'publications', 'api-debugging.json'), 'utf8')).resolves.toContain('1.0.0')
     child.kill('SIGKILL')
     await once(child, 'exit')
+    const recoveryBase = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const recoveryProposal = createProposal({ id: 'sigkill', skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: recoveryBase, proposedVersion: '1.0.0', candidateContent: recoveryBase.replace('Base.', 'Recovered.'), intent: 'Recover' })
+    await new SkillVersionStore(dir).promote(recoveryProposal, { scope: 'project' })
     expect((await new SkillVersionStore(dir).readCurrent('api-debugging'))?.content).toContain('Recovered.')
-    await expect(readFile(join(root, '.publish.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(dir, '.skill-evolution', 'publications', 'api-debugging.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(JSON.parse(await readFile(join(root, 'current.json'), 'utf8')).version).toBe('1.0.0')
     await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })

@@ -6,6 +6,7 @@ import { LockBusyError, withLock } from './locking.js'
 import { proposalRootId } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
+import { readPublication, removePublication, type PublicationJournal, writePublication } from './publication.js'
 
 export interface SkillVersionStoreOptions {
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
@@ -33,13 +34,12 @@ export class SkillVersionStore {
   private mutationQueue: Promise<void> = Promise.resolve()
 
   async readCurrent(skillName: string): Promise<CurrentSkill | undefined> {
-    return this.withMutationLock(skillName, 'read-current', () => this.readCurrentUnlocked(skillName))
+    return this.readCurrentUnlocked(skillName)
   }
 
   private async readCurrentUnlocked(skillName: string): Promise<CurrentSkill | undefined> {
     assertSkillName(skillName)
     const directory = skillDirectory(this.root, skillName)
-    await recoverPublication(directory, this.layout().skillVersionsDir(skillName), this.options.invalidate)
     const contentPath = join(directory, 'SKILL.md')
     const content = await readTextIfPresent(contentPath)
     if (content === undefined) return undefined
@@ -82,7 +82,10 @@ export class SkillVersionStore {
     },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
-    return this.withMutationLock(proposal.skillName, 'promote', () => this.promoteUnlocked(proposal, options))
+    return this.withMutationLock(proposal.skillName, 'promote', async () => {
+      await this.recoverPendingPublication(proposal.skillName)
+      return this.promoteUnlocked(proposal, options)
+    })
   }
 
   private async promoteUnlocked(
@@ -96,6 +99,11 @@ export class SkillVersionStore {
     assertVersion(proposal.proposedVersion)
     const expected = options.expectedBase ?? proposal.expectedBase
     const current = await this.readCurrentUnlocked(proposal.skillName)
+    const candidateHash = createContentHash(proposal.candidateContent)
+    if (current?.manifest.version === proposal.proposedVersion && current.manifest.contentHash === candidateHash) {
+      const existing = await readVersionIfPresent(join(this.layout().skillVersionsDir(proposal.skillName), proposal.proposedVersion))
+      if (existing !== undefined && existing.contentHash === candidateHash) return { manifest: existing.manifest, path: join(this.layout().skillVersionsDir(proposal.skillName), proposal.proposedVersion, 'SKILL.md') }
+    }
     assertExpectedBase(expected, current)
     if (current !== undefined && current.manifest.version !== 'unversioned' && current.manifest.version !== proposal.baseVersion) {
       throw new Error(`stale Skill base version for "${proposal.skillName}": expected ${proposal.baseVersion}, actual ${current.manifest.version}`)
@@ -133,22 +141,11 @@ export class SkillVersionStore {
     }
     await this.writeCandidate(proposal)
     await mkdir(versionsDirectory, { recursive: true })
-    await writeAtomic(join(directory, '.publish.json'), `${JSON.stringify({ proposalId: proposal.id, version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) })}\n`)
-    await mkdir(versionDirectory, { recursive: false })
-    if (current !== undefined && current.manifest.version !== 'unversioned' && previous === undefined) {
-      const previousDirectory = join(versionsDirectory, current.manifest.version)
-      await mkdir(previousDirectory, { recursive: true })
-      await writeAtomic(join(previousDirectory, 'SKILL.md'), current.content)
-      await writeAtomic(join(previousDirectory, 'manifest.json'), `${JSON.stringify(current.manifest, null, 2)}\n`)
-    }
-    const manifest = this.manifestFor(proposal, options.scope, 'stable')
-    await writeAtomic(join(versionDirectory, 'SKILL.md'), proposal.candidateContent)
-    await writeAtomic(join(versionDirectory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-    await writeAtomic(join(directory, 'SKILL.md'), proposal.candidateContent)
-    await writeAtomic(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-    await writeAtomic(join(directory, 'current.json'), `${JSON.stringify({ version: manifest.version, contentHash: manifest.contentHash }, null, 2)}\n`)
-    await this.options.invalidate?.(proposal.skillName, options.scope)
-    await unlink(join(directory, '.publish.json')).catch(() => undefined)
+    const startedAt = this.clock()
+    const journal: PublicationJournal = { v: 1, operation: 'promote', skillName: proposal.skillName, scope: options.scope, proposalId: proposalRootId(proposal.id), from: { version: current?.manifest.version ?? 'unversioned', contentHash: current?.manifest.contentHash ?? proposal.expectedBase.contentHash }, to: { version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) }, startedAt }
+    await writePublication(this.layout().publicationPath(proposal.skillName), journal)
+    await this.completePublication(journal)
+    const manifest = this.manifestFor(proposal, options.scope, 'stable', startedAt)
     return { manifest, path: join(directory, 'SKILL.md') }
   }
 
@@ -158,7 +155,10 @@ export class SkillVersionStore {
     options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
-    return this.withMutationLock(skillName, 'rollback', () => this.rollbackUnlocked(skillName, version, options))
+    return this.withMutationLock(skillName, 'rollback', async () => {
+      await this.recoverPendingPublication(skillName)
+      return this.rollbackUnlocked(skillName, version, options)
+    })
   }
 
   private async rollbackUnlocked(
@@ -185,10 +185,9 @@ export class SkillVersionStore {
       scope: options.scope,
       updatedAt: this.clock(),
     }
-    await writeAtomic(join(directory, 'SKILL.md'), content)
-    await writeAtomic(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-    await writeAtomic(join(directory, 'current.json'), `${JSON.stringify({ version: manifest.version, contentHash: manifest.contentHash }, null, 2)}\n`)
-    await this.options.invalidate?.(skillName, options.scope)
+    const journal: PublicationJournal = { v: 1, operation: 'rollback', skillName, scope: options.scope, from: { version: current?.manifest.version ?? 'unversioned', contentHash: current?.manifest.contentHash ?? createContentHash(content) }, to: { version: manifest.version, contentHash: manifest.contentHash }, startedAt: this.clock() }
+    await writePublication(this.layout().publicationPath(skillName), journal)
+    await this.completePublication(journal)
     return { manifest, path: join(directory, 'SKILL.md') }
   }
 
@@ -210,7 +209,7 @@ export class SkillVersionStore {
     for (const entry of entries) {
       if (!entry.isDirectory() || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.name)) continue
       const directory = join(this.root, entry.name)
-      const current = await this.readCurrent(entry.name)
+      const current = await this.readCurrentUnlocked(entry.name)
       const pointer = await readJsonIfPresent<{ version?: string; contentHash?: string }>(join(directory, 'current.json'))
       if (current === undefined) continue
       if (await readTextIfPresent(join(directory, '.publish.json')) !== undefined) issues.push(join(directory, '.publish.json'))
@@ -241,8 +240,8 @@ export class SkillVersionStore {
     return run
   }
 
-  private manifestFor(proposal: SkillProposal, scope: PublicationScope, status: SkillManifest['status']): SkillManifest {
-    const now = this.clock()
+  private manifestFor(proposal: SkillProposal, scope: PublicationScope, status: SkillManifest['status'], at = this.clock()): SkillManifest {
+    const now = at
     return {
       name: proposal.skillName,
       version: proposal.proposedVersion,
@@ -254,6 +253,55 @@ export class SkillVersionStore {
       createdAt: now,
       updatedAt: now,
     }
+  }
+
+  private async recoverPendingPublication(skillName: string): Promise<void> {
+    const path = this.layout().publicationPath(skillName)
+    const journal = await readPublication(path)
+    if (journal !== undefined) await this.completePublication(journal)
+    await recoverPublication(skillDirectory(this.root, skillName), this.layout().skillVersionsDir(skillName), this.options.invalidate)
+  }
+
+  private async completePublication(journal: PublicationJournal): Promise<void> {
+    const directory = skillDirectory(this.root, journal.skillName)
+    const versions = this.layout().skillVersionsDir(journal.skillName)
+    const source = journal.operation === 'promote' ? join(this.layout().candidateDir(journal.proposalId ?? ''), 'SKILL.md') : join(versions, journal.to.version, 'SKILL.md')
+    const content = await readTextIfPresent(source)
+    if (content === undefined || createContentHash(content) !== journal.to.contentHash) throw new Error(`publication content does not match journal for "${journal.skillName}"`)
+    if (journal.operation === 'promote') {
+      await mkdir(versions, { recursive: true })
+      const current = await readTextIfPresent(join(directory, 'SKILL.md'))
+      if (journal.from.version !== 'unversioned' && current !== undefined && createContentHash(current) === journal.from.contentHash) {
+        const previous = join(versions, journal.from.version)
+        await mkdir(previous, { recursive: true })
+        if (await readTextIfPresent(join(previous, 'SKILL.md')) === undefined) await writeAtomic(join(previous, 'SKILL.md'), current)
+        if (await readTextIfPresent(join(previous, 'manifest.json')) === undefined) {
+          const oldManifest = await readJsonIfPresent<SkillManifest>(join(directory, 'manifest.json'))
+          if (oldManifest !== undefined) await writeAtomic(join(previous, 'manifest.json'), `${JSON.stringify(oldManifest, null, 2)}\n`)
+        }
+      }
+      const target = join(versions, journal.to.version)
+      await mkdir(target, { recursive: true })
+      const manifest = await this.manifestForJournal(journal, 'stable')
+      await writeIfDifferent(join(target, 'SKILL.md'), content)
+      await writeIfDifferent(join(target, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+      await writeIfDifferent(join(directory, 'SKILL.md'), content)
+      await writeIfDifferent(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+      await writeIfDifferent(join(directory, 'current.json'), `${JSON.stringify({ version: manifest.version, contentHash: manifest.contentHash }, null, 2)}\n`)
+    } else {
+      const manifest = await readJsonIfPresent<SkillManifest>(join(versions, journal.to.version, 'manifest.json'))
+      if (manifest === undefined) throw new Error(`missing manifest for Skill version ${journal.to.version}`)
+      await writeIfDifferent(join(directory, 'SKILL.md'), content)
+      await writeIfDifferent(join(directory, 'manifest.json'), `${JSON.stringify({ ...manifest, scope: journal.scope, status: 'stable', updatedAt: journal.startedAt }, null, 2)}\n`)
+      await writeIfDifferent(join(directory, 'current.json'), `${JSON.stringify({ version: journal.to.version, contentHash: journal.to.contentHash }, null, 2)}\n`)
+    }
+    if (journal.scope !== 'explicit-only') await this.options.invalidate?.(journal.skillName, journal.scope)
+    await removePublication(this.layout().publicationPath(journal.skillName))
+  }
+
+  private async manifestForJournal(journal: PublicationJournal, status: SkillManifest['status']): Promise<SkillManifest> {
+    const existing = await readJsonIfPresent<SkillManifest>(join(skillDirectory(this.root, journal.skillName), 'manifest.json'))
+    return { ...(existing ?? { name: journal.skillName, createdBy: 'human' as const }), version: journal.to.version, contentHash: journal.to.contentHash, status, scope: journal.scope, createdAt: existing?.createdAt ?? journal.startedAt, updatedAt: journal.startedAt }
   }
 
   private clock(): string {
@@ -341,6 +389,11 @@ async function writeAtomic(path: string, content: string): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`
   await writeFile(temporary, content, 'utf8')
   await rename(temporary, path)
+}
+
+async function writeIfDifferent(path: string, content: string): Promise<void> {
+  if (await readTextIfPresent(path) === content) return
+  await writeAtomic(path, content)
 }
 
 function isMissingFile(error: unknown): boolean {

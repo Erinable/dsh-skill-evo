@@ -32,6 +32,8 @@ export interface EvolutionLayout {
   readonly candidatesDir: string
   readonly proposalReportsDir: string
   readonly evaluationReportsDir: string
+  readonly publicationsDir: string
+  readonly publicationPath: (skillName: string) => string
   readonly stores: readonly StoreDescriptor[]
   readonly observations: StoreDescriptor
   readonly candidateDir: (proposalRootId: string) => string
@@ -68,6 +70,8 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     candidatesDir: join(stateDir, 'candidates'),
     proposalReportsDir: join(stateDir, 'proposals'),
     evaluationReportsDir: join(stateDir, 'evaluations'),
+    publicationsDir: join(stateDir, 'publications'),
+    publicationPath: (skillName: string) => join(stateDir, 'publications', `${skillName}.json`),
     stores,
     observations: stores[0],
     candidateDir: (proposalRootId: string) => join(stateDir, 'candidates', encodeURIComponent(proposalRootId)),
