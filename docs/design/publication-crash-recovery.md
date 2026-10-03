@@ -1,0 +1,648 @@
+> 状态：SKIL-124 设计提案（父 issue SKIL-122）。决策见 ADR-0032（`proposed`，待成员确认）。台账转移与 record id 依赖 SKIL-121（设计 SKIL-123，PR #78 已合并，ADR-0021 已接受）。
+> 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
+
+本文要解决三件事。第一，Promote / Rollback 在任一写入点崩溃后，重跑或 repair 都能收敛到「成功跑过一次」的状态。第二，两份晋升校验收成一份。第三，health 能报告没做完的发布，repair 能把它做完。复现基线是 `origin/main` @ `2a442af`；返工时合入了 `6accc8b`（只有 SKIL-123 的文档），重跑结果不变。本文只出设计，不写实现代码；随 PR 附带的复现测试 `packages/skill-evolution/tests/publication-crash-recovery.spec.ts` 同时是回归测试。
+
+## 1. 现状
+
+### 1.1 读了什么
+
+- 源码：
+  - `packages/skill-evolution/src/`：`service.ts`、`operations.ts`、`lifecycle.ts`、`proposal.ts`、`records.ts`、`repair.ts`（全文）。
+  - 按需读了 `health.ts`、`state-root.ts:20-77`、`jsonl.ts`、`locking.ts`（导出与 `withLock`）、`metrics.ts`、`index.ts`。
+- 调用方：
+  - `packages/dsh-bundle/index.js:196-197`（health / repair）
+  - `packages/skill-evolution/bin/dsh-skill-evolution.mjs:89,177`
+  - `packages/dsh-adapter/tests/adapter.spec.ts:161-190`
+- 现有测试：
+  - `tests/evolution.spec.ts:175-375`：发布、journal 恢复、SIGKILL、锁。
+  - `tests/evolution.spec.ts:482-571`：`service.promote`、artifact 校验。
+  - `tests/cli.spec.mjs:66-110`。
+- 文档：
+  - `CONTEXT.md`（Proposal 与台账、评估与发布两节）。
+  - ADR-0001、0002、0004、0005、0006、0007、0016、0020。
+  - `docs/design/unified-lock-protocol.md`、`specs/skil-46-unified-lock-protocol/tasks.md` P1/P1b。
+  - SKIL-123 的 PR #78（已合并，`origin/main` @ `6accc8b`）：`docs/design/proposal-ledger-transition.md`、ADR-0021（`accepted`）。
+  - 返工时补读：`proposal.ts:23-36` 转移表、`service.ts:343-359` reject / defer、`operations.ts:144-156` `reviewProposal`、`lifecycle.ts:35-36,213-235` 读路径取锁、`locking.ts:40-95`。
+- 基线 `npm test`（`packages/skill-evolution`）：`Test Files  12 passed (12)`、`Tests  134 passed (134)`。
+
+### 1.2 写入点
+
+**Promote**：`promoteProposal` 先检查状态、加载 artifact、做 `precheckPromotion`（`operations.ts:158-167`），再调用 `service.promote`（`service.ts:247-279`），依次写入：
+
+| 写入点 | 内容 | 位置 | id |
+|---|---|---|---|
+| W1 | `versions.promote`，持发布锁：写候选 → `.publish.json` → mkdir `versions/<to>` →（旧版本是有版本号但没快照时）快照 `versions/<from>/SKILL.md`、`manifest.json` → `versions/<to>/SKILL.md`、`manifest.json` → live `SKILL.md`、`manifest.json`、`current.json` → `invalidate` → 删 `.publish.json` | `lifecycle.ts:88-153` | — |
+| W2 | Observation `adoption-applied` | `service.ts:260` | `adoption:<root>` |
+| W3 | Ledger record | `service.ts:277` | `<root>:promoted` |
+| W4 | transition decision | `service.ts:278` → `:361-385` | `decision:transition:<root>:promoted:<updatedAt>`，`updatedAt` 取自 `new Date()` |
+
+W2–W4 在发布锁之外写。
+
+**Rollback**：`service.rollback`（`service.ts:304-341`）先 `readCurrent`，拿到的是回滚前的版本 `before`，然后依次写入：
+
+| 写入点 | 内容 | 位置 | id |
+|---|---|---|---|
+| R1 | `versions.rollback`，持发布锁：live `SKILL.md`、`manifest.json`、`current.json` → `invalidate`。**没有 journal** | `lifecycle.ts:164-193` | — |
+| R2 | Observation | `service.ts:310` | `rollback:<skill>:<ver>:<Date.now()>` |
+| R3 | Skill 级 rollback decision | `service.ts:326` | `decision:rollback:<skill>:<ver>:<Date.now()>` |
+| R4 | Ledger record | `service.ts:338` | `<root>:rolled-back` |
+| R5 | transition decision | `service.ts:339` | 同 W4 |
+
+R4 要回滚的是哪个 Proposal，由 `latestPromoted` 决定（`service.ts:307`）：它按 `proposedVersion === before.manifest.version` 在最新状态里查找。
+
+现有恢复只覆盖 W1。`readCurrentUnlocked` 每次读都会调用 `recoverPublication`（`lifecycle.ts:39-42,309-338`）：
+
+- 版本目录不完整时，删除版本目录和 journal。
+- 版本目录完整、hash 对得上时，把 live 三个文件前滚，然后删掉 journal。
+
+所以任何读路径都可能写文件，`healthReport` 也是（它经 `healthIssues` 调用 `readCurrent`，见 `lifecycle.ts:206-225`）。`repair()`（`service.ts:151-163`）只做四件事：回收锁、修 JSONL、检查 manifest、刷新投影。它不碰发布。
+
+### 1.3 复现
+
+复现测试是 `tests/publication-crash-recovery.spec.ts`，它按三种方式注入崩溃：
+
+- `file`：拦截 `writeFile` 写目标文件的 `.tmp-` 临时文件，此时目标文件还没被 rename 覆盖，等同于在这次原子写之前崩溃。
+- `invalidate`：让 `invalidate` 回调抛错。
+- `call`：让某个 store 第 n 次 `append` 抛错。
+
+每个崩溃点跑两条测试。「重跑」是崩溃后再调一次同样的 `promoteProposal` / `rollbackSkill`；「repair」是崩溃后只调 `service.repair()`。两条测试都把结果和另一个目录里「成功跑过一次」的参考状态逐项比较。比较范围是 Skill 目录下的全部文件、journal 目录、`proposals` / `decisions` / `observations` 三个 JSONL，时间戳和毫秒 id 已归一化。
+
+`beforeCommit` 行（P0）的 repair 期望的是操作之前的状态。今天会失败的行标成 `it.fails`，设 `EXPECT_PUBLICATION_RECOVERY=1` 可以当普通测试跑，看到今天的实际失败。
+
+```
+$ npm test                     # packages/skill-evolution
+ Test Files  13 passed (13)
+      Tests  148 passed | 38 expected fail (186)
+
+$ EXPECT_PUBLICATION_RECOVERY=1 npx vitest run tests/publication-crash-recovery.spec.ts
+      Tests  38 failed | 3 passed (41)
+```
+
+今天能收敛的只有 3 条：P0 的重跑、P0 的 repair、P1a 的重跑。P1a 能收敛，是因为 `recoverPublication` 会删掉空的版本目录。
+
+**Promote**（场景：Skill 没有 manifest，accepted 的 `proposal-crash` 把 1.1.0 发布出去；P1f 改用已有 1.0.0 manifest 的 Skill）
+
+| 崩溃点 | 崩溃后 health | 重跑 | 只跑 repair |
+|---|---|---|---|
+| P0 写 journal 之前 | — | 收敛 | 收敛（本来就什么都没写） |
+| P1a `versions/1.1.0/SKILL.md` 之前 | `skillIssues` 只有 `current.json`，状态 `accepted` | 收敛 | 不收敛：留着 `.publish.json`，live 没有 manifest 和 `current.json` |
+| P1b live `SKILL.md` 之前 | `skillIssues: []`，`readCurrent` 已是 1.1.0，状态 `accepted` | **`stale-base`** | 不收敛：缺 Ledger record、decision、Observation |
+| P1c live `manifest.json` 之前 | 同上 | **`stale-base`** | 同上 |
+| P1d `current.json` 之前 | 同上 | **`stale-base`** | 同上 |
+| P1e `invalidate` 抛错 | 同上 | **`stale-base`** | 同上 |
+| P1f 快照 `versions/1.0.0/manifest.json` 之前 | `current.json`、`versions/1.0.0` 两条 | **卡死**：`incomplete published Skill version at .../1.0.0` | 不收敛：快照缺一半，live 未写 |
+| P2 W1 之后、Observation 之前 | `[]`，1.1.0，`accepted` | **`stale-base`** | 不收敛：缺 W2–W4 |
+| P3 W2 之后、Ledger record 之前 | 同上 | **`stale-base`** | 不收敛：缺 W3、W4 |
+| P4 W3 之后、decision 之前 | `[]`，1.1.0，状态已是 `promoted` | **`invalid-transition`**：`must be accepted before promotion` | 不收敛：缺 W4 |
+
+扫描推断的「卡在 `stale-base`」在 P1b–P3 得到证实。另外还有两种卡法：P1f 卡在不完整的快照，P4 卡在转移表。health 在所有行都不报告「有一次 Promote 没做完」；P1b–P3 时 live Skill 已经是新版本，Proposal 却还停在 `accepted`。
+
+**Rollback**（场景：`proposal-one` 发布 1.0.0，`proposal-two` 发布 1.1.0，然后回滚到 1.0.0）
+
+| 崩溃点 | 崩溃后 health | 重跑 | 只跑 repair |
+|---|---|---|---|
+| R1a live `manifest.json` 之前 | 只有 `current.json` | 返回成功但状态错：`fromContentHash` 取的是已经回滚的 live 正文 | 不收敛：manifest、`current.json` 仍是 1.1.0 |
+| R1b `current.json` 之前 | 只有 `current.json` | **标错 Proposal**：重跑时 current 已是 1.0.0，`latestPromoted` 选中 `proposal-one`，把它标成 `rolled-back`，`proposal-two` 仍是 `promoted` | 不收敛：`current.json` 仍是 1.1.0，缺全部记录 |
+| R1c `invalidate` 抛错 | `[]` | 同 R1b | 不收敛：缺全部记录 |
+| R2 Observation 之前 | `[]` | 同 R1b | 同上 |
+| R3 rollback decision 之前 | `[]` | 同 R1b，另外 Observation 多一条（新的 `Date.now()` id） | 缺 R3–R5 |
+| R4 Ledger record 之前 | `[]` | 同 R3 | 缺 R4、R5 |
+| R5 transition decision 之前 | `[]`，`proposal-two` 已 `rolled-back` | 多一条 `proposal-one:rolled-back`，缺 `proposal-two` 的 decision，Observation 4 条（应为 3） | 缺 R5 |
+
+Rollback 没有 journal。R1 之后，「这次回滚的是谁、从哪个版本回滚」只能从 live 文件重新推断，而 live 文件已经被改写，所以每次重跑都会推错。「再回滚到已是 current 的版本」也不是 no-op，会再写一轮记录（测试 `a second rollback to the version that is already current writes nothing`）。
+
+**读路径会写文件**：P1c 之后调一次 `healthReport()`，Skill 目录从 4 个文件变成 5 个，因为 `recoverPublication` 前滚了 live 文件（测试 `health reads a half-written promote without changing any file`）。
+
+**读路径要取发布锁**：`readCurrent` 经 `withMutationLock` 以 `waitMs: 0` 取发布锁（`lifecycle.ts:35-36,227-231`），`healthIssues` 调的就是它（`lifecycle.ts:213`）。存活进程持锁时，`healthReport()` 和 `readCurrent` 都直接抛 `Skill publication already in progress for "api-debugging" (pid …, operation promote)`（测试 `H5 …`）。这条是 Reviewer 在评审中先复现的。
+
+**台账不受发布锁保护**：`service.rejectProposal`（`service.ts:343-350`）不取发布锁。P1c 崩溃后 reject 同一个 Proposal 会成功，写入 `<root>:rejected`，而 live 正文已经是 1.1.0（测试 `G1 …`）。设计里第一版的「journal 之后只前滚」因此守不住，2.1 第 8、9 步就是为这一条补的。
+
+### 1.4 两份晋升校验
+
+| 检查 | `service.requireEvaluationArtifact`（`service.ts:285-302`） | `operations.precheckPromotion`（`operations.ts:252-267`） | `lifecycle.promoteUnlocked` |
+|---|---|---|---|
+| 状态 | `assertCanTransition(proposal.status, 'promoted')`，看的是传进来的对象 | 按 ref 从台账取最新记录，要求 `accepted` | — |
+| artifact 来源 | 必须带 `artifactId`；只比 `passedGate`、`candidateContentHash` | 支持 `--evaluation` 文件、传入对象，或最新未过期的 artifact；`sameArtifactEvidence` 比 15 个字段 | — |
+| 归属 | 三个 id 都比 | 同 | — |
+| Base hash | current、expectedBase、artifact 三者相等 | 同 | `assertExpectedBase` |
+| **Base version** | 不查 | **不查** | 查（`lifecycle.ts:100-102`），抛普通 `Error` |
+| candidate hash | artifact 与 result 都比 | 同 | — |
+| **policy** | **只比 artifact** | artifact 与 result 都比 | — |
+| 过期 | 查 | 查 | — |
+| **caseIds** | **只在 `comparisonCaseIds` 非空时比** | 总是比 | — |
+| gate | 在 `promote` 里只查 result（`service.ts:257`） | artifact 与 result 都查 | — |
+| 文档 / 变更校验 | 不查 | 查 | 查 |
+| 错误类型 | 普通 `Error`，没有 code | `OperationError`，带 code | 普通 `Error` |
+
+两处分歧已复现：
+
+- base version 过期时，dry-run 通过，真 Promote 在 lifecycle 抛错。见测试 `dry-run rejects a base version that real promotion rejects`。
+- result 的 policy 与当前策略不符时，`promoteProposal` 报 `evaluation-mismatch`，`service.promote` 直接发布。见测试 `service.promote and promoteProposal reject the same inconsistent artifact with the same code`。
+
+## 2. 设计问题与选项
+
+### 2.1 恢复协议（ADR-0032）
+
+**A. 按写入顺序幂等，不加 journal**
+
+每一步都写成可以重复执行，重跑时逐步判断「这一步做过没有」，做过就跳过：
+
+- W1：重跑时如果 live 已经等于候选 hash、版本号等于 `proposedVersion`、Proposal 仍是 `accepted`，就把它当成「W1 已完成」，不再报 `stale-base`。
+- W2–W4：id 都是确定的（`adoption:<root>`；Ledger record 与 decision 依 SKIL-121），`append` 返回 `false` 就算做过。
+- 重跑时 Proposal 已是 `promoted`、current 等于它的版本，就补写缺的 decision 后返回成功。
+- repair 靠推断：扫描所有 `accepted` 或「`promoted` 但缺 decision」的 Proposal，与 live hash 对照，推断出哪一次 Promote 没做完。
+
+取舍：
+
+- 复杂度：不需要新的文件格式，但每个崩溃点都要一条推断规则，分散在 promote、rollback、repair 三处。
+- 可测性：推断规则要逐条测；两个 Proposal 的候选正文相同时，推断会有歧义。
+- Rollback 做不到。R1 之后，「回滚前是哪个版本、回滚的是哪个 Proposal」已经被覆盖（§1.3 R1b–R5 全部推错）。R2、R3 的 id 里带的 `Date.now()` 在重跑时也拿不回来。要补上这两样，就得在 R1 之前先把它们写进某个 store，这实际上就是把 journal 拆散写进三个 store，而且没有一个统一的「做完了」标记。
+- health 没法直接报告「P2–P4 有一次 Promote 没做完」，也要靠推断。
+- 可逆性、迁移成本：没有新格式，所以最容易回退，但 Rollback 的缺口补不上。
+
+**B. 先写 intent journal，再提交，由操作本身、同一 Skill 的下一次维护操作或 repair 收尾（推荐）**
+
+1. **提交点**：持发布锁、通过晋升校验（2.2）之后，第一件写入的事就是 journal `.skill-evolution/publications/<skill>.json`（`writeAtomic`）。journal 写成之前崩溃，就等于什么都没发生（P0）；写成之后，任何恢复都只**前滚**，不回退。写 journal 之前，按今天的做法先写候选目录（`writeCandidate`）。它的内容完全由 Proposal 决定，重复写的结果相同，而且候选目录在 Promote 之前本来就不可见。
+2. **journal 内容**：只放完成这次操作需要的确定输入，不放正文。
+
+   ```ts
+   interface PublicationJournal {
+     readonly v: 1
+     readonly operation: 'promote' | 'rollback'
+     readonly skillName: string
+     readonly scope: PublicationScope    // explicit-only 时文件步骤为空，只写记录（与今天 `lifecycle.ts:111-117` 一致）
+     readonly proposalId?: string        // promote：被发布的 Proposal root（必填）；rollback：被回滚的 Proposal root（可缺，取法见第 10 步）
+     readonly from: { readonly version: string; readonly contentHash: string }
+     readonly to: { readonly version: string; readonly contentHash: string }
+     readonly startedAt: string          // 所有派生记录的时间与带时间的 id 都取自这里
+     readonly record?: {                 // 由 service 发起时才有；直接调用 SkillVersionStore 时缺省，只做文件步骤
+       readonly fromRecordId?: string    // 台账转移的出发记录：promote 为 `<root>:accepted`，rollback 为 `proposalId` 的最新记录（第 10 步）
+       readonly targetProposalId?: string // 仅 rollback：目标版本对应的 Proposal root（第 10 步）
+       readonly reason: string
+       readonly actor: string
+       readonly policyVersion?: string
+       readonly evidenceIds: readonly string[]
+     }
+   }
+   ```
+
+   正文从已有的持久文件中取，并用 journal 中的 hash 校验。Promote 从候选目录 `candidates/<root>/SKILL.md` 取，今天就是在 journal 之前写入（`lifecycle.ts:134`）。Rollback 从 `versions/<to>/SKILL.md` 取。hash 不符就停止，保留 journal，报告 `failed`。
+3. **收尾函数 `completePublication(journal)`** 按固定顺序执行，每一步都是「先比较、不同才写」或「按确定 id 追加」：
+   - Promote：
+     1. 快照旧版本。仅当 `from.version` 有版本号、快照不完整，并且 live hash 等于 `from.contentHash` 时才写。
+     2. `versions/<to>/SKILL.md`、`manifest.json`。
+     3. live `SKILL.md`、`manifest.json`、`current.json`。
+     4. `invalidate`。
+     5. Observation `adoption:<root>`。
+     6. 台账转移 `fromRecordId → promoted`，写 Ledger record 和 decision（SKIL-121）。
+     7. 删除 journal。
+   - Rollback：
+     1. live `SKILL.md`、`manifest.json`、`current.json`。
+     2. `invalidate`。
+     3. Observation `rollback:<skill>:<to>:<ms(startedAt)>`。
+     4. decision `decision:rollback:<skill>:<to>:<ms(startedAt)>`。
+     5. 有 `fromRecordId` 时做台账转移 `→ rolled-back`。
+     6. 删除 journal。
+
+   Observation、decision、台账转移只在 journal 带 `record` 时写。直接调用 `SkillVersionStore.promote` / `rollback` 的 journal 不带 `record`，只做文件步骤，这与今天 `SkillVersionStore` 不写 store 的行为一致。
+
+   manifest 的 `createdAt` / `updatedAt` 同样取 `startedAt`。这样重跑写出来的字节和第一次完全一样，比较时就是「相同，不写」。
+4. **谁来收尾**：
+   - 操作本身：正常路径就是写 journal 后调用 `completePublication`。
+   - 同一 Skill 的下一次 Promote / Rollback：拿到发布锁后，先对该 Skill 的 journal 执行 `completePublication`，再做自己的事。收尾失败时各自怎么办见第 9 步；Rollback 不会被旧 journal 挡住。`propose` / `evaluate` 不取发布锁，也不收尾；它们读到的是 live 状态，之后的 Promote 会先收尾再校验，所以不会基于过期的 base 发布。
+   - `repair()`（2.4）。
+   - 出发状态是 `accepted` 或 `promoted` 的其他台账转移（今天只有 reject），见第 8 步。
+   - **纯读不收尾，也不取发布锁**：`readCurrent`、`healthIssues`、`healthReport`、`metrics` 都不写文件，也不取发布锁。`readCurrent` 不再经过 `withMutationLock`（`lifecycle.ts:35-36`），`readCurrentUnlocked` 去掉 `recoverPublication` 调用，journal 未完成时照实返回 live 状态。
+     - 读路径取锁，原本只是为了把「读时恢复」的写入串行化。恢复挪走以后，锁对读已经没有用处。live 的每个文件都是 `writeAtomic`（临时文件 + rename）整体替换，读到的每个文件都是完整的某一版。
+     - 代价是：发布进行中读到的可能是「正文新、manifest 旧」的组合，和崩溃之后的状态一样。`readCurrentUnlocked` 在 manifest hash 与正文不符时已经按正文重算 hash（`lifecycle.ts:57-62`）。以这个组合为 base 生成的 Proposal，Promote 时会在锁内的 `checkPromotion` 里因 base version 不符报 `stale-base`，不会基于它发布出去。
+     - 读路径不取锁，也就不再顺带回收死锁。死锁由下一次 Promote / Rollback 的 `withLock`（`locking.ts:92`）或 repair 的 sweep 回收（ADR-0007）。
+     - 锁被持有时，propose、evaluate、dry-run、health 照常读，不再报「already in progress」。
+5. **重跑即成功**：
+   - `promoteProposal` / `service.promote` 收尾后，如果该 Proposal 最新是 `promoted`，并且 current 等于它的 `proposedVersion` 和候选 hash，就不写任何东西，直接返回 `promoted: true`。这个判断排在校验之前，所以 artifact 在崩溃后过期也不影响重跑。
+   - `rollback` 收尾后，如果 current 已经是目标版本和 hash，就不写任何东西，直接返回。
+   - 这两条让 P4 和 R1–R5 的重跑不再报 `invalid-transition`，也不再标错 Proposal。
+6. **锁**：从写 journal 到删除 journal，全程持发布锁，W2–W4 也挪进锁内。锁顺序固定为「发布锁 → store 锁」，没有任何路径反向加锁。repair 在 JSONL 修完、没有持 store 锁的时候再逐个 Skill 取发布锁。
+7. **旧 journal**：`<skill>/.publish.json`（`{proposalId, version, contentHash}`）只读不写。
+   - repair 或下一次维护操作遇到旧 journal，先按今天的 `recoverPublication` 规则处理文件：版本目录不完整就删目录，hash 对上就前滚 live。
+   - 然后在台账里找 `proposalId`。它仍是 `accepted`、候选 hash 相符时，补 W2–W4。
+   - 找不到或不符时只处理文件，报告 `legacy: true`。
+   - 版本号不合法、路径越界的旧 journal 原样保留，报告 `failed`。今天「不删不可信 journal」的保护不变（`evolution.spec.ts:213-234`）。这种旧 journal 不挡 Promote / Rollback，这与今天一致：今天 `recoverPublication` 遇到它直接返回（`lifecycle.ts:315-322`）。
+   - 旧 journal 只有 `{proposalId, version, contentHash}`，补 W2–W4 需要的其余输入按下面的规则取，重跑时取到的值不变：
+     - `startedAt`：旧 journal 文件的 mtime。收尾完成之前文件不动，所以 mtime 不变。
+     - `fromRecordId`：该 root 的最新记录，要求是 `accepted`。
+     - `policyVersion`、`evidenceIds`：该 Proposal 最新一条 `candidateContentHash` 相符的持久 artifact 的 `result.policyVersion`、`caseResults[].caseId`，不看是否过期；找不到时 `policyVersion` 缺省，`evidenceIds` 为空。
+     - `reason`：`recovered legacy publication`；`actor`：service 的 `operator`，与今天 `recordDecision` 相同（`service.ts:378`）。
+8. **台账守卫**：journal 存在期间，它的 `fromRecordId` 必须一直是该 root 的最新记录。journal 的 `fromRecordId` 只可能是 `accepted`（Promote）或 `promoted`（Rollback），所以守卫只针对这两个出发状态：
+   - 出发状态是 `accepted` 或 `promoted` 的台账转移，一律在该 Proposal 所属 Skill 的发布锁内执行，并且先收尾该 Skill 的 journal。转移表里这样的边有三条：`accepted → promoted`、`promoted → rolled-back` 本来就在 Promote / Rollback 里，剩下的 `accepted → rejected`（`proposal.ts:31`）就是 `service.rejectProposal`（`service.ts:343`）。
+   - `rejectProposal` 取锁时最多等 5s（`withLock` 的默认值）；超时后抛出和 Promote 一样的「already in progress」错误。
+   - 收尾之后，按 root 从台账重新取最新记录，以它为准做转移校验，不用调用方传进来的对象；root 在台账里还没有记录时，沿用传入的对象（与 ADR-0021 设计稿 2.4 的豁免一致）。上面的场景里收尾会把 Proposal 转成 `promoted`，reject 随即失败：SKIL-121 落地后是 `conflict`，之前是 `invalid-transition`（`promoted → rejected` 不在转移表里）。结果和「先完成 Promote、再尝试 reject」完全一样。提交点之后只前滚，所以要撤回这次发布，走 Rollback。
+   - 守卫放在 service 层，不进 `ProposalLedger`：台账不依赖发布，依赖方向仍是 `publication.ts → ledger`。
+   - 不崩溃时，`publishPromotion` 的第 7 步（`checkPromotion` 看到 `accepted`）到第 9 步（写台账）全程持锁，reject 插不进来。
+   - 守卫防不住协议之外的写入：部署期间还没升级的旧进程直接 reject，或者有人手动往 `proposals.jsonl` 追加记录。这些情况交给第 9 步的「不可完成」处理。
+9. **收尾失败**：`completePublication` 的失败分两类。
+   - **可重试**：I/O 错误、store 锁拿不到、`invalidate` 抛错。这类失败 journal 原样保留，下一个入口再试。§1.3 的崩溃注入都属于这一类。
+   - **不可完成**：同一个 journal 无论重试多少次结果都一样，包括：
+     - 台账转移报 `conflict` / `invalid-transition`，即 `fromRecordId` 已不是最新记录；
+     - 候选或版本快照缺失，或者 hash 与 journal 不符；
+     - 新格式 journal 无法解析、`v` 不认识、版本号非法或路径越界。
+
+     遇到这类失败，把 journal **隔离**：写一个隔离文件 `publications/quarantine/<skill>-<ms>-<pid>-<uuid>.json`，写入 `{ v: 1, skillName, quarantinedAt, by, error, raw }`，其中 `raw` 是 journal 原文、`by` 是入口名；然后删除 journal。隔离时已经前滚的文件保持不动，只前滚、不回退的规则不变。隔离文件只由成员删除，代码不删；health 在它被删之前一直报告它（2.4）。隔离文件的命名沿用 ADR-0020 隔离文件「原样保留字节、后缀带 ms-pid-uuid」的惯例。
+
+   各入口的处理：
+
+   | 入口 | 可重试失败 | 不可完成 |
+   |---|---|---|
+   | 操作本身（提交点之后） | 原样抛出，journal 保留 | 隔离，抛 `publication-conflict` |
+   | 下一次 Promote | 抛 `publication-pending`（错误里带 journal 路径和原始错误），什么都不写 | 隔离，然后照常执行；校验以 live 为准 |
+   | 下一次 Rollback | **隔离，然后照常回滚** | 隔离，然后照常回滚 |
+   | reject（第 8 步） | 抛 `publication-pending`，不写 | 隔离，然后照常校验、转移 |
+   | `repair()` | 报告 `failed`，journal 保留，继续下一个 Skill | 隔离，报告 `quarantined` |
+
+   `publication-conflict`、`publication-pending` 是 `OperationErrorCode` 的新增值，属于可逆的接口扩展。
+
+   Rollback 是出事时的逃生口，所以它不等旧 journal 收尾成功：
+   - 回滚正文取自完整的 `versions/<to>`，不依赖旧 journal。
+   - 新 journal 的 `from` 取隔离之后 live 的实际内容：`contentHash` 按 live `SKILL.md` 计算，`version` 取 live manifest。live 可能是一半新、一半旧，所以 `from` 只用来记录「回滚前的样子」，不用来推断回滚对象。
+   - 回滚对象不用 `latestPromoted` 推断，因为一半新、一半旧的 live manifest 会指向上一个 Proposal，这正是 §1.3 R1b 的错法。规则是：被隔离的是 Promote journal，并且它的 Proposal 最新记录是 `promoted`，就以它为回滚对象；其他情况都不做台账转移（journal 的 `proposalId` 本来就允许缺省）。被隔离的是 Rollback journal 时，同样取它的 `proposalId`，前提是该 Proposal 最新记录仍是 `promoted`。这条规则只在本次 Rollback 隔离了旧 journal 时使用，结果就是最终答案，不再落到第 10 步的推断；没有隔离时一律按第 10 步。
+   - 被隔离的 Proposal 如果最新记录还是 `accepted`（例如 G4：P3 崩溃，台账转移没写成），它保持 `accepted`，之后可以重新 Promote：Rollback 之后 live 等于它的 base，`checkPromotion` 照常通过。重新 Promote 时 `adoption:<root>` 已经存在，`append` 返回 `false`，保留的是被隔离那次的 Observation。采用默认答案，成员可推翻；如果要禁止重新 Promote，就在这里加一条「隔离文件里出现过的 `proposalId` 不能再 Promote」，并由 health 指出。
+   - 代价：被隔离的 Promote 缺的 Observation 和记录不再补写。这件事由隔离文件和 health 报告出来，由成员处理。
+
+   Promote 和 reject 在可重试失败时拒绝，而不是隔离后继续。原因是 live 可能停在一半：在一半新、一半旧的 live 上发布，base 就是错的；而这类失败通常在下一次 repair 时就能恢复。成员被 `publication-pending` 挡住时有两条路：跑 repair，或者 Rollback。
+
+   Reviewer 给出的场景：P1c 崩溃后有人 reject 同一个 Proposal，之后再 repair 或 Promote / Rollback 同一个 Skill。
+   - 在协议内，reject 先收尾，Proposal 变为 `promoted`，reject 报 `conflict` / `invalid-transition`。最终状态和一次成功的 Promote 相同。
+   - 在协议外（旧进程已经写入 `<root>:rejected`），收尾时文件前滚，live 是 1.1.0；到第 6 步台账转移报 `conflict`，journal 被隔离。repair 报 `quarantined`，Proposal 仍是 `rejected`，health 报出「live 是 1.1.0、Proposal 被拒」。成员可以 Rollback，Rollback 不会被挡。
+10. **Rollback 的回滚对象**：由 `service.rollback` 在发布锁内推断一次。时机是收尾（或隔离）旧 journal 之后、写新 journal 之前。推断结果写进 journal 的 `proposalId` 和 `record`，之后的重跑和 repair 只读 journal，不再推断（R1b）。
+   - 本次 Rollback 隔离了旧 journal：按第 9 步的规则取，结束。
+   - 否则按 live **正文**推断：
+     1. `liveHash` = 对 live `SKILL.md` 重新计算 hash，不用 manifest 里的 `contentHash`。
+     2. 候选：该 Skill 下最新记录是 `promoted`、且 `createContentHash(candidateContent) === liveHash` 的 Proposal root。
+     3. 恰好一个就是回滚对象。多于一个（候选正文相同）时，只留 `proposedVersion` 等于 live manifest 版本的；还多于一个或一个都不剩，算无法确定。
+     4. 回滚对象确定时，`proposalId` 取它的 root，`record.fromRecordId` 取它在台账里的最新记录 id（ADR-0021 落地前即 `<root>:promoted`）。
+     5. 无法确定时，`proposalId`、`fromRecordId` 都缺省：不做台账转移，Observation 不带 `sourceProposalId`，Skill 级 decision 不带 `proposalId`。文件步骤照常执行。
+   - `record.targetProposalId`：该 Skill 下最新记录是 `promoted`、`proposedVersion` 等于目标版本、且候选 hash 等于 `versions/<to>/SKILL.md` hash 的 Proposal root；恰好一个才填，否则缺省。它只进 Observation payload，不触发台账转移。
+   - **live 正文和 manifest 不一致时以正文为准**：回滚撤销的是正在生效的正文，manifest 只是对它的描述。今天的 `latestPromoted`（`service.ts:307`）按 `proposedVersion === before.manifest.version` 匹配，manifest 落后于正文时就会指向上一个 Proposal，这正是 R1b 的错法。按正文匹配不上任何 `promoted` Proposal（正文来自一次未完成、已被隔离的 Promote），就不动台账：被回滚的那份正文从未被标成 `promoted`，没有可转移的记录；上一个 Proposal 的正文这时并没有生效，也不该被标 `rolled-back`。
+   - 不崩溃的 Rollback（`rollbackScenario`）里 live 正文就是 `proposal-two` 的候选，唯一匹配，结果和今天一样：`proposal-two` 变 `rolled-back`，`proposal-one` 保持 `promoted`。
+
+取舍：
+
+- 复杂度：新增一个文件格式、一个 module（2.3），`lifecycle` 的 promote / rollback 退化为「按 journal 写文件」的步骤函数。所有恢复规则集中在 `completePublication` 一处。
+- 可测性：每个崩溃点的期望都是「和成功一次相同」，§1.3 的 17 个崩溃点 × 2 条测试直接成为验收，不需要逐点写推断规则。
+- 可逆性：journal 是临时状态文件，不是 Fact record，做完就删。回退到 A 只要停止写 journal；落盘数据没有长期形态。
+- 迁移成本：`.publish.json` 兼容读一段时间；现有 3 条依赖「读时恢复」的测试要改（§3.2）。
+
+**推荐 B。** 理由是 Rollback：只有在 R1 覆盖 live 之前把「从哪来、回滚谁、什么时间」持久化下来，重跑和 repair 才可能得到同一个结果；A 做到这一点时已经等于 B，却没有统一的完成标记。不可逆（数据格式和位置），写入 ADR-0032，待成员确认。
+
+### 2.2 一份晋升校验
+
+**A. 新 module `promotion-check.ts`：一个纯函数，两边都调用（推荐）**
+
+```ts
+export interface PromotionCheckInput {
+  readonly proposal: SkillProposal          // 台账里该 root 的最新记录，不是调用方手里的对象
+  readonly artifact: EvaluationArtifact     // 已按 id 从 evaluations 取出的持久 artifact
+  readonly current: CurrentSkill | undefined
+  readonly policyVersion: string
+  readonly now: number
+}
+export function checkPromotion(input: PromotionCheckInput): void // 不通过时抛 OperationError(code)
+
+export function resolvePromotionArtifact(
+  evaluations: readonly EvaluationArtifact[],
+  proposal: SkillProposal,
+  supplied?: SkillEvalResult | EvaluationArtifact,
+): EvaluationArtifact                      // 抛 evaluation-missing / evaluation-mismatch
+```
+
+- `checkPromotion` 取两份检查的并集，并采用较严的一边：
+  1. 状态必须是 `accepted`，不符报 `invalid-transition`。
+  2. 三个归属 id 都要比。
+  3. base hash 三方一致；**base version 等于 current 的版本号（`unversioned` 除外）**。不符报 `stale-base`。
+  4. candidate hash 两处都比。
+  5. **policy 两处都比**。
+  6. 过期检查。
+  7. **caseIds 总是比**。
+  8. gate 两处都查，不符报 `gate-failed`。
+  9. 文档校验和变更校验。
+- `resolvePromotionArtifact` 合并 `loadPromotionArtifact` 与 `requireEvaluationArtifact`：
+  - 支持三种来源：`--evaluation` 文件内容、传入的对象、最新未过期的 artifact。
+  - 传入的对象一律用 `sameArtifactEvidence` / `sameResultEvidence` 与持久版本比对。
+  - 错误消息沿用今天的文本（`requires a persisted evaluation artifact`、`supplied evaluation does not match`），`evolution.spec.ts:568-569` 不用改。
+- `OperationError` 与 `OperationErrorCode` 移到新 module `errors.ts`，由 `operations.ts` 再导出，避免 `service.ts → operations.ts → service.ts` 的循环依赖。
+- 调用方式：两边都进同一个 service 内部方法，只有 dry-run 不进锁。
+
+  ```ts
+  // service.ts，内部方法
+  private publishPromotion(input: {
+    readonly proposalRef: string                               // root 或 record id
+    readonly supplied?: SkillEvalResult | EvaluationArtifact
+    readonly scope: PublicationScope
+    readonly reason: string
+  }): Promise<{ readonly replayed: boolean }>
+  ```
+
+  - `promoteProposal`（非 dry-run）：`scope` 校验之后，直接调用 `publishPromotion`，它本身不再做状态检查或预检。`--evaluation` 文件由它读成对象，作为 `supplied` 传入。
+  - `promoteProposal`（dry-run）：从台账取最新记录，调用 `resolvePromotionArtifact`，读 current，再调用 `checkPromotion`。全程不拿锁、不写文件。
+  - `service.promote(proposal, evaluation, scope, reason)`：签名不变，委托给 `publishPromotion({ proposalRef: proposal.id, supplied: evaluation, ... })`。
+  - `publishPromotion` 的步骤：
+    1. 取发布锁。
+    2. 收尾该 Skill 的旧 journal。
+    3. 从台账取最新记录。
+    4. 做 2.1 第 5 步的「已发布即成功」判断。
+    5. `resolvePromotionArtifact`。
+    6. 读 current。
+    7. `checkPromotion`。
+    8. 写 journal。
+    9. `completePublication`。
+
+    文件层的检查和写入都在发布锁内进行，消除了今天「锁外预检、锁内只再检一部分」的竞态。台账不归发布锁管，状态检查和台账写入之间没有竞态，靠的是 2.1 第 8 步的台账守卫：从 `accepted` / `promoted` 出发的转移都必须在同一把发布锁内执行。
+  - 调用方传入的 `proposal.id` 不是最新记录时，第 3 步取到的最新状态可能不是 `accepted`，按 `checkPromotion` 报 `invalid-transition`。与 SKIL-121 的 `conflict` 语义一致；SKIL-121 实现落地后改用它的错误码。
+  - `service.verifyEvaluation` 改为调用 `resolvePromotionArtifact`。
+- `lifecycle` 只保留文件层的不变量：版本目录已存在且内容不同、历史快照 hash 不符。它不再做业务校验（`lifecycle.ts:100-107` 删除）。
+
+取舍：纯函数，按表驱动就能测完所有分支，不需要文件系统；两边的调用只差「锁内还是锁外」。代价是新增两个小 module，`service.promote` 的错误类型从 `Error` 变成 `OperationError`。`OperationError` 是 `Error` 的子类，消息不变，属于向上兼容。
+
+**B. 校验放到 `EvolutionService` 的公开方法 `checkPromotion`，operations 调它**
+
+改动最少，但每条测试都要搭一个 service 和一个 Skill 目录。service 已经有 430 行，校验会和发布、投影继续混在一处。
+
+**C. 只保留 operations 这一份，`service.promote` 改为内部方法**
+
+最彻底，但会删掉公开接口。adapter 测试（`adapter.spec.ts:183-184`）和外部集成都直接调用 `service.promote`，迁移成本最高。
+
+**推荐 A。** 可逆（module 内部实现，公开签名不变），采用默认答案，成员可推翻。
+
+### 2.3 journal 的位置与 module 边界
+
+| 选项 | 位置 | 优点 | 代价 |
+|---|---|---|---|
+| **A. `.skill-evolution/publications/<skill>.json`（推荐）** | 状态目录 | 符合 ADR-0001「演化状态集中在状态目录」；health / repair 只扫一个目录，不用遍历 Skill 根下的每个子目录；不会被 Skill 的打包或同步带出去 | 要兼容读旧的 `<skill>/.publish.json` |
+| B. 保留 `<skill>/.publish.json`，扩展字段 | Skill 目录 | 不用迁移 | 状态散落在 Skill 目录里，与 ADR-0001 相悖；Rollback 也要写进 Skill 目录；repair 要扫描 Skill 根 |
+| C. 追加进 `decisions.jsonl` 的 intent / done 事件 | 事实流 | 有完整历史 | 事实流里出现「未完成」语义；repair 要 fold 整条流才能知道哪些没做完；与 ADR-0016「事实只记发生过的事」相悖 |
+
+Module 边界：
+
+- 新 module `publication.ts`（名字采用默认答案，成员可推翻）持有：
+  - `PublicationJournal` 的读、写、删
+  - `completePublication`
+  - `inspectPublications(layout)`（只读）
+  - `recoverPublications(layout, deps)`（repair 用）
+- 它依赖 `SkillVersionStore` 的文件步骤、`ObservationLog`、SKIL-121 的台账转移操作，以及 `decisions` store。
+- `service.promote` / `service.rollback` 退化为：
+  1. 取锁
+  2. 收尾旧 journal
+  3. 校验；Rollback 在这里按 2.1 第 10 步推断回滚对象
+  4. 写 journal（推断结果随之持久化）
+  5. 调用 `completePublication`
+- `SkillVersionStore.promote` / `rollback` 保留为公开方法（`evolution.spec.ts` 直接使用），内部同样走 journal，只是不带 `record`。
+
+这条 seam 将来会被这些变化拉扯：
+
+- 新的 Publication scope（`user`、`stable` 的真实生效面）会改变 `invalidate` 这一步。
+- 发布前后的钩子（通知、缓存预热）会在 `completePublication` 的步骤表里加一行。
+- 多 Skill 原子发布（split / merge）会让一个 journal 覆盖多个 Skill。
+
+它们都只改 `publication.ts`，不改调用方。
+
+**推荐 A。** 位置本身属于 ADR-0032 的数据格式决策。
+
+### 2.4 health 与 repair 接口
+
+**health（只读）**
+
+```ts
+interface UnfinishedPublication {
+  readonly skillName: string
+  readonly operation: 'promote' | 'rollback'
+  readonly proposalId?: string
+  readonly fromVersion: string
+  readonly toVersion: string
+  readonly startedAt?: string        // 旧 `.publish.json` 没有这个字段
+  readonly journalPath: string
+  readonly stage: 'files' | 'records' // 只读推断：live 已等于 to 时为 records，否则为 files
+  readonly legacy: boolean           // true 表示旧 `<skill>/.publish.json`
+  readonly lock: LockState['kind']   // 发布锁的状态；held 表示可能正在进行，不是崩溃遗留
+  readonly error?: string            // journal 无法解析时的原因；此时 from / to 取空串
+}
+
+interface QuarantinedPublication {
+  readonly skillName: string
+  readonly path: string              // `publications/quarantine/` 下的隔离文件
+  readonly quarantinedAt: string
+  readonly by: 'promote' | 'rollback' | 'reject' | 'repair'
+  readonly error: string
+  readonly operation?: 'promote' | 'rollback'
+  readonly proposalId?: string
+  readonly toVersion?: string
+}
+
+healthReport(): Promise<{
+  readonly jsonl: readonly JsonlHealth[]
+  readonly skillIssues: readonly string[]
+  readonly publications: readonly UnfinishedPublication[]            // 新增
+  readonly quarantinedPublications: readonly QuarantinedPublication[] // 新增，成员删掉隔离文件前一直报告
+}>
+```
+
+- `publications` 来自 `inspectPublications`：扫描 `publications/*.json` 和每个 Skill 目录下的旧 `.publish.json`，用 `inspectLock` 标注锁状态，不取锁，不写任何文件。
+- **health 不取发布锁**（2.1 第 4 步）：`healthIssues` 改用不取锁、不收尾的读取。发布锁被持有时，`healthReport()` 照常返回，对应条目的 `lock` 为 `held`，不抛错。今天 health 会抛「already in progress」（Reviewer 用持锁脚本复现过），这一点由 H5 验收。
+- 损坏的 journal 不会让 health 抛错：它作为一条带 `error` 的 `UnfinishedPublication` 报出来。
+- `skillIssues` 里的 `.publish.json` 条目保留一个版本，之后由 `publications` 取代。
+- 调用方 `dsh-bundle/index.js:196`、`bin/dsh-skill-evolution.mjs:89` 原样输出 JSON，自动带上新字段，不用改。
+
+**repair**
+
+```ts
+interface PublicationRepair {
+  readonly skillName: string
+  readonly operation: 'promote' | 'rollback'
+  readonly proposalId?: string
+  readonly toVersion: string
+  readonly outcome: 'completed' | 'skipped-locked' | 'failed' | 'quarantined'
+  readonly legacy: boolean
+  readonly error?: string
+  readonly quarantinePath?: string   // outcome 为 quarantined 时
+}
+
+interface EvolutionRepairReport {
+  // ... 现有字段不变
+  readonly publications: readonly PublicationRepair[]  // 新增
+}
+```
+
+`repair()` 的顺序：
+
+1. 回收锁。沿用 ADR-0007：`held` 和 `foreign` 的锁不回收。
+2. 按 `layout.stores` 修 JSONL，这一步不变。
+3. **对每个未完成的 journal，按 Skill 取发布锁（`waitMs: 0`），执行 `completePublication`。**
+   - 锁拿不到时报告 `skipped-locked`，journal 保留。
+   - 可重试失败时报告 `failed`，journal 保留，继续处理下一个 Skill。
+   - 不可完成时隔离 journal，报告 `quarantined`（2.1 第 9 步）。
+   - 旧 `.publish.json` 不可信（版本号非法、路径越界）时报告 `failed`，原样保留，不隔离。这是为了守住 `evolution.spec.ts:213-234` 的「原样不动」。
+4. `inspectManifests`。
+5. 刷新投影。
+
+第 3 步放在第 2 步之后，是因为收尾要追加 JSONL，必须先把残行隔离掉（ADR-0020）；放在第 5 步之前，是因为投影要看到补写的 Observation 和 Ledger record。repair 的 store 清单仍只来自 `layout.stores`，journal 不是 store，不进这张表。
+
+**选项对比**：
+
+- 另一种做法是新增单独的 `repairPublications()`，不并进 `repair()`。它的好处是调用方可以只修发布；代价是 bundle 和 CLI 各要多暴露一个动作，而且成员跑 `repair` 后仍然留着半截发布，和验收口径「repair 就能收敛」不符。
+- 所以推荐并进 `repair()`。报告字段新增、不删不改，属于可逆的接口扩展。采用默认答案，成员可推翻。
+
+### 2.5 对 SKIL-121 的接口假设
+
+本设计依赖 SKIL-121 提供两样东西。它们对应 `origin/main` 上已接受的 ADR-0021 和 `docs/design/proposal-ledger-transition.md` 的 `ProposalLedger.transition`，但实现还没合并（`src/` 下还没有 `ledger.ts`）：
+
+1. **幂等转移**：`transition(from, to, input)` 以 `previousRecordId === from.id` 且目标状态相同作为「这次转移写过」的判断。写过就返回已有记录，并补写缺失的 decision。`completePublication` 用 journal 里的 `fromRecordId` 作为 `from`。
+2. **确定 id**：decision id 由 record id 决定（`decision:ledger:<recordId>`），不再带 `updatedAt`。
+
+SKIL-121 的实现合并之前，退路不需要改 journal 格式：
+
+- `promoted` 和 `rolled-back` 在转移表里对每个 root 各只能进入一次，因为 `promoted` 只能由 `accepted` 进入，而 `rolled-back` 是终态（`proposal.ts:31-33`）。所以今天的 `<root>:promoted`、`<root>:rolled-back` 已经不会撞 id，`append` 返回 `false` 就说明写过了。
+- decision id 今天带 `updatedAt`（`service.ts:371`）。`completePublication` 调 `transitionProposal(from, to, journal.startedAt)`，于是 `updatedAt = startedAt`，id 就成了确定值。
+
+因此 T2、T3（§5）不用等 SKIL-121 合并就能落地。SKIL-121 合并后由 T4 换成 `ProposalLedger.transition`。本票不定 record id 规则。
+
+Skill 级的 rollback Observation 和 decision 不属于台账，由本设计负责：id 里的时间取 journal 的 `startedAt`（毫秒），格式和今天一样，只是同一次 Rollback 重跑时取到的是同一个值。
+
+## 3. 推荐方案小结
+
+- Promote / Rollback 统一为「锁 → 收尾旧 journal → 一份校验 → 写 journal（提交点）→ `completePublication` 前滚 → 删 journal」。
+- 下一次维护操作和 `repair()` 用同一个 `completePublication` 收尾；纯读路径不写文件、不取发布锁。
+- 从 `accepted` / `promoted` 出发的台账转移都在发布锁内、先收尾再转移；收尾不可完成时隔离 journal，Rollback 永远不被旧 journal 挡住。
+- 晋升校验收成 `promotion-check.ts` 的 `checkPromotion` / `resolvePromotionArtifact`，dry-run 在锁外调，真 Promote 在锁内调。
+- `healthReport().publications` 报告未完成的发布，`repair().publications` 报告收尾结果。
+
+### 3.1 与已有 ADR 和 spec 的关系（Flag ADR conflicts）
+
+- **ADR-0001**：不冲突。journal 从 Skill 目录挪进状态目录，正是它的要求。`docs/design/evolution-state-root.md:90` 里把 `.publish.json` 列在 Skill 目录下，那是历史布局，旧文件只读兼容。
+- **ADR-0004**：不冲突。转移合法性仍然只看转移表。`checkPromotion` 里的状态检查只是为了早报错，台账转移操作里的 `assertCanTransition` 仍是唯一执行点（与 ADR-0021 的表述一致）。
+- **ADR-0005 / ADR-0021**：依赖，不冲突。Promote / Rollback 只调用台账转移，不拼 record id（§2.5）。ADR-0021 的 `conflict`（`from` 不是最新记录）挡得住「拿着旧对象转移」，挡不住「journal 写成之后、收尾之前，别人从同一个 `accepted` 合法地转走」，这个缺口由 2.1 第 8 步的台账守卫补上。守卫放在 service 层，不改 ADR-0021 的判定。
+- **ADR-0007**：不冲突。repair 不回收 `held` / `foreign` 的发布锁，遇到这种锁报告 `skipped-locked`；health 用 `inspectLock` 标注锁状态，不回收。
+- **ADR-0016**：不冲突。journal 是临时状态文件，不是 Fact record。收尾只追加 Observation、decision、Ledger record，不改写已有记录。拒绝选项 C（§2.3）正是为了守住这条。
+- **ADR-0020**：不冲突。repair 先修 JSONL 再收尾；收尾追加用的仍是 `appendFrames`。
+- _与 `specs/skil-46-unified-lock-protocol/tasks.md` P1、P1b 的验收冲突（「下一次 `readCurrent` 自动回收死锁、运行 `recoverPublication`、删除 `.publish.json`」），值得重开。原因有三：读路径写文件会让 health 改变它要报告的状态（§1.3 最后一段）；读路径拿不到台账依赖，只能收尾一半；读路径取发布锁会让 health 在发布期间抛错（2.4）。_ 本设计把这两条的恢复和死锁回收都改为「下一次 Promote / Rollback / reject 或 repair」。回收规则本身（ADR-0007）不变，只是 `readCurrent` 不再是入口。spec 已冻结，不改原文，由 S2 spec 写明取代关系。
+
+### 3.2 需要同步修改的现有测试
+
+| 测试 | 今天断言 | 改为 |
+|---|---|---|
+| `evolution.spec.ts:193-211` 空版本目录 | `readCurrent` 删掉空目录和 journal | 改为 `store.promote(next)` 先收尾再发布；或 `repair()` 之后断言删除 |
+| `evolution.spec.ts:213-234` 不可信 journal | `readCurrent` 不删 | 不变。新增 `repair()` 同样不删、报告 `failed` |
+| `evolution.spec.ts:300-320` 死锁 + 完整 journal | `readCurrent` 前滚 | 改为 `repair()` 或下一次 promote 回收死锁并前滚；`readCurrent` 不取锁，返回 live 的实际内容 |
+| `evolution.spec.ts:322-344` SIGKILL | `readCurrent` 之后 `.publish.json` 被删、锁被回收 | 改为 `repair()` 之后 journal 被删、锁被回收，`current.json` 为 1.0.0 |
+| `evolution.spec.ts:568-569` artifact 错误消息 | 两个 `toThrow` 子串 | 消息不变，另加 `code` 断言 |
+
+`tests/publication-crash-recovery.spec.ts` 的 P0 行已同时覆盖新旧两个 journal 路径（`journal` 类崩溃），不用改。
+
+## 4. 验收口径
+
+S2 spec 按下面几张表写验收标准。除 R0、H3、C3、G2–G6、L1–L3 由 Builder 新增外，每一行都对应 `tests/publication-crash-recovery.spec.ts` 里现成的测试：每个崩溃点一条「重跑」、一条「repair」，H1、H2、H4、H5、C1、C2、G1 各一条。修复落地后，把对应的 `it.fails` 改回 `it`，删除 `pending` 和 `convergesToday`。
+
+**总判据**：在任一崩溃点注入崩溃后，无论（a）用同样的参数重跑一次该操作，还是（b）只调用 `repair()`，`publicationState` 都与另一个目录里「成功跑过一次」的状态逐项相等。比较范围：
+
+- Skill 目录下的全部文件，内容逐字节比较，时间戳已归一化；
+- `.skill-evolution/publications/`；
+- `proposals`、`decisions`、`observations` 三个 JSONL 的全部记录，以及每个 root 的最新状态。
+
+例外是提交点之前的崩溃（P0）：repair 之后，状态要与操作开始之前逐项相等。
+
+**Promote**
+
+| 崩溃点 | 崩溃时的状态 | 重跑怎么收敛 | repair 怎么收敛 |
+|---|---|---|---|
+| P0 journal 之前 | 只有候选目录 | 正常执行 | 没有 journal，什么都不做；状态等于操作之前 |
+| P1a `versions/<to>/SKILL.md` 之前 | journal、空版本目录 | 先收尾：写版本快照 → live → 记录；再判定「已发布」，直接返回 | 同左 |
+| P1b live `SKILL.md` 之前 | journal、版本快照完整 | 收尾从 live 那一步开始；版本快照内容相同，不重写 | 同左 |
+| P1c live `manifest.json` 之前 | live 正文已是新版 | 同上，从 manifest 开始写 | 同左 |
+| P1d `current.json` 之前 | live 两个文件已是新版 | 同上，从 `current.json` 开始写 | 同左 |
+| P1e `invalidate` 抛错 | live 全部是新版 | 重新 `invalidate`，然后写记录 | 同左 |
+| P1f 旧版本快照写了一半 | journal、`versions/<from>` 只有 `SKILL.md` | live 仍等于 `from.contentHash`，补齐快照后继续 | 同左 |
+| P2 Observation 之前 | 文件全部完成 | 追加 `adoption:<root>`，然后做台账转移 | 同左 |
+| P3 Ledger record 之前 | Observation 已写 | `append` 返回 `false`，然后做台账转移 | 同左 |
+| P4 decision 之前 | Ledger record 已写 | 台账转移判定「写过」，补写 decision | 同左 |
+
+Promote 的三条附加验收：
+
+- **H1**：P3 之后 `healthReport().publications` 恰好一条，内容为 `{ skillName, operation: 'promote', proposalId, fromVersion: 'unversioned', toVersion: '1.1.0' }`。repair 报告一条 `outcome: 'completed'`，之后 health 为 `[]`，Proposal 为 `promoted`。
+- **H2**：P1c 之后调用 `healthReport()`，`publicationState` 不变。
+- **H3**：成功 Promote 之后再重跑一次，返回 `promoted: true`，并且什么都不写。
+- **H5**：发布锁 `held`（持有者是存活进程），且存在 P3 留下的 journal 时，`healthReport()` 不抛错，`publications[0].lock === 'held'`；`readCurrent` 返回 live 的实际内容，不报「already in progress」；两者都不改变 `publicationState`。
+
+**Rollback**（先发布 1.0.0、再发布 1.1.0，然后回滚到 1.0.0）
+
+| 崩溃点 | 崩溃时的状态 | 重跑怎么收敛 | repair 怎么收敛 |
+|---|---|---|---|
+| R0 journal 之前（新增的提交点） | 无变化 | 正常执行 | 什么都不做 |
+| R1a live `manifest.json` 之前 | journal、live 正文已是 1.0.0 | 先收尾：manifest → `current.json` → 记录；journal 里的 `from` 仍是 1.1.0，`fromContentHash` 是对的 | 同左 |
+| R1b `current.json` 之前 | 同上，manifest 也已改 | 同上，从 `current.json` 开始写；回滚目标取 journal 的 `proposalId`（`proposal-two`），不再重新推断 | 同左 |
+| R1c `invalidate` 抛错 | live 全部是 1.0.0 | 重新 `invalidate`，然后写记录 | 同左 |
+| R2 Observation 之前 | 文件完成 | 追加 Observation，id 用 `startedAt` 的毫秒值 | 同左 |
+| R3 rollback decision 之前 | Observation 已写 | Observation `append` 返回 `false`，写 decision | 同左 |
+| R4 Ledger record 之前 | decision 已写 | 两次 `append` 都返回 `false`，做台账转移 | 同左 |
+| R5 transition decision 之前 | Ledger record 已写 | 台账转移判定「写过」，补写 decision | 同左 |
+
+Rollback 的附加验收：
+
+- **H4**：回滚到已经是 current 的版本（hash 也相同），什么都不写，也不改任何 Proposal 状态。
+- 收尾之后再重跑，都命中 H4。
+
+**台账守卫、收尾失败与回滚对象**（2.1 第 8–10 步）
+
+- **G1**：P1c 崩溃后，用 `reviewProposal` reject 同一个 Proposal。reject 报错，错误的 `code` 是 `invalid-transition`（SKIL-121 之前）或 `conflict`（之后），测试断言 `code`，不接受其他错误；`publicationState` 与一次成功的 Promote 相等：reject 前先收尾了 journal。
+G2–G4 用已有 1.0.0 manifest 的场景（与 P1f 相同）：P1c 崩溃时 `versions/1.0.0` 快照已完整，Rollback 才有目标。
+
+- **G2**：P1c 崩溃后，绕过协议直接往 `proposals.jsonl` 追加 `<root>:rejected`（模拟未升级的旧进程）。
+  - 然后 repair：报告 `outcome: 'quarantined'`，live 是 1.1.0，Proposal 仍是 `rejected`，`publications/` 下没有 journal，`publications/quarantine/` 下恰好一个文件，其中 `raw` 与原 journal 逐字节相同；`healthReport().quarantinedPublications` 恰好一条。
+  - 换成直接 Promote 同一个 Skill 的另一个 Proposal（以 1.1.0 为 base）：隔离后正常发布。
+  - 换成直接 Rollback 到 1.0.0：隔离后正常回滚，不做台账转移，`proposal-crash` 仍是 `rejected`。
+- **G3**：P1c 崩溃后删除 `candidates/<root>/SKILL.md`（不可完成）。Rollback 到上一版本成功；repair 报告 `quarantined`。
+- **G4**：P3 崩溃后，让 `proposals` store 的下一次 `append` 抛错一次（可重试失败，注入方式同 §1.3 的 `call`）。三个入口分别验证：
+  - 下一次 Promote 报 `publication-pending`，`publicationState` 不变；
+  - 下一次 Rollback 隔离 journal，然后正常回滚到 1.0.0：`proposal-crash` 保持 `accepted`（第 9 步：最新记录不是 `promoted`，不做台账转移），`healthReport().quarantinedPublications` 恰好一条；之后再 Promote `proposal-crash` 成功；
+  - repair 报告 `failed`，journal 保留；不再注入时再 repair 一次，报告 `completed`，状态与一次成功的 Promote 相等。
+- **G5**：G2 的 repair 之后再 repair 一次：报告里没有这个 Skill，隔离文件逐字节不变，`quarantine/` 下仍只有一个文件。
+- **G6**（2.1 第 10 步，正常路径的回滚对象）：在 `rollbackScenario` 之上（`proposal-one` 发布 1.0.0、`proposal-two` 发布 1.1.0），再 accept `proposal-crash`（base 1.1.0，发布 1.2.0），P1c 崩溃后删除 `candidates/<root>/SKILL.md`，repair 报告 `quarantined`。此时 live 正文是 `proposal-crash` 的候选，manifest 仍是 1.1.0。G2 的 repair 会把 live 完整前滚到新版，manifest 不会落后；落后的情形来自 G3 这类在 live 那一步之前就不可完成的 journal，所以这里用删候选的方式造出来。然后 Rollback 到 1.0.0（这时已没有 journal，走第 10 步的推断）：
+  - live 是 1.0.0；
+  - `proposal-two` 保持 `promoted`，`proposal-one` 保持 `promoted`，`proposal-crash` 保持 `accepted`，没有任何 Proposal 变成 `rolled-back`；
+  - 新增的 rollback Observation 不带 `sourceProposalId`，`targetProposalId` 是 `proposal-one`；
+  - `quarantinedPublications` 仍恰好一条。
+  - 今天的 `latestPromoted` 在这一行会把 `proposal-two` 标成 `rolled-back`。
+
+**晋升校验**
+
+- **C1**：base version 与 current 不符时，dry-run 与真 Promote 都报 `stale-base`，也都不写任何文件。
+- **C2**：同一个不一致的 artifact（例如 result 的 policy 不符），`promoteProposal` 的 dry-run 与 `service.promote` 都报 `evaluation-mismatch`。
+- **C3**：`checkPromotion` 按 §1.4 表中每一行各有一条表驱动测试，每条都给出期望的错误码。
+
+**兼容**
+
+- **L1**：只有旧 `<skill>/.publish.json`，内容为完整版本目录、Proposal 仍是 `accepted`。repair 之后文件前滚、W2–W4 补齐，报告 `legacy: true`。
+- **L2**：不可信的旧 journal（`evolution.spec.ts:213-234` 那五种）在 repair 之后保持原样，报告 `failed`。
+- **L3**：§3.2 表中修改后的现有测试全部通过；core、bundle、adapter 三个包的测试全绿。
+
+## 5. Builder task 边界（供 S2 spec 参考）
+
+- **T1 · 一份晋升校验**：
+  - 新增 `errors.ts`、`promotion-check.ts`。
+  - `precheckPromotion`、`requireEvaluationArtifact`、`lifecycle.ts:100-107` 都改为调用这两个模块。
+  - 验收：C1–C3。
+  - 与 T2 无依赖。
+- **T2 · journal 与 `completePublication`**：
+  - 新增 `publication.ts`；`lifecycle` 的 promote / rollback 改为按 journal 执行文件步骤；`readCurrentUnlocked` 去掉恢复逻辑；旧 journal 兼容读。
+  - 验收：P0–P1f、R0–R1c 的文件部分，H2、L2，以及 §3.2 的测试修改。
+- **T3 · service 收尾与 repair / health**：
+  - 实现 `publishPromotion`、rollback 走 journal 并按第 10 步推断回滚对象、W2–W5 挪进锁内、`rejectProposal` 的台账守卫、journal 隔离、`healthReport().publications` / `quarantinedPublications`、`repair().publications`。
+  - 读路径去掉发布锁（`readCurrent` 不再走 `withMutationLock`）。
+  - 验收：§4 的全部行，外加 H1、H3、H4、H5、G1–G6、L1。
+  - 依赖 T1、T2。
+- **T4 · 切换到 SKIL-121 的台账转移**：
+  - 等 SKIL-121 实现合并后，把 `completePublication` 里的台账写入换成 `ProposalLedger.transition`。
+  - 验收：§4 表不变，全部仍然通过。
+
+## 6. 不可逆决策
+
+- **ADR-0032**：Promote / Rollback 采用先写 intent journal（`.skill-evolution/publications/<skill>.json`）再前滚提交的恢复协议。收尾由操作本身、同一 Skill 的下一次 Promote / Rollback / reject 或 `repair()` 完成；从 `accepted` / `promoted` 出发的转移受发布锁守卫；收尾不可完成时隔离到 `publications/quarantine/`；Rollback 的回滚对象按 live 正文推断并写进 journal；纯读路径不写文件、不取发布锁。状态为 `proposed`，待成员确认。
+
+编号 0032 取自 SKIL-126 上的 ADR 统一号段表（Mika 协调、成员 ack7 授权）：#84 用 0025–0028，#83 用 0029–0031，#81 已合并为 0033–0035。
