@@ -1,4 +1,6 @@
 import { buildExperiences, buildFailureCases, clusterFailureCases, diagnoseFailureCluster, type ExperienceProjectionOptions } from './experience.js'
+import { resolveFollowUps } from './follow-up.js'
+import type { ClassificationMemoEntry } from './types.js'
 import { createProposal, type ProposalInput } from './proposal.js'
 import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience } from './types.js'
 
@@ -16,13 +18,14 @@ export interface WorkflowSnapshot {
   readonly failures: readonly SkillFailureCase[]
   readonly clusters: readonly FailureCluster[]
   readonly diagnoses: readonly SkillDiagnosis[]
+  readonly followUps?: readonly import('./types.js').FollowUpResolution[]
 }
 
 /** Phase 2/3 orchestration: facts to experiences, clusters, diagnoses, and isolated proposals. */
 export class EvolutionWorkflow {
   private readonly events: RuntimeObservation[] = []
 
-  constructor(private readonly options: ExperienceProjectionOptions = {}) {}
+  constructor(private readonly options: ExperienceProjectionOptions & { readonly memo?: ReadonlyMap<string, ClassificationMemoEntry>; readonly classifierVersion?: string } = {}) {}
 
   add(events: readonly RuntimeObservation[]): void {
     this.events.push(...events)
@@ -30,10 +33,11 @@ export class EvolutionWorkflow {
 
   snapshot(): WorkflowSnapshot {
     const experiences = buildExperiences(this.events, this.options)
-    const failures = buildFailureCases(this.events)
+    const followUps = resolveFollowUps(this.events, this.options)
+    const failures = buildFailureCases(this.events, followUps)
     const clusters = clusterFailureCases(failures)
     const diagnoses = clusters.map(cluster => diagnoseFailureCluster(cluster, failures, experiences))
-    return { experiences, failures, clusters, diagnoses }
+    return { experiences, failures, clusters, diagnoses, followUps }
   }
 
   async propose(clusterId: string, designer: Designer): Promise<SkillProposal> {

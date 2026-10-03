@@ -32,7 +32,7 @@ export function renderProposalMarkdown(input: ProposalReportInput): string {
     '',
   ]
   if (relatedFailures.length === 0) lines.push('- No linked failure cases.')
-  else for (const failure of relatedFailures) lines.push(`- \`${failure.id}\` (${failure.severity}): ${failure.failure}`)
+  else for (const failure of relatedFailures) lines.push(`- \`${failure.id}\` (${failure.severity}${failure.intentSource ? ` · ${failure.intentSource}` : ''}): ${failure.failure}`)
   if (cluster !== undefined) {
     lines.push('', `Cluster: \`${cluster.id}\` (${cluster.occurrenceCount} occurrences)`, `Signature: ${cluster.signature}`)
   }
@@ -52,6 +52,6 @@ export function renderProposalMarkdown(input: ProposalReportInput): string {
 export function renderFailuresMarkdown(failures: readonly SkillFailureCase[]): string {
   const lines = ['# Skill Evolution Failures', '', `Total: ${failures.length}`, '']
   if (failures.length === 0) lines.push('No failure cases recorded.')
-  else for (const failure of failures) lines.push(`- \`${failure.id}\` **${failure.skillName}** [${failure.severity}] ${failure.failure}`)
+  else for (const failure of failures) lines.push(`- \`${failure.id}\` **${failure.skillName}** [${failure.severity}${failure.intentSource ? ` · ${failure.intentSource}` : ''}] ${failure.failure}`)
   return `${lines.join('\n')}\n`
 }

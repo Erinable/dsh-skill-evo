@@ -13,6 +13,8 @@ import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
+import { OperationError } from './errors.js'
+import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
   FeedbackKind,
@@ -252,10 +254,11 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
-    assertCanTransition(proposal.status, 'promoted')
-    const artifact = await this.requireEvaluationArtifact(proposal, evaluation)
+    if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
+    const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
+    const current = await this.versions.readCurrent(proposal.skillName)
+    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
     const verifiedEvaluation = artifact.result
-    if (!verifiedEvaluation.passedGate) throw new Error(`proposal ${proposal.id} failed evaluation gate: ${verifiedEvaluation.gateReasons.join('; ')}`)
     const proposalId = proposalRootId(proposal.id)
     await this.versions.promote(proposal, { scope })
     await this.observations.append({
@@ -280,26 +283,7 @@ export class EvolutionService {
   }
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
-    return this.requireEvaluationArtifact(proposal, evaluation)
-  }
-
-  private async requireEvaluationArtifact(proposal: SkillProposal, supplied: SkillEvalResult): Promise<EvaluationArtifact> {
-    const artifactId = supplied.artifactId
-    if (artifactId === undefined) throw new Error(`proposal ${proposal.id} requires a persisted evaluation artifact`)
-    const artifact = (await this.evaluations.readAll()).find(item => item.id === artifactId)
-    const proposalId = proposalRootId(proposal.id)
-    if (artifact === undefined) throw new Error(`evaluation artifact not found: ${artifactId}`)
-    const current = await this.versions.readCurrent(proposal.skillName)
-    const expectedPolicy = this.options.evaluationPolicy?.version ?? DEFAULT_EVALUATION_POLICY.version
-    const candidateHash = createContentHash(proposal.candidateContent)
-    if (artifact.proposalId !== proposalId || artifact.candidateId !== proposalId || artifact.result.candidateId !== proposalId) throw new Error('evaluation artifact belongs to a different proposal')
-    if (current === undefined || artifact.baseContentHash !== current.manifest.contentHash || artifact.baseContentHash !== proposal.expectedBase.contentHash) throw new Error('evaluation artifact base hash does not match the current Skill')
-    if (artifact.candidateContentHash !== candidateHash || artifact.result.candidateContentHash !== candidateHash) throw new Error('evaluation artifact candidate hash does not match the proposal')
-    if (artifact.policyVersion !== expectedPolicy) throw new Error(`evaluation policy mismatch: expected ${expectedPolicy}, got ${artifact.policyVersion}`)
-    if (Date.parse(artifact.expiresAt) <= Date.now()) throw new Error(`evaluation artifact expired: ${artifactId}`)
-    if (proposal.comparisonCaseIds.length > 0 && JSON.stringify([...proposal.comparisonCaseIds]) !== JSON.stringify([...artifact.caseIds])) throw new Error('evaluation artifact cases do not match the proposal')
-    if (artifact.result.passedGate !== supplied.passedGate || artifact.result.candidateContentHash !== supplied.candidateContentHash) throw new Error('supplied evaluation does not match the persisted artifact')
-    return artifact
+    return resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
   }
 
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {

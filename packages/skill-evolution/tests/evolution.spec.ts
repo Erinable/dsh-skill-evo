@@ -23,6 +23,7 @@ import {
   portfolioDecision,
   renderFailuresMarkdown,
   renderProposalMarkdown,
+  resolveFollowUps,
   splitPortfolioEntry,
   transitionPortfolio,
   transitionProposal,
@@ -47,7 +48,75 @@ function event(input: Partial<RuntimeObservation> & Pick<RuntimeObservation, 'id
   }
 }
 
+function skill(): NonNullable<RuntimeObservation['skill']> {
+  return { name: 'api-debugging', provider: 'unknown', source: 'unknown' }
+}
+
 describe('phase 2 evidence workflow', () => {
+  it('resolves the fixed follow-up vocabulary and negative boundaries', () => {
+    const texts = ['不对，应该改', 'Please correct step two.', 'Please correct timeout diagnosis.', 'Please correct this.', 'still wrong', 'wrong, upload this again']
+    const events = texts.map((text, index) => event({ id: `correction-${index}`, kind: 'user-follow-up', sessionId: `s-${index}`, payload: { text } }))
+    expect(resolveFollowUps(events).map(item => item.intent)).toEqual(texts.map(() => 'incorrect'))
+    expect(resolveFollowUps([event({ id: 'unknown', kind: 'user-follow-up', payload: { text: 'upload this again' } })])[0]).toMatchObject({ intent: 'unknown', ruleId: 'no-match' })
+    expect(resolveFollowUps([event({ id: 'correct', kind: 'user-follow-up', payload: { text: "that's correct" } })])[0]!.intent).toBe('unknown')
+  })
+
+  it('does not attribute a pre-load follow-up and applies failed tool evidence only in its turn', () => {
+    const beforeLoad = [
+      event({ id: 'before', kind: 'user-follow-up', payload: { text: '不对' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+    ]
+    expect(buildFailureCases(beforeLoad)).toEqual([])
+    const events = [
+      event({ id: 'loaded-2', sessionId: 's2', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'tool', sessionId: 's2', kind: 'tool-result', payload: { failed: true } }),
+      event({ id: 'ack', sessionId: 's2', kind: 'user-follow-up', payload: { text: '好的' } }),
+      event({ id: 'wrong', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: false } }),
+    ]
+    expect(buildFailureCases(events).find(item => item.id === 'failure:wrong')).toMatchObject({ severity: 'medium' })
+    const payloadFailure = buildFailureCases([events[0]!, events[1]!, event({ id: 'wrong-payload', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: true } })])[0]
+    expect(payloadFailure).toMatchObject({ severity: 'low', attribution: 'tool', attributionSource: 'tool' })
+  })
+
+  it('covers rule policy, explicit precedence, tool corrections, and overrides', () => {
+    const sessionEvents = [
+      event({ id: 'loaded-policy', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'thanks', kind: 'user-follow-up', payload: { text: '谢谢' } }),
+      event({ id: 'okay', kind: 'user-follow-up', payload: { text: '好的' } }),
+      event({ id: 'continue', kind: 'user-follow-up', payload: { text: '继续' } }),
+      event({ id: 'constraint', kind: 'user-follow-up', payload: { text: '必须保留第二步' } }),
+      event({ id: 'topic', kind: 'user-follow-up', payload: { text: '顺便问一下部署时间' } }),
+    ]
+    const resolutions = resolveFollowUps(sessionEvents)
+    expect(resolutions.slice(0, 3).map(item => item.intent)).toEqual(['satisfied', 'satisfied', 'not-attributable'])
+    expect(buildFailureCases(sessionEvents)).toHaveLength(1)
+    expect(buildFailureCases(sessionEvents).find(item => item.id === 'failure:constraint')).toMatchObject({ severity: 'low', intent: 'constraint' })
+    const topicCases = buildFailureCases([event({ id: 'topic-only', kind: 'user-follow-up', payload: { text: '换个话题' } })])
+    expect(topicCases).toHaveLength(0)
+    expect(buildFailureCases([event({ id: 'explicit-satisfied', kind: 'user-follow-up', payload: { explicit: true, feedbackKind: 'satisfied', text: 'done' } })])).toHaveLength(0)
+    expect(buildFailureCases([event({ id: 'explicit-incorrect', kind: 'user-follow-up', skill: skill(), payload: { explicit: true, feedbackKind: 'incorrect', text: 'wrong' } })])[0]).toMatchObject({ severity: 'high' })
+
+    const loadFailedPayload = [event({ id: 'load-payload', kind: 'skill-loaded', sessionId: 'load-payload-session', skill: skill() }), event({ id: 'follow-payload', kind: 'user-follow-up', sessionId: 'load-payload-session', skill: skill(), payload: { text: '不对', precedingToolKind: 'skill-load-failed', precedingToolFailed: true } })]
+    const loadFailedOffline = [event({ id: 'load-offline', kind: 'skill-load-failed', sessionId: 'load-offline-session', skill: skill() }), event({ id: 'follow-offline', kind: 'user-follow-up', sessionId: 'load-offline-session', skill: skill(), payload: { text: '不对' } })]
+    expect(buildFailureCases(loadFailedPayload)[0]).toMatchObject({ severity: 'medium', attribution: 'composition' })
+    expect(buildFailureCases(loadFailedOffline).find(item => item.id === 'failure:follow-offline')).toMatchObject({ severity: 'medium', attribution: 'composition' })
+    const failedToolOffline = [event({ id: 'tool-loaded', kind: 'skill-loaded', sessionId: 'tool-session', skill: skill() }), event({ id: 'tool-offline', kind: 'tool-result', sessionId: 'tool-session', payload: { failed: true } }), event({ id: 'follow-tool-offline', kind: 'user-follow-up', sessionId: 'tool-session', payload: { text: '不对' } })]
+    expect(buildFailureCases(failedToolOffline)[0]).toMatchObject({ severity: 'low', attribution: 'tool' })
+    const override = buildFailureCases([event({ id: 'override', kind: 'user-follow-up', skill: skill(), payload: { text: '不对', attributionOverride: 'content' } })])[0]
+    expect(override).toMatchObject({ attribution: 'content', attributionSource: 'override' })
+    const explicitTool = buildFailureCases([event({ id: 'explicit-tool', kind: 'user-follow-up', skill: skill(), payload: { explicit: true, feedbackKind: 'incorrect', text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: true } })])[0]
+    expect(explicitTool).toMatchObject({ severity: 'high', intent: 'incorrect' })
+    expect(explicitTool?.attribution).toBeUndefined()
+  })
+
+  it('keeps diagnosis timestamps and ids stable across projections', () => {
+    const events = [event({ id: 'loaded-stable', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, occurredAt: '2026-09-25T00:00:00.000Z' }), event({ id: 'wrong-stable', kind: 'user-follow-up', payload: { text: '不对' }, occurredAt: '2026-09-25T00:00:01.000Z' })]
+    const failures = buildFailureCases(events); const clusters = clusterFailureCases(failures)
+    const first = new EvolutionWorkflow(); first.add(events)
+    const second = new EvolutionWorkflow(); second.add(events)
+    expect(second.snapshot().diagnoses).toEqual(first.snapshot().diagnoses)
+  })
+
   it('projects experience, failure cases, clusters, and conservative diagnoses', () => {
     const events = [
       event({ id: 'load', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown', contentHash: 'v1' } }),
@@ -89,7 +158,7 @@ describe('phase 2 evidence workflow', () => {
   it('records structured failure origins and diagnoses them without parsing free text', () => {
     const cases = buildFailureCases([
       event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
-      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'upload this again', explicit: false } }),
+      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong, upload this again', explicit: false } }),
       event({ id: 'explicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong command', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } }),
       event({ id: 'load', kind: 'skill-load-failed', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'download failed' } }),
     ])
@@ -121,6 +190,12 @@ describe('phase 2 evidence workflow', () => {
       skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' },
       payload: { explicit: true, feedbackKind, text: 'the wording is irrelevant' },
     })])
+    if (feedbackKind === 'goal-changed') {
+      expect(failure).toBeUndefined()
+      const synthetic = { id: 'failure:goal', skillName: 'api-debugging', task: 'debug', failure: 'topic changed', evidenceEventIds: ['goal'], severity: 'low' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'explicit-feedback' as const, feedbackKind }
+      expect(diagnoseFailureCluster({ id: 'cluster:api-debugging:failure:goal', skillName: 'api-debugging', signature: 'topic changed', caseIds: [synthetic.id], occurrenceCount: 1, createdAt: synthetic.createdAt, status: 'open' }, [synthetic]).rootCause).toBe(rootCause)
+      return
+    }
     expect(failure).toMatchObject({ origin: 'explicit-feedback', feedbackKind })
     expect(diagnoseFailureCluster({
       id: `cluster:api-debugging:${failure!.id}`, skillName: 'api-debugging', signature: 'irrelevant',
@@ -676,8 +751,8 @@ describe('phase workflow orchestration', () => {
     const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
     const evaluated = (await service.proposals.readAll()).find(item => item.id === 'artifact-proposal:evaluated')!
     const accepted = await service.acceptProposal(evaluated, 'reviewed')
-    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toThrow('persisted evaluation artifact')
-    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toThrow('supplied evaluation')
+    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('persisted evaluation artifact'), code: 'evaluation-missing' })
+    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('supplied evaluation'), code: 'evaluation-mismatch' })
   })
 
   it('turns explicit maintainer feedback into durable evidence and Markdown review output', async () => {

@@ -97,9 +97,6 @@ export class SkillVersionStore {
     const expected = options.expectedBase ?? proposal.expectedBase
     const current = await this.readCurrentUnlocked(proposal.skillName)
     assertExpectedBase(expected, current)
-    if (current !== undefined && current.manifest.version !== 'unversioned' && current.manifest.version !== proposal.baseVersion) {
-      throw new Error(`stale Skill base version for "${proposal.skillName}": expected ${proposal.baseVersion}, actual ${current.manifest.version}`)
-    }
     const validation = validateSkillDocument(proposal.candidateContent, proposal.skillName)
     if (!validation.valid) throw new Error(`candidate Skill is invalid: ${validation.errors.join('; ')}`)
     const changeValidation = validateSkillCandidate(current?.content ?? '', proposal.candidateContent, proposal.skillName)
