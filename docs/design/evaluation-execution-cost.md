@@ -1,7 +1,7 @@
 > 状态：SKIL-130 设计提案（父 issue SKIL-129 的 S1）。不可逆决策见 ADR-0029、0030、0031，三份都是 `proposed`，等成员确认。
 > 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
 
-本文回答 SKIL-129 的七个问题：步数口径、token 口径、多次采样与统计、上下文成本算法、分类别门槛、兼容、验收用例。基线是 `origin/main` @ `2a442af`（起草后合入的 `6accc8b` 只新增台账 record id 的设计稿和 ADR，没有改代码；`63d2007`（SKIL-134）只改了 `experience.ts`、`types.ts`、README 和测试，`evaluator.ts` 和 adapter 没动，`types.ts` 的行号已按 `63d2007` 更新。两次都已复核）。本文只出设计，不写实现代码。
+本文回答 SKIL-129 的七个问题：步数口径、token 口径、多次采样与统计、上下文成本算法、分类别门槛、兼容、验收用例。基线是 `origin/main` @ `2a442af`（起草后合入的 `6accc8b` 只新增台账 record id 的设计稿和 ADR，没有改代码；`63d2007`（SKIL-134）只改了 `experience.ts`、`types.ts`、README 和测试，`evaluator.ts` 和 adapter 没动，`types.ts` 的行号已按 `63d2007` 更新；`9975647`（SKIL-128）只新增设计稿和 ADR-0023、0024，没有改代码。三次都已复核）。本文只出设计，不写实现代码。
 
 优化目标（来自 SKIL-129）：
 
@@ -21,7 +21,7 @@ s.t.   P(V(τ)=pass | x, S) ≥ P(V(τ)=pass | x, S_base)，且不新增安全�
 - bundle：`packages/dsh-bundle/index.js:185-225,340-380`（评测入口、catalog 与 Skill 加载的映射）。
 - 测试：`packages/skill-evolution/tests/evolution.spec.ts:110-175`、`tests/cli.spec.mjs:60-115`。
 - 文档：`CONTEXT.md`、`AGENTS.md`、`docs/agents/domain.md`、ADR-0004、0006、0014、0015、0016，`docs/governance/documentation.md`。
-- 相邻设计：PR #82（SKIL-128，`docs/design/tool-correction-create-skill.md` §6.1、§7，Base = absent 的评测）。
+- 相邻设计：SKIL-128（PR #82，已在 `9975647` 合入 main；`docs/design/tool-correction-create-skill.md` §6.1、§7，Base = absent 的评测）。
 - 基线：`npm --prefix packages/skill-evolution run build` 通过，`npx vitest run tests` 输出 `Tests  134 passed (134)`；`dsh-adapter` 输出 `Tests  9 passed (9)`；`dsh-bundle` 输出 `ℹ tests 15`、`ℹ pass 15`。
 
 ### 1.2 现状要点
@@ -387,7 +387,7 @@ CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `
 
 - 用例类别仍是 `original-failure`、`historical-success`、`boundary` 三类，不新增。
 - 步数 = 工具调用次数、失败和重试都算，正对应 SKIL-128 里每条 `tool-result` Observation。SKIL-127「省了多少」可以直接读 original-failure 的 `cost.categories[...].steps.relativeChange`。
-- Base = absent（SKIL-128 ADR「create-skill proposals use an absent base」，PR #82）：Base 的上下文成本为 0；runner 收到 `context.exposure: 'base'` 和空正文，不需要再靠正文比较猜。create-skill 的 Candidate 可能超过 §5.3 的缺省上下文阈值，需要在 policy 里显式调高。
+- Base = absent（ADR-0024，accepted；它要求 Base 为空时 baseline 真跑 `runner('', case)`，正好就是 §4.3 复用的主循环 Base Sample）：Base 的上下文成本为 0；runner 收到 `context.exposure: 'base'` 和空正文，不需要再靠正文比较猜。create-skill 的 Candidate 可能超过 §5.3 的缺省上下文阈值，需要在 policy 里显式调高。
 
 ## 10. 实现拆分建议（供 S2）
 
@@ -420,8 +420,8 @@ CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `
 - ADR-0030：`EvaluationPolicy` schema 2 的形状、缺省值和成本路径的通过率前提；Evaluation artifact 写入 policy 快照和 `policyHash`、原始 Sample 和统计方法 id `stratified-permutation-v1`（含抽样算法）；schema 2 下 promote 必须 `policyHash` 相等。
 - ADR-0031：上下文成本 = 目录描述 token + 加载正文 token，估算器 `utf8-bytes-div4-v1`，评测和 `metrics` 共用；门槛比绝对增量。
 
-**ADR 编号**：`origin/main` @ `63d2007` 上最大是 0022（SKIL-134）。开着的 PR 占用了 0022–0028：#80 用 0022，#81 用 0022–0024，#82 用 0023–0024，#84 用 0025–0028。本稿取没人占用的 0029–0031。按评审契约第 4 条，号仍以合并顺序为准，后合并的 PR 改号。
+**ADR 编号**：`origin/main` @ `9975647` 上最大是 0024（0022 来自 SKIL-134，0023、0024 来自 SKIL-128）。开着的 PR 占用了 0022–0028：#80 用 0022，#81 用 0023–0025，#84 用 0025–0028。本稿取没人占用的 0029–0031。按评审契约第 4 条，号仍以合并顺序为准，后合并的 PR 改号。
 
-**ADR 冲突**：没有与已有 ADR 冲突。ADR-0014：步数和 token 由 adapter / executor 提供，core 只定义字段和口径，不认识 DSH 事件。ADR-0015：不碰 Provider rank，也不做运行时按成本选 Skill。ADR-0016：Sample 和统计结果写进 Evaluation artifact，是加法；不回写 Observation。ADR-0004：不涉及 Proposal status。
+**ADR 冲突**：没有与已有 ADR 冲突。ADR-0014：步数和 token 由 adapter / executor 提供，core 只定义字段和口径，不认识 DSH 事件。ADR-0015：不碰 Provider rank，也不做运行时按成本选 Skill。ADR-0016：Sample 和统计结果写进 Evaluation artifact，是加法；不回写 Observation。ADR-0004：不涉及 Proposal status。ADR-0022：只动 Failure case 的来源和问题簇，与评测无交集。ADR-0024：Base = absent 时 baseline 真跑，本稿的 Sample 和上下文成本都按它处理（§9）。
 
 **`CONTEXT.md` 待补词条**（成员确认 ADR 后放进同一个 PR）：**Sample**（一个 Evaluation case 在一侧的一次运行；_Avoid_: trial, run）、**Execution cost**（一条轨迹的步数和 token，只在通过的 Sample 上比较）、**Context cost**（一份 Skill 正文在目录曝光和加载时占用的 token 估计，由 core 从正文确定性算出）。**Evaluation** 词条补一句：每个 Evaluation case 在两侧各跑 R 次。
