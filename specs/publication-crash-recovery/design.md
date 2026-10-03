@@ -69,6 +69,8 @@ Promote Observation id `adoption:<root>`，occurredAt = startedAt，payload 保�
 
 接口补全问题 Q3（business judgment）：已合并的 `specs/proposal-ledger-transition/design.md` 的 TransitionInput 尚无固定时间字段，而 ADR-0032 要求所有时间取 startedAt。推荐 Task 4 为 TransitionInput 添加可选 `occurredAt: string`，发布收尾传 startedAt；新台账 updatedAt 与其 decision.createdAt 使用该值，未提供时保留台账原来的时钟行为。replay 使用已持久化记录的 updatedAt 补 decision，不以本次时钟重建；不改写已有事实。采用默认答案，成员可推翻。这是满足 ADR-0032 的加性时间输入，不更改 ADR-0021 的编号、判重或转移合法性；Task 4 负责最小接线与测试，不重做 SKIL-121。
 
+Task 4 的台账依赖按 journal.record.actor 构造（复用相同 stores），不能让换 operator 的 repair 改变发布原 actor。切换时已由临时步骤写出的无 previousRecordId 目标记录不能直接走 ADR-0021 replay：publication 的兼容分支精确匹配 `<root>:<targetStatus>`、候选/version、updatedAt = startedAt 和唯一来源，确认同次完成后仅补旧格式缺失 decision；已有旧 decision 时不再追加新格式副本，不修改旧记录。不匹配则按永久冲突隔离。只有这类升级中的历史记录保留 decision 补写兼容分支；所有新 Ledger record 都经 transition，不保留临时 Proposal append。
+
 重跑：先收尾旧 journal，再按最新台账与 current 版本/hash 判断已经发布成功，命中时跳过 artifact（即使过期）、不做任何写入；Rollback 完成旧 journal 后 current 版本/hash 等于目标即返回。显式选项校验仍在入口进行。没有 journal 的非 dry-run 才进入正常校验和新提交。
 
 explicit-only 的同参数重跑改以最新 promoted 加持久 `adoption:<root>` 为凭据：payload.scope 为 explicit-only，skill.version/contentHash 匹配该候选即可，不检查 live 等于候选。不同 scope 不当作同次成功；沿正常校验拒绝非法状态。无 record 的 store explicit-only 没有事实或 live 完成标记，只承诺活动 journal 的文件空步骤可收尾，不扩大 R-5 的 service 重跑保证。

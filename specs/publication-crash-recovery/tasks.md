@@ -51,6 +51,7 @@
 - **Requirements:** R-3、R-7、R-15；全 P/R/H/G/C/L 矩阵保持。
 - **范围:** completePublication 注入的临时台账步骤改为 ProposalLedger.transition，精确 journal.fromRecordId、previousRecordId+目标状态幂等，decision 由该 API 生成/补齐；按 design.md Q3 添加可选 TransitionInput.occurredAt，仅接线固定时间生成，新 transition 的 updatedAt/decision.createdAt 取 startedAt，replay 补 decision 使用持久化 updatedAt。移除临时 record/decision 拼接，不修改 journal v:1、不实施或重写 ADR-0021 编号器。G1 切换后只断言 conflict，publication conflict 分类映射台账的真实错误类型。publicationState helper 的 root 解析改用 ADR-0021 精确 root 函数以支持带编号记录，不能用旧正则截编号。
 - **验收:** 全部普通 P/R/H/G/C/L 用例仍通过，P4/R5 台账已有且 decision 缺失时 transition 返回原记录并补唯一 `decision:ledger:<recordId>`；新 journal 和旧 journal L1 的 updatedAt/decision.createdAt 均逐字等于固定 startedAt，变更时钟再 repair 不改变已有记录；未提供 occurredAt 的原台账测试保持通过。journal.fromRecordId 不是最新但已经同次转移时幂等成功，确实被另一转移取代时 conflict→隔离，G1 保持拒绝且无 reject 写入。既有 `<root>:<status>` 老记录仍可由恢复读取，不改写历史 Fact record；有 SKIL-121 编号记录的根解析/精确定位 fixture 通过。升级前临时 transition decision 按 ADR-0021 的旧 decision 兼容规则保留，不迁移旧事实；进行中的 v:1 journal 在切换后可完成。运行全部五项包命令并附输出。
+- **升级验收:** 在临时步骤的 Ledger append 后、decision 前留下 Promote/Rollback journal，再切换实现运行 repair；精确识别旧目标记录，恰好补旧格式 decision，不写新 Ledger record/第二份 decision。已有旧 decision 的 fixture 保持原字节；不匹配时间或来源的 fixture 隔离。更换 service operator 后收尾的新/补写 decision.actor 仍等于 journal.record.actor。仅保留旧 decision 的补写兼容分支，所有新 Proposal append 仍只在 ledger.ts。
 
 ## 回归责任索引
 
