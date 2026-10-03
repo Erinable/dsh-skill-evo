@@ -150,7 +150,16 @@ export class EvolutionService {
 
   async metrics(): Promise<EvolutionMetrics> {
     const snapshot = await this.refreshDerived()
-    return aggregateMetrics(await this.observations.readAll(), await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps)
+    const events = await this.observations.readAll()
+    const skillNames = new Set([
+      ...events.flatMap(event => event.skill?.name === undefined ? [] : [event.skill.name]),
+      ...snapshot.followUps.flatMap(resolution => resolution.skillName === undefined ? [] : [resolution.skillName]),
+    ])
+    const currentSkills = (await Promise.all([...skillNames].map(async name => {
+      const current = await this.versions.readCurrent(name)
+      return current === undefined ? undefined : { name, content: current.content }
+    }))).filter((skill): skill is { name: string; content: string } => skill !== undefined)
+    return aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
   }
 
   async health(): Promise<readonly JsonlHealth[]> {

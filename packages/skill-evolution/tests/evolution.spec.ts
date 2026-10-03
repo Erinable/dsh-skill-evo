@@ -780,4 +780,17 @@ describe('phase workflow orchestration', () => {
     ]
     expect(aggregateMetrics(events).skills[0]).toMatchObject({ skillName: 'api-debugging', exposed: 1, loadSucceeded: 1, followUps: 1, exposureToLoadRate: 1 })
   })
+
+  it('adds content-derived context metrics while retaining host-reported context cost', () => {
+    const content = '---\nname: api-debugging\ndescription: Debug APIs\n---\n\nUse curl.\n'
+    const measured = aggregateMetrics([
+      event({ id: 'catalog', kind: 'catalog-visible', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { inputTokens: 7 } }),
+    ], [], [], [], [{ name: 'api-debugging', content }])
+    const skill = measured.skills[0]!
+    expect(skill.context).toMatchObject({ catalogTokens: expect.any(Number), loadTokens: expect.any(Number), exposureWeightedTokens: expect.any(Number) })
+    expect(measured.skillContext.estimator).toBe('utf8-bytes-div4-v1')
+    expect(measured.contextCost).toBe(7)
+    expect(measured.skillContext.exposureWeightedTokens).toBe((skill.context?.catalogTokens ?? 0) + (skill.context?.loadTokens ?? 0))
+  })
 })

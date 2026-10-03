@@ -1,5 +1,17 @@
 import type { DecisionRecord, RuntimeObservation, SkillProposal, FollowUpResolution } from './types.js'
 import { latestProposalsByRoot, proposalRootId } from './proposal.js'
+import { measureSkillContext } from './evaluation-cost.js'
+
+export interface CurrentSkillContent {
+  readonly name: string
+  readonly content: string
+}
+
+export interface SkillContextMetric {
+  readonly catalogTokens: number
+  readonly loadTokens: number
+  readonly exposureWeightedTokens: number
+}
 
 export interface SkillUsageMetric {
   readonly skillName: string
@@ -12,6 +24,7 @@ export interface SkillUsageMetric {
   readonly loadFailureRate: number
   readonly followUpRate: number
   readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
+  readonly context?: SkillContextMetric
 }
 
 export interface EvolutionMetrics {
@@ -20,6 +33,7 @@ export interface EvolutionMetrics {
   readonly skills: readonly SkillUsageMetric[]
   readonly proposals: { readonly total: number; readonly promoted: number; readonly rejected: number; readonly rolledBack: number }
   readonly contextCost: number
+  readonly skillContext: SkillContextMetric & { readonly estimator: 'utf8-bytes-div4-v1' }
   readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
 }
 
@@ -29,6 +43,7 @@ export function aggregateMetrics(
   proposals: readonly SkillProposal[] = [],
   decisions: readonly DecisionRecord[] = [],
   resolutions: readonly FollowUpResolution[] = [],
+  currentSkills: readonly CurrentSkillContent[] = [],
 ): EvolutionMetrics {
   const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string>; resolutions: FollowUpResolution[] }>()
   const sessions = new Set<string>()
@@ -55,7 +70,23 @@ export function aggregateMetrics(
     metric.resolutions.push(resolution)
     bySkill.set(resolution.skillName, metric)
   }
-  const skills = [...bySkill.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([skillName, metric]) => ({
+  const contentBySkill = new Map(currentSkills.map(skill => [skill.name, skill.content]))
+  const skillContext = { estimator: 'utf8-bytes-div4-v1' as const, catalogTokens: 0, loadTokens: 0, exposureWeightedTokens: 0 }
+  const skills = [...bySkill.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([skillName, metric]) => {
+    const content = contentBySkill.get(skillName)
+    const context = content === undefined ? undefined : (() => {
+      const measured = measureSkillContext(content)
+      const result = {
+        catalogTokens: measured.catalogTokens,
+        loadTokens: measured.loadTokens,
+        exposureWeightedTokens: measured.catalogTokens * metric.exposed.size + measured.loadTokens * metric.succeeded.size,
+      }
+      skillContext.catalogTokens += result.catalogTokens
+      skillContext.loadTokens += result.loadTokens
+      skillContext.exposureWeightedTokens += result.exposureWeightedTokens
+      return result
+    })()
+    return {
     skillName,
     exposed: metric.exposed.size,
     loadRequested: metric.requested.size,
@@ -66,7 +97,9 @@ export function aggregateMetrics(
     loadFailureRate: rate(metric.failed.size, metric.requested.size),
     followUpRate: rate(metric.followUps.size, metric.succeeded.size),
     followUpIntents: intentMetrics(metric.resolutions),
-  }))
+    ...(context === undefined ? {} : { context }),
+  }
+  })
   const latestProposals = latestProposalsByRoot(proposals)
   const promoted = decisionKeys(decisions, 'promoted', 'promoted')
   const rejected = decisionKeys(decisions, 'rejected', 'rejected')
@@ -82,6 +115,7 @@ export function aggregateMetrics(
       rolledBack: rolledBack.size,
     },
     contextCost,
+    skillContext,
     followUpIntents: intentMetrics(resolutions),
   }
 }
