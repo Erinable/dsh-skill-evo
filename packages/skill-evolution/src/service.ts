@@ -16,8 +16,9 @@ import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEntry } from './follow-up.js'
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
-import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
+import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier, CorrectionClassificationMemoEntry, CorrectionEpisode, CorrectionPattern, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
+import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, groupPatterns, recognizeCorrections } from './correction.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -46,6 +47,7 @@ export interface EvolutionServiceOptions {
   readonly evaluationTtlMs?: number
   readonly followUpClassifier?: FollowUpClassifier
   readonly classifierTimeoutMs?: number
+  readonly correctionClassifier?: CorrectionClassifier
 }
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
@@ -59,7 +61,9 @@ export class EvolutionService {
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
   readonly skillWindows: JsonlRecordStore<SkillWindow>
-  readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
+  readonly classifications: JsonlRecordStore<ClassificationMemo>
+  readonly episodes: JsonlRecordStore<CorrectionEpisode>
+  readonly patterns: JsonlRecordStore<CorrectionPattern>
   readonly followUps: JsonlRecordStore<FollowUpResolution>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
@@ -69,11 +73,13 @@ export class EvolutionService {
   readonly layout: ReturnType<typeof resolveLayout>
   readonly followUpClassifier: FollowUpClassifier | undefined
   readonly classifierTimeoutMs: number
+  readonly correctionClassifier: CorrectionClassifier | undefined
 
   constructor(private readonly options: EvolutionServiceOptions) {
     this.evaluationPolicy = options.evaluationPolicy
     this.followUpClassifier = options.followUpClassifier
     this.classifierTimeoutMs = options.classifierTimeoutMs ?? 10_000
+    this.correctionClassifier = options.correctionClassifier
     this.layout = resolveLayout({ root: options.root, observationStore: options.store })
     this.projectionCursorPath = this.layout.cursorPath
     const path = (name: string) => this.layout.stores.find(store => store.name === name)!.path
@@ -87,6 +93,8 @@ export class EvolutionService {
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
     this.skillWindows = new JsonlRecordStore(path('skill-windows'))
     this.classifications = new JsonlRecordStore(path('classifications'))
+    this.episodes = new JsonlRecordStore(path('episodes'))
+    this.patterns = new JsonlRecordStore(path('patterns'))
     this.followUps = new JsonlRecordStore(path('follow-ups'))
     this.feedback = new JsonlRecordStore(path('feedback'))
     this.evaluations = new JsonlRecordStore(path('evaluations'))
@@ -195,7 +203,7 @@ export class EvolutionService {
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
     await this.refreshDerived()
-    const memo = new Map((await this.classifications.readAll()).map(entry => [entry.id, entry]))
+    const memo = new Map<string, ClassificationMemoEntry>((await this.classifications.readAll()).filter((entry): entry is ClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge !== 'correction').map(entry => [entry.id, entry]))
     const workflow = new EvolutionWorkflow({ memo, classifierVersion: this.followUpClassifier?.version })
     workflow.add(await this.observations.readAll())
     const proposal = await workflow.propose(clusterId, designer)
@@ -367,9 +375,9 @@ export class EvolutionService {
     const lastId = observations.at(-1)?.id
     const fingerprint = fingerprintOf(observations.map(item => item.id))
     const memoEntries = await this.classifications.readAll()
-    const memo = new Map(memoEntries.map(entry => [entry.id, entry]))
+    const memo = new Map(memoEntries.filter((entry): entry is ClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge !== 'correction').map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
-    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
+    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null, correction: { rules: CORRECTION_RULES_VERSION, policy: CORRECTION_POLICY_VERSION, classifier: this.correctionClassifier?.version ?? 'none' } }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
       return {
         experiences: await this.experiences.readAll(),
@@ -377,19 +385,33 @@ export class EvolutionService {
         clusters: await this.clusters.readAll(),
         diagnoses: await this.diagnoses.readAll(),
         followUps: await this.followUps.readAll(),
+        episodes: await this.episodes.readAll(), patterns: await this.patterns.readAll(),
       }
     }
     const workflow = new EvolutionWorkflow({ memo, ...(this.followUpClassifier === undefined ? {} : { classifierVersion: this.followUpClassifier.version }) })
     workflow.add(observations)
     const snapshot = workflow.snapshot()
+    const episodes: CorrectionEpisode[] = []
+    const memoMap = new Map(memoEntries.filter((entry): entry is CorrectionClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge === 'correction').map(entry => [entry.id, entry]))
+    const sessions = new Map<string, RuntimeObservation[]>()
+    for (const event of observations) if (event.sessionId !== undefined) sessions.set(event.sessionId, [...sessions.get(event.sessionId) ?? [], event])
+    for (const [sessionId, sessionEvents] of sessions) {
+      const attempts = correlateToolAttempts(sessionEvents); const hash = createContentHash(JSON.stringify(attempts)); const version = this.correctionClassifier?.version ?? CORRECTION_RULES_VERSION
+      const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
+      const drafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
+      for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : (this.correctionClassifier ? 'not-classified' : undefined)))
+    }
+    const patterns = groupPatterns(episodes)
     await this.skillWindows.replaceAll(buildSkillWindows(observations))
     await this.experiences.replaceAll(snapshot.experiences)
     await this.followUps.replaceAll(snapshot.followUps)
     await this.failures.replaceAll(snapshot.failures)
     await this.clusters.replaceAll(snapshot.clusters)
     await this.diagnoses.replaceAll(snapshot.diagnoses)
+    await this.episodes.replaceAll(episodes)
+    await this.patterns.replaceAll(patterns)
     await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey })
-    return snapshot
+    return { ...snapshot, episodes, patterns }
   }
 }
 

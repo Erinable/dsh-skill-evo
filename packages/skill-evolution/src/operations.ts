@@ -10,6 +10,8 @@ import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import { classificationInputFor, isFollowUpClassification } from './follow-up.js'
 import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
+import { correlateToolAttempts, inputHash } from './correction.js'
+import type { CorrectionClassificationMemoEntry } from './types.js'
 
 export { OperationError } from './errors.js'
 
@@ -126,6 +128,26 @@ export async function classifyFollowUps(service: EvolutionService, options: { re
     } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort) }
   }
   return { classifierVersion: classifier.version, classified, cached, skipped: { explicit, pending }, failed }
+}
+
+export interface ClassifyCorrectionsResult { readonly classifierVersion: string; readonly classified: number; readonly cached: number; readonly skipped: { readonly open: number }; readonly failed: readonly { readonly sessionId: string; readonly reason: 'timeout' | 'error' | 'invalid-output'; readonly message: string }[] }
+export async function classifyCorrections(service: EvolutionService, options: { readonly signal?: AbortSignal; readonly limit?: number } = {}): Promise<ClassifyCorrectionsResult> {
+  const classifier = service.correctionClassifier
+  if (classifier === undefined) throw new OperationError('classifier-unavailable', 'correction classifier is not configured')
+  const events = await service.observations.readAll(); const sessions = [...new Set(events.flatMap(e => e.sessionId === undefined ? [] : [e.sessionId]))]; const existing = new Map((await service.classifications.readAll()).map(item => [item.id, item])); let classified = 0; let cached = 0; let open = 0
+  const failed: ClassifyCorrectionsResult['failed'][number][] = []
+  for (const sessionId of sessions.slice(0, options.limit ?? Number.POSITIVE_INFINITY)) {
+    const session = events.filter(e => e.sessionId === sessionId); if (!session.some(e => e.kind === 'task-finished')) { open++; continue }
+    const attempts = correlateToolAttempts(session); const hash = inputHash(attempts); const id = `classification:correction:${classifier.version}:${hash}`; if (existing.has(id)) { cached++; continue }
+    if (options.signal?.aborted) break
+    try {
+      const controller = new AbortController(); const result = await classifier.classify({ sessionId, attempts }, controller.signal)
+      if (!Array.isArray(result)) { failed.push({ sessionId, reason: 'invalid-output', message: 'classifier returned invalid drafts' }); continue }
+      const memo: CorrectionClassificationMemoEntry = { id, judge: 'correction', classifierVersion: classifier.version, inputHash: hash, sessionId, drafts: result, createdAt: new Date().toISOString() }
+      await service.classifications.append(memo); existing.set(id, memo); classified++
+    } catch (error) { failed.push({ sessionId, reason: 'error', message: error instanceof Error ? error.message : String(error) }) }
+  }
+  return { classifierVersion: classifier.version, classified, cached, skipped: { open }, failed }
 }
 
 export interface RollbackSkillOptions {

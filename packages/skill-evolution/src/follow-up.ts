@@ -15,6 +15,10 @@ export function isFollowUpClassification(value: unknown): value is Pick<Classifi
 }
 
 export function isClassificationMemoEntry(value: unknown): value is ClassificationMemoEntry {
+  if (typeof value === 'object' && value !== null && (value as Record<string, unknown>).judge === 'correction') {
+    const row = value as Record<string, unknown>
+    return typeof row.id === 'string' && typeof row.classifierVersion === 'string' && typeof row.inputHash === 'string' && row.id === `classification:correction:${row.classifierVersion}:${row.inputHash}` && typeof row.sessionId === 'string' && Array.isArray(row.drafts) && typeof row.createdAt === 'string'
+  }
   if (!isFollowUpClassification(value)) return false
   const row = value as unknown as Record<string, unknown>
   return typeof row.classifierVersion === 'string' && typeof row.inputHash === 'string'
