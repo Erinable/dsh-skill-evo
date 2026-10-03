@@ -4,6 +4,7 @@ export type OperationErrorCode =
   | 'invalid-option'
   | 'stale-base'
   | 'invalid-transition'
+  | 'conflict'
   | 'evaluation-missing'
   | 'evaluation-mismatch'
   | 'gate-failed'
