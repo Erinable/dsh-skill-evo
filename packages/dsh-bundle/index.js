@@ -43,11 +43,11 @@ export function createDefaultEventMapper() {
     }
 
     if (event.type === 'tool/call') {
-      return mapToolCall(base, event, sessionId, toolCalls)
+      return mapToolCall(base, event, sessionId, toolCalls, sessions)
     }
 
     if (event.type === 'tool/result') {
-      return mapToolResult(base, event, sessionId, toolCalls)
+      return mapToolResult(base, event, sessionId, toolCalls, sessions)
     }
 
     if (event.type === 'turn/end') {
@@ -361,6 +361,7 @@ function mapUserMessage(base, event, sessions) {
   }
 
   if (source?.kind === 'skill-invocation' && typeof source.name === 'string') {
+    clearPrecedingToolState(sessions, base.sessionId)
     const text = textFromContent(data.content)
     const contentHash = skillContentHash(text)
     return {
@@ -379,6 +380,13 @@ function mapUserMessage(base, event, sessions) {
     const state = sessions.get(base.sessionId) ?? { userMessages: 0 }
     const isFollowUp = state.userMessages > 0
     state.userMessages += 1
+    const preceding = isFollowUp
+      ? {
+          ...(state.precedingToolKind === undefined ? {} : { precedingToolKind: state.precedingToolKind }),
+          ...(state.precedingToolFailed === undefined ? {} : { precedingToolFailed: state.precedingToolFailed }),
+        }
+      : {}
+    clearPrecedingToolState(sessions, base.sessionId)
     sessions.set(base.sessionId, state)
     if (isFollowUp) {
       const text = textFromContent(data.content)
@@ -389,6 +397,7 @@ function mapUserMessage(base, event, sessions) {
         payload: {
           ...base.payload,
           ...(text === undefined ? {} : { text: redactSensitiveText(text) }),
+          ...preceding,
         },
       }
     }
@@ -397,7 +406,7 @@ function mapUserMessage(base, event, sessions) {
   return base
 }
 
-function mapToolCall(base, event, sessionId, toolCalls) {
+function mapToolCall(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId)
   const toolName = stringValue(data?.name)
@@ -407,6 +416,7 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   if (callId !== undefined) toolCalls.set(`${sessionId}:${callId}`, call)
 
   if (toolName === 'skill' && skillName !== undefined) {
+    setPrecedingToolState(sessions, sessionId, 'skill-load-requested', false)
     return {
       ...base,
       kind: 'skill-load-requested',
@@ -428,7 +438,7 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   }
 }
 
-function mapToolResult(base, event, sessionId, toolCalls) {
+function mapToolResult(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId) ?? stringValue(asRecord(data?.message)?.source?.callId)
   const call = callId === undefined ? undefined : toolCalls.get(`${sessionId}:${callId}`)
@@ -446,6 +456,7 @@ function mapToolResult(base, event, sessionId, toolCalls) {
   if (call?.toolName === 'skill' && call.skillName !== undefined) {
     const text = textFromToolResult(data)
     const contentHash = failed ? undefined : skillContentHash(text)
+    setPrecedingToolState(sessions, sessionId, failed ? 'skill-load-failed' : 'skill-loaded', failed)
     return {
       ...base,
       kind: failed ? 'skill-load-failed' : 'skill-loaded',
@@ -455,6 +466,7 @@ function mapToolResult(base, event, sessionId, toolCalls) {
     }
   }
 
+  setPrecedingToolState(sessions, sessionId, 'tool-result', failed)
   return {
     ...base,
     kind: 'tool-result',
@@ -542,6 +554,21 @@ function asRecord(value) {
 
 function clearToolCalls(toolCalls, sessionId) {
   for (const key of toolCalls.keys()) if (key.startsWith(`${sessionId}:`)) toolCalls.delete(key)
+}
+
+function clearPrecedingToolState(sessions, sessionId) {
+  const state = sessions.get(sessionId)
+  if (state === undefined) return
+  delete state.precedingToolKind
+  delete state.precedingToolFailed
+}
+
+function setPrecedingToolState(sessions, sessionId, kind, failed) {
+  const state = sessions.get(sessionId) ?? { userMessages: 0, lastSeen: Date.now() }
+  state.precedingToolKind = kind
+  state.precedingToolFailed = failed
+  state.lastSeen = Date.now()
+  sessions.set(sessionId, state)
 }
 
 function clearSession(sessions, toolCalls, sessionId) {

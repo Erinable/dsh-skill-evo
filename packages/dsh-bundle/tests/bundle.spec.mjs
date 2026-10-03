@@ -209,6 +209,76 @@ test('maps failed Skill loads and ordinary tool results separately', () => {
   assert.equal(ordinary.kind, 'tool-result')
 })
 
+test('records the preceding relevant tool activity once per human follow-up turn', () => {
+  const mapEvent = createDefaultEventMapper()
+  const session = { id: 'session-preceding' }
+  const first = mapEvent(session, {
+    seq: 1,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Run the task.' }] },
+  }, { id: 'session-preceding:1' })
+  assert.equal(first.kind, 'agent-step')
+
+  mapEvent(session, {
+    seq: 2,
+    type: 'tool/call',
+    data: { callId: 'call-skill', name: 'skill', arguments: '{"name":"api-debugging"}' },
+  }, { id: 'session-preceding:2' })
+  mapEvent(session, {
+    seq: 3,
+    type: 'tool/result',
+    data: {
+      callId: 'call-skill',
+      message: { content: [{ type: 'tool-result', isError: true, content: [] }] },
+    },
+  }, { id: 'session-preceding:3' })
+
+  const followUp = mapEvent(session, {
+    seq: 4,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Please correct this.' }] },
+  }, { id: 'session-preceding:4' })
+  assert.equal(followUp.kind, 'user-follow-up')
+  assert.equal(followUp.payload.precedingToolKind, 'skill-load-failed')
+  assert.equal(followUp.payload.precedingToolFailed, true)
+
+  const nextFollowUp = mapEvent(session, {
+    seq: 5,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Please correct that too.' }] },
+  }, { id: 'session-preceding:5' })
+  assert.equal(nextFollowUp.kind, 'user-follow-up')
+  assert.equal('precedingToolKind' in nextFollowUp.payload, false)
+  assert.equal('precedingToolFailed' in nextFollowUp.payload, false)
+})
+
+test('tracks ordinary tool results and clears them at the next human turn', () => {
+  const mapEvent = createDefaultEventMapper()
+  const session = { id: 'session-tool-result' }
+  mapEvent(session, {
+    seq: 1,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Start.' }] },
+  }, { id: 'session-tool-result:1' })
+  mapEvent(session, {
+    seq: 2,
+    type: 'tool/call',
+    data: { callId: 'call-other', name: 'shell', arguments: '{}' },
+  }, { id: 'session-tool-result:2' })
+  mapEvent(session, {
+    seq: 3,
+    type: 'tool/result',
+    data: { callId: 'call-other', error: 'failed' },
+  }, { id: 'session-tool-result:3' })
+  const followUp = mapEvent(session, {
+    seq: 4,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Please correct this.' }] },
+  }, { id: 'session-tool-result:4' })
+  assert.equal(followUp.payload.precedingToolKind, 'tool-result')
+  assert.equal(followUp.payload.precedingToolFailed, true)
+})
+
 test('maps turn completion into a task-finished observation', () => {
   const mapEvent = createDefaultEventMapper()
   const result = mapEvent({ id: 'session-7' }, {
