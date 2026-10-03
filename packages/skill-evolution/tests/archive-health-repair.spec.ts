@@ -167,7 +167,7 @@ describe('observation archive health and repair', () => {
     const report = await service.repair()
     expect(report.projectionCursorRebuilt).toBe(true)
     expect(await service.failures.readAll()).toEqual(fresh.failures)
-    expect(await readCursor(cursorPath)).toEqual({ count: 2, lastId: 'second', fingerprint: fingerprintOf(['first', 'second']) })
+    expect(await readCursor(cursorPath)).toMatchObject({ count: 2, lastId: 'second', fingerprint: fingerprintOf(['first', 'second']), derivationKey: expect.any(String) })
   })
 
   it('does not parse an observation tail when standalone repair leaves the cursor alone', async () => {
@@ -226,6 +226,6 @@ describe('observation archive health and repair', () => {
 
     const snapshot = await service.refreshDerived()
     expect(snapshot.failures).toHaveLength(2)
-    expect(await readCursor(cursorPath)).toEqual({ count: 2, lastId: 'current', fingerprint: fingerprintOf(['archived', 'current']) })
+    expect(await readCursor(cursorPath)).toMatchObject({ count: 2, lastId: 'current', fingerprint: fingerprintOf(['archived', 'current']), derivationKey: expect.any(String) })
   })
 })

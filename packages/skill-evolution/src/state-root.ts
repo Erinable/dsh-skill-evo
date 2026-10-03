@@ -8,8 +8,8 @@ import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
-export type StoreRole = 'fact' | 'derived'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'experiences' | 'failures' | 'clusters' | 'diagnoses'
+export type StoreRole = 'fact' | 'derived' | 'memo'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -22,6 +22,7 @@ export interface ProjectionCursor {
   readonly count: number
   readonly lastId?: string
   readonly fingerprint: string
+  readonly derivationKey?: string
 }
 
 export interface EvolutionLayout {
@@ -54,7 +55,9 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['decisions', 'fact', false, join(stateDir, 'decisions.jsonl')],
     ['feedback', 'fact', false, join(stateDir, 'feedback.jsonl')],
     ['evaluations', 'fact', false, join(stateDir, 'evaluations.jsonl')],
+    ['classifications', 'memo', false, join(stateDir, 'classifications.jsonl')],
     ['experiences', 'derived', false, join(stateDir, 'experiences.jsonl')],
+    ['follow-ups', 'derived', false, join(stateDir, 'follow-ups.jsonl')],
     ['failures', 'derived', false, join(stateDir, 'failures.jsonl')],
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
@@ -78,12 +81,13 @@ export function resolveLayout(options: { readonly root: string; readonly observa
 
 export async function readCursor(path: string): Promise<ProjectionCursor | undefined> {
   try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown }
+    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown; derivationKey?: unknown }
     if (typeof value.count !== 'number' || !Number.isFinite(value.count) || typeof value.fingerprint !== 'string') return undefined
     return {
       count: value.count,
       ...(typeof value.lastId === 'string' ? { lastId: value.lastId } : {}),
       fingerprint: value.fingerprint,
+      ...(typeof value.derivationKey === 'string' ? { derivationKey: value.derivationKey } : {}),
     }
   } catch {
     return undefined

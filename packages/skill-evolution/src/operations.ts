@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { createContentHash } from './events.js'
+import { createContentHash, redactSensitiveText } from './events.js'
 import { type EvaluationRunner } from './evaluator.js'
 import { assertCanTransition, findProposalById, ledgerRecordId, proposalRootId, ProposalLedgerError, createProposal } from './proposal.js'
 import { renderProposalMarkdown } from './report.js'
@@ -8,6 +8,8 @@ import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
+import { classificationInputFor } from './follow-up.js'
+import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
 
 export { OperationError } from './errors.js'
 
@@ -73,6 +75,48 @@ export interface PromoteProposalOptions {
 export type PromoteResult =
   | { readonly dryRun: true; readonly proposal: SkillProposal; readonly evaluation: EvaluationArtifact }
   | { readonly promoted: true; readonly skillName: string; readonly version: string; readonly scope: PublicationScope }
+
+export interface ClassifyFollowUpsResult {
+  readonly classifierVersion: string
+  readonly classified: number
+  readonly cached: number
+  readonly skipped: { readonly explicit: number; readonly pending: number }
+  readonly failed: readonly { readonly observationId: string; readonly reason: 'timeout' | 'error' | 'invalid-output'; readonly message: string }[]
+}
+
+export async function classifyFollowUps(service: EvolutionService, options: { readonly signal?: AbortSignal; readonly limit?: number } = {}): Promise<ClassifyFollowUpsResult> {
+  const classifier = service.followUpClassifier
+  if (classifier === undefined) throw new OperationError('classifier-unavailable', 'follow-up classifier is not configured')
+  const events = await service.observations.readAll()
+  const existing = new Map((await service.classifications.readAll()).map(item => [item.id, item]))
+  let classified = 0; let cached = 0; let explicit = 0; let pending = 0
+  const failed: ClassifyFollowUpsResult['failed'][number][] = []
+  const candidates = events.filter(event => event.kind === 'user-follow-up')
+  for (const event of candidates.slice(0, options.limit ?? Number.POSITIVE_INFINITY)) {
+    if (event.payload.explicit === true) { explicit += 1; continue }
+    const computed = classificationInputFor(events, event.id)
+    if (computed.pending) { pending += 1; continue }
+    const id = `classification:${classifier.version}:${computed.inputHash}`
+    if (existing.has(id)) { cached += 1; continue }
+    if (options.signal?.aborted) break
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => controller.abort(), service.classifierTimeoutMs)
+    try {
+      const result = await classifier.classify(computed.input, controller.signal)
+      const validIntent = typeof result?.intent === 'string' && (['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'not-attributable', 'unknown'] as readonly string[]).includes(result.intent)
+      const validConfidence = typeof result?.confidence === 'number' && Number.isFinite(result.confidence) && result.confidence >= 0 && result.confidence <= 1
+      if (!validIntent || !validConfidence) { failed.push({ observationId: event.id, reason: 'invalid-output', message: 'classifier returned invalid intent or confidence' }); continue }
+      const memo: ClassificationMemoEntry = { id, classifierVersion: classifier.version, inputHash: computed.inputHash, observationId: event.id, intent: result.intent as Exclude<FollowUpIntent, 'other'>, confidence: result.confidence, ...(typeof result.rationale === 'string' ? { rationale: redactSensitiveText(result.rationale).slice(0, 500) } : {}), createdAt: new Date().toISOString() }
+      await service.classifications.append(memo); existing.set(id, memo); classified += 1
+    } catch (error) {
+      const timedOut = controller.signal.aborted
+      failed.push({ observationId: event.id, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) })
+    } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort) }
+  }
+  return { classifierVersion: classifier.version, classified, cached, skipped: { explicit, pending }, failed }
+}
 
 export interface RollbackSkillOptions {
   readonly skillName: string

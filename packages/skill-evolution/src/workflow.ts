@@ -18,7 +18,7 @@ export interface WorkflowSnapshot {
   readonly failures: readonly SkillFailureCase[]
   readonly clusters: readonly FailureCluster[]
   readonly diagnoses: readonly SkillDiagnosis[]
-  readonly followUps?: readonly import('./types.js').FollowUpResolution[]
+  readonly followUps: readonly import('./types.js').FollowUpResolution[]
 }
 
 /** Phase 2/3 orchestration: facts to experiences, clusters, diagnoses, and isolated proposals. */
