@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createContentHash } from './events.js'
 import { type EvaluationRunner } from './evaluator.js'
-import { assertCanTransition, findProposalById, ledgerRecordId, proposalRootId, ProposalLedgerError, createProposal } from './proposal.js'
+import { assertCanTransition, findProposalById, proposalRootId, ProposalLedgerError, createProposal } from './proposal.js'
 import { renderProposalMarkdown } from './report.js'
 import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
@@ -132,14 +132,18 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
   const proposal = await resolveProposal(service, options.proposalRef)
   const evidenceIds = options.evidenceIds ?? []
   let reviewed: SkillProposal
-  switch (options.decision) {
-    case 'accept': reviewed = await service.acceptProposal(proposal, options.reason, evidenceIds); break
-    case 'reject': reviewed = await service.rejectProposal(proposal, options.reason, evidenceIds); break
-    case 'defer': reviewed = await service.deferProposal(proposal, options.reason, evidenceIds); break
-    default: throw new OperationError('invalid-option', `decision must be accept, reject, or defer`)
+  try {
+    switch (options.decision) {
+      case 'accept': reviewed = await service.acceptProposal(proposal, options.reason, evidenceIds); break
+      case 'reject': reviewed = await service.rejectProposal(proposal, options.reason, evidenceIds); break
+      case 'defer': reviewed = await service.deferProposal(proposal, options.reason, evidenceIds); break
+      default: throw new OperationError('invalid-option', `decision must be accept, reject, or defer`)
+    }
+  } catch (error) {
+    if (error instanceof ProposalLedgerError) throw new OperationError(error.code, error.message, error)
+    throw error
   }
-  const recordId = ledgerRecordId(proposalRootId(reviewed.id), options.decision === 'accept' ? 'accepted' : options.decision === 'reject' ? 'rejected' : 'deferred')
-  return { proposal: { ...reviewed, id: recordId }, recordId }
+  return { proposal: reviewed, recordId: reviewed.id }
 }
 
 export async function promoteProposal(service: EvolutionService, options: PromoteProposalOptions): Promise<PromoteResult> {
