@@ -7,7 +7,7 @@ import { renderProposalMarkdown } from './report.js'
 import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
-import { checkPromotion, resolvePromotionArtifact } from './promotion-check.js'
+import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 
 export { OperationError } from './errors.js'
 
@@ -149,7 +149,7 @@ export async function promoteProposal(service: EvolutionService, options: Promot
   const artifact = options.evaluationPath === undefined
     ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)
     : resolvePromotionArtifact(await service.evaluations.readAll(), proposal, await readEvaluationFile(options.evaluationPath))
-  checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: service.evaluationPolicy?.version ?? (await import('./evaluator.js')).DEFAULT_EVALUATION_POLICY.version, now: Date.now() })
+  checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(service.evaluationPolicy), now: Date.now() })
   if (options.dryRun === true) return { dryRun: true, proposal, evaluation: artifact }
   await service.promote(proposal, artifact.result, scope, options.reason)
   return { promoted: true, skillName: proposal.skillName, version: proposal.proposedVersion, scope }

@@ -676,8 +676,8 @@ describe('phase workflow orchestration', () => {
     const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
     const evaluated = (await service.proposals.readAll()).find(item => item.id === 'artifact-proposal:evaluated')!
     const accepted = await service.acceptProposal(evaluated, 'reviewed')
-    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toThrow('persisted evaluation artifact')
-    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toThrow('supplied evaluation')
+    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('persisted evaluation artifact'), code: 'evaluation-missing' })
+    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('supplied evaluation'), code: 'evaluation-mismatch' })
   })
 
   it('turns explicit maintainer feedback into durable evidence and Markdown review output', async () => {

@@ -253,6 +253,7 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
+    if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
     const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
     const current = await this.versions.readCurrent(proposal.skillName)
     checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })

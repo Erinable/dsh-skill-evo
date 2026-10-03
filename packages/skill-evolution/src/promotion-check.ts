@@ -44,6 +44,7 @@ export function resolvePromotionArtifact(
   evaluations: readonly EvaluationArtifact[],
   proposal: SkillProposal,
   supplied?: SkillEvalResult | EvaluationArtifact,
+  now = Date.now(),
 ): EvaluationArtifact {
   const root = proposalRootId(proposal.id)
   if (supplied !== undefined) {
@@ -56,14 +57,18 @@ export function resolvePromotionArtifact(
     if (!matches) throw new OperationError('evaluation-mismatch', `supplied evaluation does not match the persisted artifact: ${normalized.id}`)
     return persisted
   }
-  const artifact = evaluations.filter(item => item.proposalId === root && Date.parse(item.expiresAt) > Date.now()).at(-1)
+  const artifact = evaluations.filter(item => item.proposalId === root && Date.parse(item.expiresAt) > now).at(-1)
   if (artifact === undefined) throw new OperationError('evaluation-missing', `proposal ${proposal.id} requires a persisted evaluation artifact`)
   return artifact
 }
 
 function normalizeArtifact(value: SkillEvalResult | EvaluationArtifact, proposal: SkillProposal): EvaluationArtifact {
+  if (!isRecord(value)) throw new OperationError('evaluation-mismatch', 'evaluation artifact has an invalid shape')
   const candidate = value as Partial<EvaluationArtifact>
-  if (candidate.result !== undefined) return candidate as EvaluationArtifact
+  if (candidate.result !== undefined) {
+    if (!isRecord(candidate.result) || typeof candidate.id !== 'string' || typeof candidate.proposalId !== 'string') throw new OperationError('evaluation-mismatch', 'evaluation artifact has an invalid shape')
+    return candidate as EvaluationArtifact
+  }
   const result = value as SkillEvalResult
   if (result.artifactId === undefined) {
     if (result.candidateId === undefined) throw new OperationError('evaluation-mismatch', 'evaluation artifact has an invalid shape')
@@ -81,3 +86,7 @@ function sameResultEvidence(left: SkillEvalResult, right: SkillEvalResult): bool
 }
 
 export const defaultPolicyVersion = (policy: EvaluationPolicy | undefined): string => (policy ?? DEFAULT_EVALUATION_POLICY).version
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
