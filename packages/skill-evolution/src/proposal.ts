@@ -63,6 +63,9 @@ export const TERMINAL_STATUS_SUFFIXES: readonly LedgerRecordStatus[] = [
   ...new Set(LEDGER_RECORD_TARGETS.filter((status): status is LedgerRecordStatus => status !== 'proposed')),
 ]
 
+const VALID_OCCURRENCE = '(?:[2-9]|[1-9]\\d+)'
+const INVALID_OCCURRENCE = '(?:1|0\\d+)'
+
 export function proposalRootId(id: string): string {
   let root = id
   while (true) {
@@ -73,7 +76,7 @@ export function proposalRootId(id: string): string {
       root = root.slice(0, separator)
       continue
     }
-    if (/^[2-9]\d*$/.test(suffix)) {
+    if (new RegExp(`^${VALID_OCCURRENCE}$`).test(suffix)) {
       const statusSeparator = root.lastIndexOf(':', separator - 1)
       const status = statusSeparator < 0 ? '' : root.slice(statusSeparator + 1, separator)
       if (TERMINAL_STATUS_SUFFIXES.includes(status as LedgerRecordStatus)) {
@@ -95,7 +98,7 @@ export function ledgerRecordId(root: string, status: LedgerRecordStatus, occurre
 
 /** Return one exact ledger record; record ids are never resolved by prefix. */
 export function findLedgerRecord(records: readonly SkillProposal[], id: string): SkillProposal {
-  const invalidOccurrence = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')}):(?:1|0\\d+)$`)
+  const invalidOccurrence = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')}):${INVALID_OCCURRENCE}$`)
   if (invalidOccurrence.test(id)) {
     throw new ProposalLedgerError('not-found', `proposal record not found: ${id}`)
   }
@@ -110,7 +113,7 @@ export function historyByRoot(proposals: readonly SkillProposal[], root: string)
 }
 
 export function assertProposalRoot(root: string): string {
-  const statusSuffix = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')})(?::\\d+)?$`)
+  const statusSuffix = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')})(?::(?:${VALID_OCCURRENCE}|${INVALID_OCCURRENCE}))?$`)
   if (proposalRootId(root) !== root || statusSuffix.test(root)) {
     throw new ProposalLedgerError('invalid-transition', `proposal root must not end with a ledger status suffix: ${root}`)
   }
@@ -122,9 +125,6 @@ export function latestProposalsByRoot(proposals: readonly SkillProposal[]): Map<
   for (const proposal of proposals) latest.set(proposalRootId(proposal.id), proposal)
   return latest
 }
-
-export const latestByRoot = latestProposalsByRoot
-export const proposalHistoryByRoot = historyByRoot
 
 export function findProposalById(proposals: readonly SkillProposal[], id: string): SkillProposal {
   const latest = latestProposalsByRoot(proposals)
