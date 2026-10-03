@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 评测的步数是工具调用次数，token 是输入加输出、含缓存命中；成本只在通过的 Sample 上比较

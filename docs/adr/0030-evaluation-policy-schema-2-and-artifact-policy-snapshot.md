@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # EvaluationPolicy 加 schema 2：分类别成本门槛和 R 次采样；Evaluation artifact 存 policy 快照、`policyHash`、原始 Sample 和统计方法 id

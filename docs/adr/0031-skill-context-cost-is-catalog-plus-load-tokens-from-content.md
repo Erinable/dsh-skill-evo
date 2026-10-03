@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Skill 的上下文成本由 core 从正文确定性算出：目录描述 token 加加载正文 token，估算器 `utf8-bytes-div4-v1`，评测和 `metrics` 共用
