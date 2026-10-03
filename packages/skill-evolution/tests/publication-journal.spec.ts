@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -74,6 +74,20 @@ describe('file publication journals', () => {
     const path = join(root, '.skill-evolution', 'publications', 'api-debugging.json'); await (await import('node:fs/promises')).mkdir(join(root, '.skill-evolution', 'publications'), { recursive: true })
     const raw = JSON.stringify({ v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z', proposalId: 'read-only' })
     await writeFile(path, raw); await value.readCurrent('api-debugging'); await value.healthIssues(); expect(await readFile(path, 'utf8')).toBe(raw)
+  })
+
+  it('file-only store publication does not append fact records and preserves complete snapshots', async () => {
+    const { root, value } = await store(); const p = proposal('file-only'); await value.promote(p, { scope: 'project' })
+    for (const name of ['observations.jsonl', 'proposals.jsonl', 'decisions.jsonl']) await expect(readFile(join(root, '.skill-evolution', name))).rejects.toMatchObject({ code: 'ENOENT' })
+    const snapshot = join(root, 'api-debugging', 'versions', '1.0.0', 'SKILL.md'); const before = (await stat(snapshot)).mtimeMs
+    await value.promote(p, { scope: 'project' }); expect((await stat(snapshot)).mtimeMs).toBe(before)
+  })
+
+  it('keeps legacy untrusted journals and still permits a later store publish', async () => {
+    const { root, value } = await store(); const rootDir = join(root, 'api-debugging'); const state = join(root, '.skill-evolution')
+    await (await import('node:fs/promises')).mkdir(join(rootDir, 'versions'), { recursive: true }); await writeFile(join(rootDir, '.publish.json'), JSON.stringify({ proposalId: 'legacy', version: '../escape', contentHash: 'bad' }))
+    const raw = await readFile(join(rootDir, '.publish.json'), 'utf8'); await expect(value.promote(proposal('legacy-safe'), { scope: 'project' })).resolves.toBeDefined()
+    await expect(readFile(join(rootDir, '.publish.json'), 'utf8')).resolves.toBe(raw); await expect(readdir(state)).resolves.toContain('candidates')
   })
 
   it('rejects invalid journal field types, scope, filename, and candidate hash', async () => {
