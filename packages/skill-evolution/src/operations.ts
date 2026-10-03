@@ -143,20 +143,22 @@ export async function classifyCorrections(service: EvolutionService, options: { 
     const attempts = correlateToolAttempts(session); const hash = inputHash(attempts); const id = `classification:correction:${classifier.version}:${hash}`; if (existing.has(id)) { cached++; continue }
     if (options.signal?.aborted) break
     let timedOut = false; let callerAborted = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
     try {
       const controller = new AbortController()
       let rejectTimer: ((error: Error) => void) | undefined
-      const timer = setTimeout(() => { timedOut = true; controller.abort(); rejectTimer?.(new Error('classifier timed out')) }, service.classifierTimeoutMs)
-      const onAbort = () => { callerAborted = true; controller.abort(); rejectTimer?.(new Error('classifier aborted by caller')) }
+      timer = setTimeout(() => { timedOut = true; controller.abort(); rejectTimer?.(new Error('classifier timed out')) }, service.classifierTimeoutMs)
+      onAbort = () => { callerAborted = true; controller.abort(); rejectTimer?.(new Error('classifier aborted by caller')) }
       options.signal?.addEventListener('abort', onAbort, { once: true })
       const call = classifier.classify({ sessionId, attempts }, controller.signal); call.catch(() => undefined)
       const abort = new Promise<never>((_, reject) => { rejectTimer = reject })
       const result = await Promise.race([call, abort])
-      clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort)
       if (!Array.isArray(result) || result.some(draft => !validateEpisodeDraft(draft, attempts, DEFAULT_CORRECTION_POLICY))) { service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: 'invalid-output', message: 'classifier returned invalid drafts' }); continue }
       const memo: CorrectionClassificationMemoEntry = { id, judge: 'correction', classifierVersion: classifier.version, inputHash: hash, sessionId, drafts: result, createdAt: new Date().toISOString() }
       await service.classifications.append(memo); existing.set(id, memo); classified++
-    } catch (error) { service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: timedOut ? 'timeout' : (callerAborted ? 'error' : 'error'), message: error instanceof Error ? error.message : String(error) }) }
+    } catch (error) { service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) }) }
+    finally { if (timer !== undefined) clearTimeout(timer); if (onAbort !== undefined) options.signal?.removeEventListener('abort', onAbort) }
   }
   return { classifierVersion: classifier.version, classified, cached, skipped: { open }, failed }
 }

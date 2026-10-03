@@ -406,7 +406,6 @@ export class EvolutionService {
       const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
       const rawDrafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
       const drafts = rawDrafts.filter(draft => validateEpisodeDraft(draft, attempts))
-      this.correctionRejectedDrafts += rawDrafts.length - drafts.length
       for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
     }
     const patterns = groupPatterns(episodes)
