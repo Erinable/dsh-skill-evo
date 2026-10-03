@@ -7,7 +7,6 @@ import { renderProposalMarkdown } from './report.js'
 import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
-import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import { classificationInputFor, isFollowUpClassification } from './follow-up.js'
 import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
 
@@ -205,10 +204,7 @@ export async function promoteProposal(service: EvolutionService, options: Promot
   const proposal = await resolveProposal(service, options.proposalRef)
   const supplied = options.evaluationPath === undefined ? options.evaluation : await readEvaluationFile(options.evaluationPath)
   if (options.dryRun === true) {
-    await service.assertPromotionAllowed(proposal)
-    const artifact = resolvePromotionArtifact(await service.evaluations.readAll(), proposal, supplied)
-    const pendingPublication = await service.versions.pendingPublication(proposal.skillName)
-    if (pendingPublication?.proposalId !== proposalRootId(proposal.id)) checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(service.evaluationPolicy), policy: service.evaluationPolicy, now: Date.now() })
+    const artifact = await service.preparePromotion(proposal, supplied)
     return { dryRun: true, proposal, evaluation: artifact }
   }
   await service.publishPromotion(proposal, supplied, scope, options.reason)

@@ -229,23 +229,25 @@ export class EvolutionService {
         reports.push({ skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt, outcome: 'completed' })
       } catch (error) {
         // Retryable failures keep their journal for a later repair. Permanent
-        // publication errors are quarantined by recoverPublication; either way
+        // publication errors are quarantined here; either way
         // one bad Skill must not prevent other journals or JSONL from repairing.
         const permanent = this.isPermanentPublicationError(error)
-        reports.push({
-          skillName,
-          ...(journal === undefined ? {} : { operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
-          outcome: permanent ? 'quarantined' : 'failed',
-          error: error instanceof Error ? error.message : String(error),
-        })
+        let quarantined = false
         if (permanent && journal !== undefined) {
           const path = this.layout.publicationJournalPath(journal.skillName)
           try {
             const raw = await readFile(path, 'utf8')
             await quarantinePublication(this.layout.publicationQuarantineDir, journal.skillName, raw, error, 'repair')
             await removePublication(path)
-          } catch { /* recoverPublication may already have isolated it */ }
+            quarantined = true
+          } catch { /* retain the journal when isolation itself fails */ }
         }
+        reports.push({
+          skillName,
+          ...(journal === undefined ? {} : { operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
+          outcome: quarantined ? 'quarantined' : 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
     }
     return reports
@@ -354,11 +356,7 @@ export class EvolutionService {
       await this.versions.finalizePublication(proposal.skillName)
       return
     }
-    if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
-    const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
-    const current = await this.versions.readCurrent(proposal.skillName)
-    const pending = await this.versions.pendingPublication(proposal.skillName)
-    if (pending?.proposalId !== rootId) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
+    const artifact = await this.preparePromotion(proposal, evaluation)
     const verifiedEvaluation = artifact.result
     const proposalId = rootId
     try {
@@ -386,6 +384,19 @@ export class EvolutionService {
     const latestAfterObservation = latestProposalsByRoot(await this.proposals.readAll()).get(proposalId) ?? proposal
     if (latestAfterObservation.status !== 'promoted') await this.ledger.transition(latestAfterObservation, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, ...(verifiedEvaluation.policyHash === undefined ? {} : { policyHash: verifiedEvaluation.policyHash }), evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
     await this.versions.finalizePublication(proposal.skillName)
+  }
+
+  async preparePromotion(proposal: SkillProposal, evaluation?: SkillEvalResult | EvaluationArtifact): Promise<EvaluationArtifact> {
+    const latest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(proposal.id))
+    if (latest?.status === 'promoted') {
+      const persisted = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (persisted !== undefined) return persisted
+    }
+    if (proposal.status !== 'accepted' && !(await this.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
+    const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
+    const pending = await this.versions.pendingPublication(proposal.skillName)
+    if (pending?.proposalId !== proposalRootId(proposal.id)) checkPromotion({ proposal, artifact, current: await this.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
+    return artifact
   }
 
   async promote(proposal: SkillProposal, evaluation: SkillEvalResult, scope: PublicationScope, reason = 'evaluation gate passed'): Promise<void> {

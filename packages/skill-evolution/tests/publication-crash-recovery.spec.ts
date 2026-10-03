@@ -352,11 +352,24 @@ describe('promote crash points', () => {
     const artifacts = await service(root).evaluations.readAll()
     const artifact = artifacts.at(-1)!
     await service(root).evaluations.append({ ...artifact, id: `${artifact.id}:expired-rerun`, expiresAt: '2020-01-01T00:00:00.000Z' })
+    const before = await publicationState(root)
     await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
+    expect(await publicationState(root)).toEqual(before)
   })
 })
 
 describe('rollback crash points', () => {
+  it('R0 rerun recovers a rollback that crashed before its journal write', async () => {
+    const reference = await rollbackScenario('r0-reference')
+    await rollbackSkill(service(reference.root), { skillName, version: '1.0.0' })
+    const expected = await publicationState(reference.root)
+    const crashed = await rollbackScenario('r0-crash')
+    fault.paths = [join(crashed.root, '.skill-evolution', 'publications', `${skillName}.json`)]
+    await expect(rollbackSkill(service(crashed.root), { skillName, version: '1.0.0' })).rejects.toThrow('injected crash')
+    await expect(rollbackSkill(service(crashed.root), { skillName, version: '1.0.0' })).resolves.toMatchObject({ version: '1.0.0' })
+    expect(await publicationState(crashed.root)).toEqual(expected)
+  })
+
   for (const row of rollbackRows) {
     recovery(row, 'rerun')(`${row.point}: rerunning the same rollback converges to one successful rollback`, async () => {
       const { root, reference } = await crashRollback(row)
