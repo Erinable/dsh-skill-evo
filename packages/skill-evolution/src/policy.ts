@@ -8,9 +8,9 @@ export function normalizeEvaluationPolicy(policy: EvaluationPolicyInput): Normal
       maxSecurityViolations: policy.maxSecurityViolations, requireNoNewSideEffects: policy.requireNoNewSideEffects,
       requirePositiveFeedback: policy.requirePositiveFeedback ?? false,
       sampling: { runs: policy.sampling?.runs ?? 5 }, significance: { alpha: policy.significance?.alpha ?? 0.05 },
-      originalFailure: { requireImprovement: policy.originalFailure?.requireImprovement ?? true, costMetric: policy.originalFailure?.costMetric ?? 'steps', minCostReduction: policy.originalFailure?.minCostReduction ?? 0.2 },
-      historicalSuccess: { maxPassRateDrop: policy.historicalSuccess?.maxPassRateDrop ?? 0.05, maxStepIncrease: policy.historicalSuccess?.maxStepIncrease ?? 0.1, maxTokenIncrease: policy.historicalSuccess?.maxTokenIncrease ?? 0.1 },
-      context: { maxCatalogIncreaseTokens: policy.context?.maxCatalogIncreaseTokens ?? 64, maxLoadIncreaseTokens: policy.context?.maxLoadIncreaseTokens ?? 1024 },
+      originalFailure: { requireImprovement: policy.originalFailure?.requireImprovement ?? true, costMetric: policy.originalFailure?.costMetric !== undefined ? policy.originalFailure.costMetric : 'steps', minCostReduction: policy.originalFailure?.minCostReduction ?? 0.2 },
+      historicalSuccess: { maxPassRateDrop: policy.historicalSuccess?.maxPassRateDrop ?? 0.05, maxStepIncrease: policy.historicalSuccess?.maxStepIncrease !== undefined ? policy.historicalSuccess.maxStepIncrease : 0.1, maxTokenIncrease: policy.historicalSuccess?.maxTokenIncrease !== undefined ? policy.historicalSuccess.maxTokenIncrease : 0.1 },
+      context: { maxCatalogIncreaseTokens: policy.context?.maxCatalogIncreaseTokens !== undefined ? policy.context.maxCatalogIncreaseTokens : 64, maxLoadIncreaseTokens: policy.context?.maxLoadIncreaseTokens !== undefined ? policy.context.maxLoadIncreaseTokens : 1024 },
       legacy: {},
     }
   }
@@ -28,8 +28,10 @@ export function normalizeEvaluationPolicy(policy: EvaluationPolicyInput): Normal
 }
 
 export function validateEvaluationPolicy(policy: EvaluationPolicyInput): void {
-  if (!policy.version || !Number.isInteger(policy.maxRegressionCount) || policy.maxRegressionCount < 0 || !Number.isInteger(policy.maxSecurityViolations) || policy.maxSecurityViolations < 0) throw new Error('invalid evaluation policy thresholds')
-  if ('schema' in policy && policy.schema === 2) {
+  if (!policy.version || !Number.isFinite(policy.maxRegressionCount) || policy.maxRegressionCount < 0 || !Number.isFinite(policy.maxSecurityViolations) || policy.maxSecurityViolations < 0) throw new Error('invalid evaluation policy thresholds')
+  if ('schema' in policy) {
+    if (policy.schema !== 2) throw new Error('unsupported evaluation policy schema')
+    if (typeof policy.requireNoNewSideEffects !== 'boolean' || (policy.requirePositiveFeedback !== undefined && typeof policy.requirePositiveFeedback !== 'boolean')) throw new Error('schema 2 policy boolean fields must be boolean')
     const legacy = policy as unknown as Record<string, unknown>
     if ('requireOriginalFailureImprovement' in legacy || 'maxTokenIncreaseRatio' in legacy || 'maxContextIncreaseRatio' in legacy) throw new Error('schema 2 policy contains schema 1 fields')
     const runs = policy.sampling?.runs
@@ -38,9 +40,13 @@ export function validateEvaluationPolicy(policy: EvaluationPolicyInput): void {
     if (alpha !== undefined && (!Number.isFinite(alpha) || alpha <= 0 || alpha > 0.5)) throw new Error('significance.alpha must be in (0, 0.5]')
     const reduction = policy.originalFailure?.minCostReduction
     if (reduction !== undefined && (!Number.isFinite(reduction) || reduction <= 0 || reduction >= 1)) throw new Error('originalFailure.minCostReduction must be in (0, 1)')
+    if (policy.originalFailure?.requireImprovement !== undefined && typeof policy.originalFailure.requireImprovement !== 'boolean') throw new Error('originalFailure.requireImprovement must be boolean')
+    const metric = policy.originalFailure?.costMetric
+    if (metric !== undefined && metric !== null && !['steps', 'tokens', 'steps-or-tokens', 'steps-and-tokens'].includes(metric)) throw new Error('originalFailure.costMetric is invalid')
     for (const value of [policy.historicalSuccess?.maxPassRateDrop, policy.historicalSuccess?.maxStepIncrease, policy.historicalSuccess?.maxTokenIncrease, policy.context?.maxCatalogIncreaseTokens, policy.context?.maxLoadIncreaseTokens]) if (value !== undefined && value !== null && (!Number.isFinite(value) || value < 0)) throw new Error('schema 2 policy thresholds must be non-negative numbers')
   } else {
     const legacyPolicy = policy as Extract<EvaluationPolicyInput, { readonly requireOriginalFailureImprovement: boolean }>
+    if (typeof legacyPolicy.requireNoNewSideEffects !== 'boolean' || typeof legacyPolicy.requireOriginalFailureImprovement !== 'boolean' || (legacyPolicy.requirePositiveFeedback !== undefined && typeof legacyPolicy.requirePositiveFeedback !== 'boolean')) throw new Error('schema 1 policy boolean fields must be boolean')
     for (const value of [legacyPolicy.maxTokenIncreaseRatio, legacyPolicy.maxContextIncreaseRatio]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error('evaluation cost ratios must be non-negative numbers')
   }
 }

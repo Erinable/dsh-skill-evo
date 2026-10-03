@@ -1,9 +1,9 @@
-import type { DshEvaluationExecutor, DshEvaluationRunResult } from './evaluator.js'
+import type { DshEvaluationExecutor, DshEvaluationRunInput, DshEvaluationRunResult } from './evaluator.js'
 
 export interface FakeDshExecutorOptions {
   readonly outcomes?: Readonly<Record<string, DshEvaluationRunResult['outcome']>>
   readonly delayMs?: number
-  readonly script?: (input: Parameters<import('./evaluator.js').DshEvaluationExecutor>[0]) => Partial<DshEvaluationRunResult>
+  readonly script?: (input: DshEvaluationRunInput) => Partial<DshEvaluationRunResult>
 }
 
 /** Small controllable executor for deterministic unit and integration tests. */
