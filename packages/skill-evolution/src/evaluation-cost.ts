@@ -104,7 +104,7 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
     const ids = input.cases.filter(item => item.category === category).map(item => item.id)
     const entries = ids.map(id => byCase.get(id) ?? { base: [], candidate: [] })
     categories[category] = {
-      passRate: { base: passRate(entries.flatMap(item => item.base)), candidate: passRate(entries.flatMap(item => item.candidate)) },
+      passRate: { base: casePassRate(entries, 'base'), candidate: casePassRate(entries, 'candidate') },
       steps: compareMetric(entries, 'toolCalls', input.candidateContentHash, category),
       tokens: compareMetric(entries, 'tokenCost', input.candidateContentHash, category),
       modelTurns: compareMetric(entries, 'modelTurns', input.candidateContentHash, category),
@@ -129,13 +129,21 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
   else {
     const violation = originalEntries.find(item => itemPassCount(item.candidate) < itemPassCount(item.base))
     const comparison = metricComparisonFor(metricName, original)
+    const metricComparisons = metricsFor(metricName).map(metric => metric === 'steps' ? original.steps : original.tokens)
     const significant = metricName === 'steps-or-tokens' ? (isGood(original.steps, input.policy.originalFailure.minCostReduction, input.policy.significance.alpha / 2) || isGood(original.tokens, input.policy.originalFailure.minCostReduction, input.policy.significance.alpha / 2))
       : metricName === 'steps-and-tokens' ? (isGood(original.steps, input.policy.originalFailure.minCostReduction, input.policy.significance.alpha) && isGood(original.tokens, input.policy.originalFailure.minCostReduction, input.policy.significance.alpha))
       : isGood(comparison, input.policy.originalFailure.minCostReduction, input.policy.significance.alpha)
-    const status = !comparison || comparison.status === 'no-data' ? 'no-data' : violation || !significant ? 'failed' : 'passed'
-    const detail = violation ? `path (a) pass count did not increase; path (b1) ${violation.id}: k_b = ${itemPassCount(violation.base)}, k_c = ${itemPassCount(violation.candidate)}` : status === 'no-data' ? `original-failure ${metricName}: no comparable passed Sample contains ${metricName}` : `path (b2) ${metricName}: relativeChange = ${comparison?.relativeChange}, pValue = ${comparison?.pValue}`
+    const status = metricComparisons.some(item => item.status === 'no-data') ? 'no-data' : !comparison || comparison.status === 'no-data' ? 'no-data' : violation || !significant ? 'failed' : 'passed'
+    const b1 = violation ? `; path (b1) ${violation.id}: k_b = ${itemPassCount(violation.base)}, k_c = ${itemPassCount(violation.candidate)}` : ''
+    const b2 = status === 'no-data' ? `; path (b2) ${metricName}: no comparable passed Sample contains ${metricName}` : `; path (b2) ${metricName}: relativeChange = ${comparison?.relativeChange}, pValue = ${comparison?.pValue}`
+    const detail = `path (a) pass count did not increase${b1}${b2}`
     checks.push({ id: 'original-failure-improvement', status, detail })
-    if (status === 'no-data') checks.push({ id: `original-failure-${metricName}-no-data`, status: 'no-data', detail: `no comparable passed Sample contains ${metricName}` })
+    if (status === 'no-data') {
+      for (const metric of metricsFor(metricName)) {
+        const metricComparison = metric === 'steps' ? original.steps : original.tokens
+        if (metricComparison.status === 'no-data') checks.push({ id: `original-failure-${metric}-no-data`, status: 'no-data', detail: `no comparable passed Sample contains ${metric}` })
+      }
+    }
   }
   checks.push(...historicalChecks(historical, input.policy))
   checks.push(contextCheck('catalog-context', context.delta.catalogTokens, input.policy.context.maxCatalogIncreaseTokens, 'catalog context increase exceeded policy'))
@@ -152,13 +160,15 @@ function historicalChecks(category: EvaluationCostReport['categories'][Evaluatio
   const checks: CostCheck[] = []
   const drop = category.passRate.base - category.passRate.candidate
   const passLimit = policy.historicalSuccess.maxPassRateDrop
-  checks.push(drop > passLimit ? { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'failed', detail: `schema ${policy.schema}; base = ${category.passRate.base}, candidate = ${category.passRate.candidate}, drop = ${drop}, limit = ${passLimit}` } : { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'passed', detail: `schema ${policy.schema}; base = ${category.passRate.base}, candidate = ${category.passRate.candidate}, drop = ${drop}, limit = ${passLimit}` })
+  const passDetail = `schema ${policy.schema}; base = ${category.passRate.base}, candidate = ${category.passRate.candidate}, drop = ${drop}${policy.schema === 2 ? `, limit = ${passLimit}` : ''}`
+  checks.push(drop > passLimit ? { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'failed', detail: passDetail } : { id: `historical-success-pass-rate-schema${policy.schema}`, status: 'passed', detail: passDetail })
   for (const [metric, limit, comparison] of [['steps', policy.historicalSuccess.maxStepIncrease, category.steps], ['tokens', policy.historicalSuccess.maxTokenIncrease, category.tokens] ] as const) {
     const id = `historical-success-${metric}`
     if (limit === null) checks.push({ id, status: 'disabled', detail: 'disabled by policy' })
     else if (comparison.status === 'no-data') checks.push({ id: `${id}-no-data`, status: 'no-data', detail: `no comparable passed Sample contains ${metric}` })
     else if (comparison.status === 'not-applicable') checks.push({ id, status: 'not-applicable', detail: 'no comparable passed cases' })
-    else checks.push(comparison.relativeChange !== undefined && comparison.relativeChange > limit ? { id, status: 'failed', detail: `relativeChange = ${comparison.relativeChange}, limit = ${limit}` } : { id, status: 'passed', detail: `relativeChange = ${comparison.relativeChange}, limit = ${limit}` })
+    else if (comparison.relativeChange === undefined) checks.push({ id, status: 'failed', detail: `relativeChange = undefined, limit = ${limit}` })
+    else checks.push(comparison.relativeChange > limit ? { id, status: 'failed', detail: `relativeChange = ${comparison.relativeChange}, limit = ${limit}` } : { id, status: 'passed', detail: `relativeChange = ${comparison.relativeChange}, limit = ${limit}` })
   }
   return checks
 }
@@ -166,9 +176,11 @@ function historicalChecks(category: EvaluationCostReport['categories'][Evaluatio
 function compareMetric(entries: { base: EvaluationSample[]; candidate: EvaluationSample[] }[], key: 'toolCalls' | 'tokenCost' | 'modelTurns', hash: string, category: EvaluationCategory): MetricComparison {
   const comparable = entries.filter(entry => majority(entry.base) && majority(entry.candidate))
   if (comparable.length === 0) return { status: 'not-applicable', base: summary([]), candidate: summary([]), comparableCases: 0 }
-  const baseValues = comparable.flatMap(entry => entry.base.filter(sample => sample.passed && sample[key] !== undefined).map(sample => sample[key]!))
-  const candidateValues = comparable.flatMap(entry => entry.candidate.filter(sample => sample.passed && sample[key] !== undefined).map(sample => sample[key]!))
-  if (baseValues.length !== comparable.reduce((n, entry) => n + entry.base.filter(sample => sample.passed).length, 0) || candidateValues.length !== comparable.reduce((n, entry) => n + entry.candidate.filter(sample => sample.passed).length, 0)) return { status: 'no-data', base: summary(baseValues), candidate: summary(candidateValues), comparableCases: comparable.length }
+  const baseSamples = comparable.flatMap(entry => entry.base.filter(sample => sample.passed))
+  const candidateSamples = comparable.flatMap(entry => entry.candidate.filter(sample => sample.passed))
+  const baseValues = comparable.map(entry => mean(entry.base.filter(sample => sample.passed && sample[key] !== undefined).map(sample => sample[key]!))).filter(value => Number.isFinite(value))
+  const candidateValues = comparable.map(entry => mean(entry.candidate.filter(sample => sample.passed && sample[key] !== undefined).map(sample => sample[key]!))).filter(value => Number.isFinite(value))
+  if (baseValues.length !== comparable.length || candidateValues.length !== comparable.length || baseSamples.some(sample => sample[key] === undefined) || candidateSamples.some(sample => sample[key] === undefined)) return { status: 'no-data', base: summary(baseValues), candidate: summary(candidateValues), comparableCases: comparable.length }
   const base = summary(baseValues); const candidate = summary(candidateValues)
   const relativeChange = base.mean === 0 ? (candidate.mean === 0 ? 0 : undefined) : (candidate.mean! - base.mean!) / base.mean!
   return { status: 'ok', base, candidate, comparableCases: comparable.length, ...(relativeChange === undefined ? {} : { relativeChange }), pValue: permutation(comparable, key, hash, category) }
@@ -182,7 +194,8 @@ function summary(values: number[]): MetricSummary {
 
 function majority(values: EvaluationSample[]): boolean { return values.length > 0 && values.filter(item => item.passed).length * 2 > values.length }
 function itemPassCount(values: EvaluationSample[]): number { return values.filter(item => item.passed).length }
-function passRate(values: EvaluationSample[]): number { return values.length ? itemPassCount(values) / values.length : 0 }
+function casePassRate(entries: { base: EvaluationSample[]; candidate: EvaluationSample[] }[], exposure: 'base' | 'candidate'): number { return entries.length ? entries.filter(entry => majority(entry[exposure])).length / entries.length : 0 }
+function metricsFor(metric: NonNullable<NormalizedEvaluationPolicy['originalFailure']['costMetric']>): ('steps' | 'tokens')[] { return metric === 'steps' ? ['steps'] : metric === 'tokens' ? ['tokens'] : ['steps', 'tokens'] }
 function metricComparisonFor(metric: NonNullable<NormalizedEvaluationPolicy['originalFailure']['costMetric']>, category: EvaluationCostReport['categories'][EvaluationCategory]): MetricComparison | undefined { return metric === 'tokens' ? category.tokens : category.steps }
 function isGood(comparison: MetricComparison | undefined, reduction: number, alpha: number): boolean { return comparison?.status === 'ok' && comparison.relativeChange !== undefined && comparison.relativeChange <= -reduction && comparison.pValue !== undefined && comparison.pValue <= alpha }
 
