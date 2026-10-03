@@ -19,7 +19,7 @@ The bundle maps DSH compaction/pruning and replacement metadata into the vocabul
 
 An explicit `scoreSkillEmissions({ signal, limit })` maintenance operation calls `SkillEmissionJudge` once per session, stores immutable `emissions` memo rows, and invalidates the projection cursor through the combined `judges`/`derivationKey` shape. The default `rule-1` path remains synchronous and deterministic. A `SkillContentSource` adapter reads exact content hashes from the Skill root; a host may provide a DSH-directory adapter. Missing content is a valid `profile: 'missing'` input, not an error.
 
-`calibrateSkillPosteriors` is an optional maintenance seam. Core owns the `CounterfactualReplay` interface, while dsh-adapter may adapt its executor. Per §15 of the design, this spec makes the operation accept `task` from the host; it does not add `payload.taskSummary` collection. The correction-episode routing point is specified as “以 SKIL-136 合并版为准” until that spec merges.
+`calibrateSkillPosteriors` is an optional maintenance seam. Core owns the `CounterfactualReplay` interface, while dsh-adapter implements it by adapting `DshEvaluationExecutor` to accept a Skill set and replay with one named Skill withheld. Per §15 of the design, this spec makes the operation accept `task` from the host; it does not add `payload.taskSummary` collection. The correction-episode routing point is specified as “以 SKIL-136 合并版为准” until that spec merges.
 
 ## Public records and interfaces
 
@@ -29,7 +29,7 @@ The implementation shall add these core records without writing back to Observat
 - `SkillPosterior`: `posterior:<sessionId>`, `hmm-1` parameters/hash, emission version/source/fallback/input hash, Skill profiles, prefix flag, per-tool-step shares/MAP/alignment, trajectory shares, per-window shares, and evidence-time `createdAt`.
 - `FailureAttribution`: `attribution:<subjectId>`, origin/session/source, state shares, uncalibrated margin, uncovered flag, anchor and contributing steps, and optional posterior id.
 
-`inferSkillAttribution(observations, { emissions, contents, params })` is the single deep module. Its output is `{ windows, posteriors, attributions }`. Window segmentation, qualification, forward-backward, and nearby-step attribution are internal seams tested through that function.
+`inferSkillAttribution(observations, { emissions, contents, params })` is the single deep module. Its output is `{ windows, posteriors, attributions }`. `EmissionLookup` resolves a session/input hash to a validated memo `EmissionOutput` or no result. Window segmentation, qualification, forward-backward, and nearby-step attribution are internal seams tested through that function.
 
 The emission seam is the accepted ADR-0028 shape:
 
@@ -66,17 +66,28 @@ Posterior probabilities serialize to six decimal places and are normalized withi
 
 ## Failure and downstream behavior
 
-Failure priority is explicit Skill, attribution override, single loaded Skill, no loaded Skill, then posterior. Posterior attribution uses the nearest three same-task steps and explicit feedback anchors in `toolCallId`, `stepId`, `correlationIds`, session fallback order. Fan-out emits weighted per-Skill cases, records `noneShare`/`uncovered`, and marks one dominant case deterministically. `occurrenceCount` remains the case count; dominant and weighted counts are additive. Proposal gating has one implementation in `isClusterReadyForProposal`, and only dominant cases count.
+Failure priority is explicit Skill, attribution override, single loaded Skill, no loaded Skill, then posterior. Posterior attribution uses the nearest three same-task steps and explicit feedback anchors in `toolCallId`, `stepId`, `correlationIds`, session fallback order. Fan-out emits weighted per-Skill cases, records `noneShare`/`uncovered`, and marks one dominant case deterministically. `occurrenceCount` remains the case count; dominant and weighted counts are additive. Diagnosis evidence uses `weightedOccurrence`, falling back to `occurrenceCount` for legacy clusters; `margin` remains outside `attributionConfidence`. Proposal gating has one implementation in `isClusterReadyForProposal`, and only dominant cases count.
 
 Experiences replace the old multi-Skill `unattributed` grouping with MAP/attribution-share groups, while explicit overrides retain their category. Reports and metrics expose window certainty, eligible/dominant/expected steps, weighted and dominant failures, uncovered subjects, and none steps. `metrics()` refreshes first so it agrees with `failures()`. SKIL-130 supplies step/token definitions; the posterior supplies only the allocation.
 
-Correction episodes remain Experiences/episodes rather than Failure cases. Their target routing uses posterior shares across referenced steps, with majority uncovered selecting `create-skill`, majority dominant Skill selecting `patch-content`, and the remaining SKIL-128 rules unchanged. Until SKIL-136 is merged, the implementation must align its correction-episode branch to the SKIL-136 merged version.
+Correction episodes remain Experiences/episodes rather than Failure cases. Their target routing applies SKIL-128 rule 0, then explicit `--skill` rule 1, then posterior shares across referenced steps: majority uncovered selects `create-skill`, majority dominant Skill selects `patch-content`, followed by rules 3 and 4. Episodes without posterior data use the original `loadedSkills` rule-2 input. Until SKIL-136 is merged, the implementation must align its correction-episode branch to the SKIL-136 merged version.
 
 ## Error handling and compatibility
 
 Malformed bundle payload metadata is ignored or treated as absent through existing core validation; unknown legacy records use uncertain windows and session-end qualification. Invalid judge matrices fall back for the whole session and record the reason. Missing memo rows fall back to `rule-1`; a judge is never called implicitly by `failures`, `metrics`, worker refresh, repair, or Projection. Missing content is a normal zero-evidence profile. Aborted or failed calibration leaves existing derived stores unchanged and reports skipped/failed replay inputs.
 
 Existing JSON fields, ids, Failure origins, cluster ordering, and SKIL-126/SKIL-134 compatibility remain additive. The new `tool-failure` origin diagnoses as uncertain/observe-only unless existing structured evidence selects another cause. Runtime behavior, Provider rank, full replay, task-summary collection, DSH backend changes, and a real model backend are outside this spec.
+
+## Seams
+
+| seam | adapter(s) | boundary |
+|---|---|---|
+| `SkillEmissionJudge` | deterministic `rule-1`, host judge, test fake | Projection consumes validated memo/output; model calls stay in `scoreSkillEmissions` |
+| `SkillContentSource` | Skill-root reader, DSH directory reader, test map | Exact content-hash lookup; missing content is a valid profile |
+| `CounterfactualReplay` | dsh-adapter `DshEvaluationExecutor`, test fake | Accepts a Skill set and can replay with one named Skill withheld; receives host `task` |
+| bundle shadowing mapper | current dsh-bundle mapper | Converts DSH replacement/shadowing metadata to core vocabulary |
+
+Transition parameters, window segmentation, and nearby-step aggregation remain internal to `inferSkillAttribution`; they are not independently injected seams.
 
 ## Verification strategy
 
