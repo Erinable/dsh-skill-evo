@@ -1,5 +1,6 @@
-import type { CaseEvaluation, EvaluationCategory, EvaluationPolicy, SkillEvalResult, SkillEvaluationCase } from './types.js'
+import type { CaseEvaluation, EvaluationCategory, EvaluationPolicy, EvaluationPolicyInput, SkillEvalResult, SkillEvaluationCase } from './types.js'
 import { createContentHash } from './events.js'
+import { normalizeEvaluationPolicy } from './policy.js'
 
 export const DEFAULT_EVALUATION_POLICY: EvaluationPolicy = {
   version: '1',
@@ -16,6 +17,8 @@ export interface CaseRunResult {
   readonly evidence?: readonly string[]
   readonly tokenCost?: number
   readonly contextCost?: number
+  readonly toolCalls?: number
+  readonly modelTurns?: number
   readonly sideEffects?: readonly string[]
   readonly securityViolations?: readonly string[]
   readonly positiveFeedback?: boolean
@@ -24,6 +27,7 @@ export interface CaseRunResult {
 export type EvaluationRunner = (
   content: string,
   evaluationCase: SkillEvaluationCase,
+  context?: { readonly exposure: 'base' | 'candidate'; readonly sample: number },
 ) => CaseRunResult | Promise<CaseRunResult>
 
 export interface EvaluateCandidateInput {
@@ -34,19 +38,29 @@ export interface EvaluateCandidateInput {
   readonly runner?: EvaluationRunner
   readonly expectedSkillName?: string
   readonly now?: () => number
-  readonly policy?: EvaluationPolicy
+  readonly policy?: EvaluationPolicyInput
 }
 
 /** Evaluate a candidate against original, historical, and boundary evidence. */
 export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<SkillEvalResult> {
   validateEvaluationInput(input.cases)
+  const normalizedPolicy = normalizeEvaluationPolicy(input.policy ?? DEFAULT_EVALUATION_POLICY)
   const started = input.now?.() ?? Date.now()
   const validation = validateSkillDocument(input.candidateContent, input.expectedSkillName)
   const baseValidation = validateSkillDocument(input.baseContent, input.expectedSkillName)
   const changeValidation = validateSkillCandidate(input.baseContent, input.candidateContent, input.expectedSkillName)
   const invocationPolicyUnchanged = sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
   const runner = input.runner ?? runContentChecks
-  const policy = input.policy ?? DEFAULT_EVALUATION_POLICY
+  const policy: EvaluationPolicy = {
+    version: normalizedPolicy.version,
+    maxRegressionCount: normalizedPolicy.maxRegressionCount,
+    maxSecurityViolations: normalizedPolicy.maxSecurityViolations,
+    requireNoNewSideEffects: normalizedPolicy.requireNoNewSideEffects,
+    requirePositiveFeedback: normalizedPolicy.requirePositiveFeedback,
+    requireOriginalFailureImprovement: normalizedPolicy.originalFailure.requireImprovement,
+    ...(normalizedPolicy.legacy.maxTokenIncreaseRatio === undefined ? {} : { maxTokenIncreaseRatio: normalizedPolicy.legacy.maxTokenIncreaseRatio }),
+    ...(normalizedPolicy.legacy.maxContextIncreaseRatio === undefined ? {} : { maxContextIncreaseRatio: normalizedPolicy.legacy.maxContextIncreaseRatio }),
+  }
   const createdAt = new Date().toISOString()
   const baseline = emptyCategoryCounts()
   const categories = emptyCategoryCounts()
@@ -63,11 +77,11 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
 
   for (const evaluationCase of input.cases) {
     const baselineRun = baseValidation.valid
-      ? await runner(input.baseContent, evaluationCase)
+      ? await runner(input.baseContent, evaluationCase, { exposure: 'base', sample: 0 })
       : { passed: false, status: 'unknown' as const, reason: 'base Skill document is invalid' }
     const candidateStarted = input.now?.() ?? Date.now()
     const candidateRun = validation.valid
-      ? await runner(input.candidateContent, evaluationCase)
+      ? await runner(input.candidateContent, evaluationCase, { exposure: 'candidate', sample: 0 })
       : { passed: false, status: 'unknown' as const, reason: 'candidate Skill document is invalid' }
     const durationMs = Math.max(0, (input.now?.() ?? Date.now()) - candidateStarted)
     addCategory(baseline, evaluationCase.category, baselineRun.passed === true)
