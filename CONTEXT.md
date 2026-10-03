@@ -62,6 +62,14 @@ _Avoid_: sentiment, 情绪
 一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
 _Avoid_: label, 标注
 
+**Follow-up classifier**:
+由宿主注入、带不可变 `version` 的分类器实现；它只在显式 Maintenance operation 中读取已闭合的跟进上下文并返回意图，Projection 不直接调用它（ADR-0035）。
+_Avoid_: model judgment, 模型事实
+
+**Projection cursor**:
+记录 Observation log 与推导版本的快路径指纹；当事实、规则、策略、分类器版本或 Classification memo 改变时，Projection 必须忽略该快路径并完整重建 Derived record。
+_Avoid_: checkpoint, 检查点
+
 **Failure case**:
 一次能定位到某个 Skill 的失败，引用证据 Observation。多 Skill session 里的一次失败可以扇出成几个 Failure case，各带归因权重（ADR-0027）。
 _Avoid_: error, incident
