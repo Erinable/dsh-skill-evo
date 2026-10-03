@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 
 import { tmpdir } from 'node:os'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -13,6 +13,7 @@ import {
   buildExposureView,
   createContentHash,
   createObservation,
+  parseObservation,
   validateAdoptionBase,
   type AdoptionCandidate,
   type RuntimeObservation,
@@ -20,12 +21,16 @@ import {
   repairJsonlFile,
   rotateJsonl,
   resolveLayout,
+  classifyFollowUps,
+  MaintenanceWorker,
+  readCursor,
 } from '../src/index.js'
 
 const dirs: string[] = []
 const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
+  vi.useRealTimers()
   await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
@@ -76,7 +81,9 @@ describe('EvolutionLayout', () => {
       { name: 'decisions', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'decisions.jsonl') },
       { name: 'feedback', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'feedback.jsonl') },
       { name: 'evaluations', role: 'fact', projectionInput: false, path: join(root, '.skill-evolution', 'evaluations.jsonl') },
+      { name: 'classifications', role: 'memo', projectionInput: false, path: join(root, '.skill-evolution', 'classifications.jsonl') },
       { name: 'experiences', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'experiences.jsonl') },
+      { name: 'follow-ups', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'follow-ups.jsonl') },
       { name: 'failures', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'failures.jsonl') },
       { name: 'clusters', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'clusters.jsonl') },
       { name: 'diagnoses', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'diagnoses.jsonl') },
@@ -94,11 +101,25 @@ describe('EvolutionLayout', () => {
       join(root, '.skill-evolution', 'decisions.jsonl'),
       join(root, '.skill-evolution', 'feedback.jsonl'),
       join(root, '.skill-evolution', 'evaluations.jsonl'),
+      join(root, '.skill-evolution', 'classifications.jsonl'),
       join(root, '.skill-evolution', 'experiences.jsonl'),
+      join(root, '.skill-evolution', 'follow-ups.jsonl'),
       join(root, '.skill-evolution', 'failures.jsonl'),
       join(root, '.skill-evolution', 'clusters.jsonl'),
       join(root, '.skill-evolution', 'diagnoses.jsonl'),
     ])
+  })
+})
+
+describe('context shadowing vocabulary', () => {
+  it('accepts the core kind without interpreting DSH event names', () => {
+    const event = parseObservation(JSON.stringify(observation('shadowed', 'context-shadowed', skill(), {
+      shadowedSeqRanges: [[6, 6]],
+      mechanism: 'prune',
+      shadowedTokenCount: 42,
+    })))
+    expect(event.kind).toBe('context-shadowed')
+    expect(event.payload).toMatchObject({ shadowedSeqRanges: [[6, 6]], mechanism: 'prune', shadowedTokenCount: 42 })
   })
 })
 
@@ -421,5 +442,132 @@ describe('validateAdoptionBase', () => {
 
   it('rejects a stale base without modifying anything', () => {
     expect(() => validateAdoptionBase(candidate, { current: skill(createContentHash('newer')) })).toThrow(StaleAdoptionBaseError)
+  })
+})
+
+
+describe('follow-up classification memo', () => {
+  async function setup(classify = vi.fn(async () => ({ intent: 'goal-changed' as const, confidence: 0.9 })), version = 'fake-v1') {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifications-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root, followUpClassifier: { version, classify }, classifierTimeoutMs: 20 })
+    await service.observations.appendMany([
+      observation('loaded', 'skill-loaded'),
+      observation('correction', 'user-follow-up', skill(), { text: 'wrong, please correct this' }),
+      observation('finished', 'task-finished'),
+    ])
+    return { root, service, classify }
+  }
+
+  it('changes projection only after classification and restores the entire rule snapshot when removed', async () => {
+    const { root, service, classify } = await setup()
+    const original = await new EvolutionService({ root }).refreshDerived()
+    expect(original.followUps[0]).toMatchObject({ source: 'rule', intent: 'incorrect' })
+    expect(original.failures).toHaveLength(1)
+    const cursorRule = await readCursor(service.layout.cursorPath)
+    await service.refreshDerived()
+    const cursorInjected = await readCursor(service.layout.cursorPath)
+    expect(cursorInjected?.derivationKey).not.toBe(cursorRule?.derivationKey)
+    await service.listFailures()
+    await service.metrics()
+    await new MaintenanceWorker({ service }).runOnce()
+    expect(classify).not.toHaveBeenCalled()
+    expect(await classifyFollowUps(service)).toMatchObject({ classified: 1, cached: 0, failed: [] })
+    const classified = await service.refreshDerived()
+    expect(classified.followUps[0]).toMatchObject({ source: 'classifier', intent: 'goal-changed', attribution: 'task-change' })
+    expect(classified.failures).toEqual([])
+    expect((await readCursor(service.layout.cursorPath))?.derivationKey).not.toBe(cursorInjected?.derivationKey)
+    expect(await classifyFollowUps(service)).toMatchObject({ classified: 0, cached: 1 })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2030-01-02T00:00:00Z'))
+    expect(await new EvolutionService({ root }).refreshDerived()).toEqual(original)
+    const nextVersion = new EvolutionService({ root, followUpClassifier: { version: 'fake-v2', classify } })
+    expect((await nextVersion.refreshDerived()).followUps[0]).toMatchObject({ source: 'rule', fallbackReason: 'not-classified' })
+    expect(classify).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves valid memo bytes and isolates malformed rows during repair without model calls', async () => {
+    const { service, classify } = await setup()
+    await classifyFollowUps(service)
+    const path = service.classifications.filePath
+    const entries = await service.classifications.readAll()
+    const bytes = `  ${JSON.stringify(entries[0], null, 0)}  \r\n`
+    await writeFile(path, bytes)
+    await service.repair()
+    expect(await readFile(path, 'utf8')).toBe(bytes)
+    await writeFile(path, `${bytes}{"id":"bad-schema"}\nnot-json\n{"unterminated":`)
+    const report = await service.repair()
+    const memoRepair = report.jsonl.find(item => item.path === path)!
+    expect(memoRepair.removedInvalidLines).toBe(3)
+    expect(await readFile(path, 'utf8')).toBe(bytes)
+    expect(await readFile(memoRepair.invalidQuarantine!, 'utf8')).toContain('bad-schema')
+    expect((await service.health()).find(item => item.path === path)?.readable).toBe(true)
+    expect(classify).toHaveBeenCalledTimes(1)
+    expect((await service.refreshDerived()).followUps[0]?.source).toBe('classifier')
+  })
+
+  it('skips explicit and pending rows and bounds redacted classifier context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-input-'))
+    dirs.push(root)
+    const inputs: unknown[] = []
+    const classify = vi.fn(async (input: unknown) => { inputs.push(input); return { intent: 'satisfied' as const, confidence: 0.8 } })
+    const service = new EvolutionService({ root, followUpClassifier: { version: 'input-v1', classify } })
+    const before = Array.from({ length: 25 }, (_, index) => observation(`before-${index}`, 'tool-result', skill(), { toolName: 'tool', input: index }))
+    await service.observations.appendMany([
+      ...before,
+      observation('explicit', 'user-follow-up', skill(), { explicit: true, feedbackKind: 'satisfied', text: 'explicit' }),
+      observation('pending', 'user-follow-up', skill(), { text: 'pending' }),
+      observation('closed', 'user-follow-up', skill(), { text: 'password: secret-value please continue' }),
+      ...Array.from({ length: 25 }, (_, index) => observation(`after-${index}`, 'tool-result', skill(), { toolName: 'tool', failed: index === 0 })),
+      observation('finish', 'task-finished'),
+      observation('pending-tail', 'user-follow-up', skill(), { text: 'pending' }),
+    ])
+    const result = await classifyFollowUps(service)
+    expect(result.skipped).toEqual({ explicit: 1, pending: 1 })
+    expect(result.classified).toBe(2)
+    expect(classify).toHaveBeenCalledTimes(2)
+    const input = inputs.find(item => (item as { text?: string }).text?.includes('[REDACTED]')) as { text?: string; before: unknown[]; after: unknown[] }
+    expect(input.text).toContain('[REDACTED]')
+    expect(input.text).not.toContain('secret-value')
+    expect(input.before.length).toBeLessThanOrEqual(20)
+    expect(input.after.length).toBeLessThanOrEqual(20)
+  })
+
+  it('isolates timeout, thrown, and invalid classifier results while continuing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-errors-'))
+    dirs.push(root)
+    const classify = vi.fn(async (input: { observationId: string }, signal: AbortSignal) => {
+      if (input.observationId === 'timeout') return new Promise<never>(resolve => setTimeout(() => resolve({ intent: 'satisfied', confidence: 0.5 } as never), 80))
+      if (input.observationId === 'throw') throw new Error('model failed')
+      if (input.observationId === 'invalid') return { intent: 'other' as never, confidence: 2 }
+      signal.throwIfAborted()
+      return { intent: 'satisfied' as const, confidence: 0.7 }
+    })
+    const service = new EvolutionService({ root, followUpClassifier: { version: 'errors-v1', classify }, classifierTimeoutMs: 10 })
+    for (const id of ['timeout', 'throw', 'invalid', 'success']) {
+      await service.observations.appendMany([observation(id, 'user-follow-up', skill(), { text: id }), observation(`${id}-done`, 'task-finished')])
+    }
+    const result = await classifyFollowUps(service)
+    expect(result.failed.map(item => [item.observationId, item.reason])).toEqual([['timeout', 'timeout'], ['throw', 'error'], ['invalid', 'invalid-output']])
+    expect(result.classified).toBe(1)
+    expect(await service.classifications.readAll()).toHaveLength(1)
+  })
+
+  it('fails before model calls when no classifier is configured and exposes source-split metrics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-metrics-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.appendMany([
+      observation('explicit-metric', 'user-follow-up', skill(), { explicit: true, feedbackKind: 'incorrect', text: 'wrong' }),
+      observation('explicit-done', 'task-finished'),
+      observation('rule-metric', 'user-follow-up', skill(), { text: 'wrong' }),
+      observation('rule-done', 'task-finished'),
+    ])
+    await expect(classifyFollowUps(service)).rejects.toMatchObject({ code: 'classifier-unavailable' })
+    const metrics = await service.metrics()
+    expect(metrics.followUpIntents.explicit).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
+    expect(metrics.followUpIntents.rule).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
+    expect(metrics.skills[0]).toMatchObject({ followUps: 1, followUpRate: 0 })
+    expect(metrics.skills[0]?.followUpIntents.explicit).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
   })
 })

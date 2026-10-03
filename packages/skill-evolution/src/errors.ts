@@ -4,9 +4,11 @@ export type OperationErrorCode =
   | 'invalid-option'
   | 'stale-base'
   | 'invalid-transition'
+  | 'conflict'
   | 'evaluation-missing'
   | 'evaluation-mismatch'
   | 'gate-failed'
+  | 'classifier-unavailable'
 
 export class OperationError extends Error {
   constructor(readonly code: OperationErrorCode, message: string, readonly cause?: unknown) {

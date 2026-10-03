@@ -15,6 +15,7 @@ export type ObservationKind =
   | 'skill-load-failed'
   | 'agent-step'
   | 'tool-result'
+  | 'context-shadowed'
   | 'user-follow-up'
   | 'task-finished'
   | 'skill-file-observed'
@@ -162,6 +163,7 @@ export type ProposalSurface = 'description' | 'trigger' | 'procedure' | 'referen
 
 export interface SkillProposal {
   readonly id: string
+  readonly previousRecordId?: string
   readonly skillName: string
   readonly diagnosisId?: string
   readonly clusterId?: string
@@ -330,6 +332,7 @@ export type DecisionAction = 'proposed' | 'evaluating' | 'evaluated' | 'accepted
 
 export interface DecisionRecord {
   readonly id: string
+  readonly recordId?: string
   readonly proposalId?: string
   readonly skillName: string
   readonly action: DecisionAction

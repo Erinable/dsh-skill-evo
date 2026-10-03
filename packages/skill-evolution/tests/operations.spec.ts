@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   EvolutionService,
   OperationError,
+  ProposalLedgerError,
+  createProposal,
   evaluateProposal,
   proposalRootId,
   promoteProposal,
@@ -75,6 +77,70 @@ describe('core maintenance operations', () => {
     expect(JSON.parse(await readFile(evaluated.evaluationPath, 'utf8'))).toMatchObject({ proposalId: proposed.proposal.id })
     const accepted = await reviewProposal(service, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'gate passed' })
     expect(accepted.recordId).toMatch(/:accepted$/)
+  })
+
+  it('routes service evaluation retries through the ledger and preserves exact records', async () => {
+    const { service } = await setup()
+    const cases = [{ id: 'trigger', category: 'original-failure' as const, task: 'debug', expected: { contains: ['Check the response status'] } }]
+    const proposed = await proposeSkillChange(service, { skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'Improve diagnostics' })
+    await evaluateProposal(service, { proposalRef: proposed.proposal.id, cases })
+    const firstEvaluated = (await service.proposals.readAll()).find(item => item.id === `${proposed.proposal.id}:evaluated`)!
+    const rejected = await reviewProposal(service, { proposalRef: firstEvaluated.id, decision: 'reject', reason: 'retry' })
+    const observed = (await service.ledger.transition(rejected.proposal, 'observed', { reason: 'observe' })).record
+    await service.evaluate(observed, cases)
+    const records = await service.proposals.readAll()
+    expect(records.filter(item => item.status === 'evaluated').map(item => item.id)).toEqual([
+      `${proposed.proposal.id}:evaluated`, `${proposed.proposal.id}:evaluated:2`,
+    ])
+    expect((await service.decisions.readAll()).filter(item => item.toStatus === 'evaluated').map(item => item.recordId)).toEqual([
+      `${proposed.proposal.id}:evaluated`, `${proposed.proposal.id}:evaluated:2`,
+    ])
+    expect((await service.ledger.latest(proposed.proposal.id)).id).toBe(`${proposed.proposal.id}:evaluated:2`)
+    expect((await service.ledger.record(`${proposed.proposal.id}:evaluated`)).id).toBe(`${proposed.proposal.id}:evaluated`)
+  })
+
+  it('keeps service ledger and decisions unchanged on stale transitions and proposal write failures', async () => {
+    const { service } = await setup()
+    const proposed = await proposeSkillChange(service, { skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'Improve diagnostics' })
+    await evaluateProposal(service, { proposalRef: proposed.proposal.id, cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
+    const evaluated = (await service.proposals.readAll()).find(item => item.status === 'evaluated')!
+    await service.rejectProposal(evaluated, 'reject')
+    const before = { proposals: (await service.proposals.readAll()).length, decisions: (await service.decisions.readAll()).length }
+    await expect(service.acceptProposal(evaluated, 'stale')).rejects.toMatchObject({ code: 'conflict' })
+    expect(await service.proposals.readAll()).toHaveLength(before.proposals)
+    expect(await service.decisions.readAll()).toHaveLength(before.decisions)
+
+    const originalAppendComputed = service.proposals.appendComputed
+    const writeError = new Error('proposal write failed')
+    service.proposals.appendComputed = (async () => { throw writeError }) as typeof service.proposals.appendComputed
+    const draft = createProposal({ id: 'write-failure', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'write failure' })
+    await expect(service.stageProposal(draft)).rejects.toBe(writeError)
+    expect(await service.decisions.readAll()).toHaveLength(before.decisions)
+    service.proposals.appendComputed = originalAppendComputed
+  })
+
+  it('rejects suffixed roots before staging and guards invalid service evaluation without writes', async () => {
+    const { service } = await setup()
+    const invalid = createProposal({ id: 'proposal:invalid:evaluated', skillName: 'api-debugging', baseVersion: '1.0.0', baseContent: base, proposedVersion: '1.1.0', candidateContent: candidate, intent: 'invalid root' })
+    await expect(service.stageProposal(invalid)).rejects.toMatchObject({ code: 'invalid-transition' })
+    expect(await service.proposals.readAll()).toHaveLength(0)
+    expect(await service.decisions.readAll()).toHaveLength(0)
+
+    const proposed = await proposeSkillChange(service, { skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'guard evaluation' })
+    await evaluateProposal(service, { proposalRef: proposed.proposal.id, cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
+    const evaluated = (await service.proposals.readAll()).find(item => item.status === 'evaluated')!
+    const accepted = await service.acceptProposal(evaluated, 'accepted')
+    const evaluationCount = (await service.evaluations.readAll()).length
+    await expect(service.evaluate(accepted, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }])).rejects.toMatchObject({ code: 'invalid-transition' })
+    expect(await service.evaluations.readAll()).toHaveLength(evaluationCount)
+  })
+
+  it('maps ledger conflicts from review operations to OperationError', async () => {
+    const { service } = await setup()
+    const proposed = await proposeSkillChange(service, { skillName: 'api-debugging', baseContent: base, candidateContent: candidate, proposedVersion: '1.1.0', intent: 'conflict mapping' })
+    const failing = { proposals: { readAll: async () => [proposed.proposal] }, acceptProposal: async () => { throw new ProposalLedgerError('conflict', 'stale proposal') } } as unknown as EvolutionService
+    await expect(reviewProposal(failing, { proposalRef: proposed.proposal.id, decision: 'accept', reason: 'review' })).rejects.toBeInstanceOf(OperationError)
+    await expect(reviewProposal(failing, { proposalRef: proposed.proposal.id, decision: 'accept', reason: 'review' })).rejects.toMatchObject({ code: 'conflict' })
   })
 
   it('shares promotion checks between dry-run and real execution', async () => {

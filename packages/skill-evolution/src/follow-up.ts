@@ -6,6 +6,22 @@ export type { FollowUpResolution } from './types.js'
 export const FOLLOW_UP_RULES_VERSION = 'follow-up-rules-v1'
 export const INTENT_POLICY_VERSION = 'intent-policy-v1'
 
+export function isFollowUpClassification(value: unknown): value is Pick<ClassificationMemoEntry, 'intent' | 'confidence' | 'rationale'> {
+  if (typeof value !== 'object' || value === null) return false
+  const row = value as Record<string, unknown>
+  return typeof row.intent === 'string' && row.intent !== 'other' && (FOLLOW_UP_INTENTS as readonly string[]).includes(row.intent)
+    && typeof row.confidence === 'number' && Number.isFinite(row.confidence) && row.confidence >= 0 && row.confidence <= 1
+    && (row.rationale === undefined || typeof row.rationale === 'string')
+}
+
+export function isClassificationMemoEntry(value: unknown): value is ClassificationMemoEntry {
+  if (!isFollowUpClassification(value)) return false
+  const row = value as unknown as Record<string, unknown>
+  return typeof row.classifierVersion === 'string' && typeof row.inputHash === 'string'
+    && row.id === `classification:${row.classifierVersion}:${row.inputHash}`
+    && typeof row.observationId === 'string' && typeof row.createdAt === 'string'
+}
+
 const boundary = (value: string) => new RegExp(`(?:^|[^\\p{L}\\p{N}_])${value}(?=$|[^\\p{L}\\p{N}_])`, 'u')
 const rules: Array<{ id: string; markers: string[]; intent: FollowUpIntent; confidence: number }> = [
   { id: 'empty', markers: [], intent: 'unknown', confidence: 0 },
