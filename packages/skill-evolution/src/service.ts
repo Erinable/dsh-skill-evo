@@ -50,6 +50,8 @@ export interface EvolutionServiceOptions {
   readonly followUpClassifier?: FollowUpClassifier
   readonly classifierTimeoutMs?: number
   readonly correctionClassifier?: CorrectionClassifier
+  readonly correctionRulesVersion?: string
+  readonly windowRulesVersion?: string
 }
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
@@ -494,7 +496,7 @@ export class EvolutionService {
     const memoEntries = await this.classifications.readAll()
     const memo = new Map(memoEntries.filter((entry): entry is ClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge !== 'correction').map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
-    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null, correction: { rules: CORRECTION_RULES_VERSION, policy: CORRECTION_POLICY_VERSION, classifier: this.correctionClassifier?.version ?? 'none' } }))
+    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: this.options.windowRulesVersion ?? 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null, correction: { rules: this.options.correctionRulesVersion ?? CORRECTION_RULES_VERSION, policy: CORRECTION_POLICY_VERSION, classifier: this.correctionClassifier?.version ?? 'none' } }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
       return {
         experiences: await this.experiences.readAll(),
@@ -533,6 +535,8 @@ export class EvolutionService {
     return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
 }
+
+function isValidSkillName(name: string): boolean { return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) }
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')
