@@ -29,12 +29,16 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以从 Observation log 完整重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Skill window、Skill posterior、Failure attribution。注入模型的输出另存在 memo 里，重建时一并读取（ADR-0026）。
+可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution、Skill window、Skill posterior、Failure attribution。没注入模型时只依赖 Observation log；注入后，模型来源的结论还依赖对应的 memo（分类器的 Classification memo、发射模型的 `emissions`）和推导版本（ADR-0034、ADR-0026）。
 _Avoid_: cache, 结论
 
 **Projection**:
-从 Observation log 确定性地重建全部 Derived record 的过程。
+从 Observation log、Classification memo 和推导版本确定性地重建全部 Derived record 的过程；没注入分类器时只读 Observation log。Projection 从不调用分类器。
 _Avoid_: sync, 刷新
+
+**Classification memo**:
+分类器输出的缓存，按分类器版本和输入哈希存放，供 Projection 复现分类结论；它不是 Fact record，不当作证据，也不是 Derived record，Projection 和 repair 都不删它（ADR-0034）。
+_Avoid_: 分类结果事实, cache（它不能随意丢弃）
 
 **Exposure view**:
 一个 Skill 在一次 session 里「可见 → 请求加载 → 加载成功/失败」的三段证据；它不是成功率。
@@ -49,6 +53,14 @@ _Avoid_: lesson, memory, 经验总结
 **Attribution**:
 把一个结果归到某类原因（routing、content、tool 等）的判断；属于派生，可以修正。
 _Avoid_: blame
+
+**Follow-up intent**:
+对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0035）。显式反馈的 kind 优先于任何推断。
+_Avoid_: sentiment, 情绪
+
+**Follow-up resolution**:
+一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
+_Avoid_: label, 标注
 
 **Failure case**:
 一次能定位到某个 Skill 的失败，引用证据 Observation。多 Skill session 里的一次失败可以扇出成几个 Failure case，各带归因权重（ADR-0027）。
@@ -123,12 +135,24 @@ _Avoid_: audit log
 ## 评估与发布
 
 **Evaluation**:
-在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。
+在一组 Evaluation case 上对 Base 与 Candidate content 的反事实比较；它不是总分。每个 Evaluation case 在两侧各跑 R 次（ADR-0030）。
 _Avoid_: score, benchmark
 
 **Evaluation case**:
 参与比较的一个用例，分为 original-failure、historical-success、boundary 三类。
 _Avoid_: test
+
+**Sample**:
+一个 Evaluation case 在 Base 或 Candidate 一侧的一次运行；用例是否通过按 R 个 Sample 的多数判定（ADR-0030）。
+_Avoid_: trial, run
+
+**Execution cost**:
+一条轨迹的步数（工具调用次数）和 token（输入加输出，含缓存命中）；只在双方都通过的用例的通过 Sample 上比较（ADR-0029）。
+_Avoid_: 总成本, latency
+
+**Context cost**:
+一份 Skill 正文在目录曝光（name 与 description）和加载（整份 SKILL.md）时占用的 token 估计，由 core 从正文确定性算出，评测和 metrics 共用（ADR-0031）。
+_Avoid_: prompt size, 运行时 inputTokens
 
 **Evaluation artifact**:
 一次 Evaluation 的持久结果，只对它所评估的那个 Proposal、Base 和 Candidate content 有效；是 Promote 的前置证据。
