@@ -182,9 +182,9 @@ _Avoid_: proposal id 前缀
 （proposal.ts:66 proposalRootId；ADR-0005）
 
 **Ledger record**:
-Proposal 在某个状态下追加的一条记录，身份由 Proposal root 和该状态组成。
+Proposal 在某个状态下追加的一条记录，身份由 Proposal root、该状态和进入该状态的次数组成；第一次进入省略次数后缀。
 _Avoid_: proposal version
-（proposal.ts:58 LedgerRecordStatus；ADR-0005）
+（proposal.ts:58 LedgerRecordStatus；ADR-0021）
 
 **Proposal ledger**:
 全部 Ledger record 构成的 append-only 历史；Proposal 的最新状态从它推出。

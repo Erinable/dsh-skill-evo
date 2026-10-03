@@ -6,7 +6,7 @@ The decisions in ADR-0004, ADR-0016, ADR-0020, and ADR-0021 are authoritative. A
 
 ## Requirements
 
-R1. WHEN a Proposal root enters a status for the first time THE SYSTEM SHALL assign the Ledger record id `<root>:<status>`, and WHEN it enters that same status on the n-th time where n is at least 2 THE SYSTEM SHALL assign `<root>:<status>:<n>`, with n equal to the count of existing records for that root and status plus one.
+R1. WHEN a Proposal root enters a status for the first time THE SYSTEM SHALL assign the Ledger record id `<root>:<status>`, and WHEN it enters that same status on the n-th time where n is at least 2 THE SYSTEM SHALL assign `<root>:<status>:<n>`, with n equal to the count of existing records for that root and status plus one; WHEN that computed id is already occupied by a record, THE SYSTEM SHALL increment n until an unused id is found.
 
 R2. WHEN a new Ledger record is written THE SYSTEM SHALL set `previousRecordId` to the exact id of the source record, and WHEN a decision is written for that Ledger record THE SYSTEM SHALL use id `decision:ledger:<recordId>` and include `recordId`, `fromStatus`, and `toStatus`.
 
@@ -18,7 +18,7 @@ R5. WHEN `appendComputed` is called THE SYSTEM SHALL hold the store lock while i
 
 R6. WHEN `ProposalLedger.transition(from, to, input)` is called THE SYSTEM SHALL perform the following under the Proposal store lock in order: detect an existing record with the same `previousRecordId` and target status; validate the ADR-0004 transition table; require `from.id` to be the latest record id when the root already exists; compute and append the new record. A repeated call for the same source and target SHALL return the existing record with `replayed: true` without appending another Ledger record.
 
-R7. WHEN a transition is invalid, stale, or collides with an occupied id THE SYSTEM SHALL write neither a Ledger record nor a decision and SHALL raise `ProposalLedgerError('invalid-transition')`, `ProposalLedgerError('conflict')`, or `DuplicateRecordError` respectively. WHEN lock acquisition or Ledger I/O fails THE SYSTEM SHALL propagate the original error and SHALL NOT report success.
+R7. WHEN a transition is invalid or stale THE SYSTEM SHALL write neither a Ledger record nor a decision and SHALL raise `ProposalLedgerError('invalid-transition')` or `ProposalLedgerError('conflict')` respectively. WHEN `appendComputed` receives an occupied candidate id after the transition has exhausted its next-free-id allocation, THE SYSTEM SHALL raise `DuplicateRecordError` without writing. WHEN lock acquisition or Ledger I/O fails THE SYSTEM SHALL propagate the original error and SHALL NOT report success.
 
 R8. WHEN a Ledger record append succeeds but its decision append fails THE SYSTEM SHALL propagate the decision error while retaining the Ledger record; retrying the same transition SHALL replay that record and append the missing deterministic decision. A missing decision SHALL never cause a duplicate Ledger record.
 
@@ -31,3 +31,5 @@ R11. WHEN historical ADR-0005 records lack `previousRecordId` and use unsuffixed
 R12. WHEN the rejected → observed → evaluated path is executed twice through the core transition seam THE SYSTEM SHALL persist two distinct `evaluated` records (the second with an occurrence suffix), link each decision to its record, and return the latest record for a root query while returning the requested entry for an exact record-id query.
 
 R13. WHEN a caller supplies an object whose id equals an existing record id but whose status or content is stale, including a `draft` object for an already staged root, THE SYSTEM SHALL raise `conflict` and SHALL leave both Ledger and decision counts unchanged.
+
+R14. WHEN a Proposal is staged THE SYSTEM SHALL require `proposalRootId(root) === root`; a root ending in a recognized status suffix or a status suffix plus occurrence SHALL raise a domain error before any Ledger or decision append and SHALL leave the Ledger unchanged.
