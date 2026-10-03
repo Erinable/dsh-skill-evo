@@ -15,7 +15,7 @@ Tasks are ordered by dependency. A task may run in parallel with another task on
 **Acceptance tests:**
 
 - A fixture maps one failed command and one successful command with exit markers; resulting Observations contain the approved optional fields and no complete output.
-- The six redaction probes plus URL query/fragment probes produce the ADR-0023 expected replacements, are idempotent, and cap command/error lengths.
+- The six redaction probes plus URL query/fragment probes produce the ADR-0023 expected replacements, are idempotent, cap command/error lengths, cap `argKeys` at 16 entries with 64 characters per key, and cap `signal` at 32 characters.
 - A fixture containing proxy user/password, authorization, token/password flags, and secret environment assignments finds none of those original values in serialized Observations.
 - Existing bundle and core Observation tests pass.
 
@@ -25,16 +25,16 @@ Tasks are ordered by dependency. A task may run in parallel with another task on
 
 **Depends on:** 1
 
-**Files/modules:** `packages/skill-evolution/src/correction.ts`, `experience.ts`, `projection.ts`, `state-root.ts`, `service.ts`, correction/projection tests.
+**Files/modules:** `packages/skill-evolution/src/correction.ts`, `experience.ts`, `projection.ts`, `state-root.ts`, `service.ts`, `records.ts` and `classifications.jsonl` (ADR-0034 memo role), correction/projection tests.
 
-**Goal:** Add ToolAttempt correlation, rule-1 recognition, structured error signatures, episode/Experience emission, derived stores, cursor judge versions, and injected recognizer fallback/reprojection.
+**Goal:** Add ToolAttempt correlation, rule-1 recognition, structured error signatures, episode/Experience emission, derived stores, ADR-0034 Classification memo reads, one `derivationKey`, and the ADR-0035-shaped injected classifier seam. Projection must never call the injected classifier.
 
 **Acceptance tests:**
 
 - One session with three exit-128/443 failures followed by proxy setup and success yields exactly one correction episode and one tool-attributed Experience without a loaded Skill; unrelated intent between retries does not reset the run.
 - Missing command/result, invalid references, too-short drafts, and recognizer exceptions produce no episode and increment rejection/fallback metrics.
-- Error signature includes exit code and normalized first line; changing recognizer version changes episodes/pattern inputs while Observation bytes remain unchanged.
-- Stable Failure cluster references use the ADR-0022 earliest-case id.
+- Error signature includes exit code and normalized first line; changing correction rules or classifier version updates `derivationKey`, changes episodes/pattern inputs while Observation and memo bytes remain unchanged, and does not invoke a classifier from Projection.
+- Stable Failure cluster references use the ADR-0022 earliest-case id, and classifier-version reprojection of the same grouped episodes preserves the `pattern:<earliest episode id>` and leaves a Proposal source reference resolvable.
 
 ### 3. Aggregate patterns and expose policy-aware reports
 
@@ -44,22 +44,22 @@ Tasks are ordered by dependency. A task may run in parallel with another task on
 
 **Files/modules:** `packages/skill-evolution/src/correction.ts`, `metrics.ts`, `report.ts`, `service.ts`, state/policy/report tests.
 
-**Goal:** Add patterns store, CorrectionPolicy defaults, pure `assessPattern`, promotion reset, in-progress blocking, and shared report/metrics rendering.
+**Goal:** Add patterns store, stable earliest-episode pattern ids, CorrectionPolicy defaults, pure `assessPattern`, promotion reset, in-progress blocking, and shared report/metrics rendering.
 
 **Acceptance tests:**
 
 - One recent session reports 1/K and is not a candidate; three distinct recent sessions report K/K and are candidates; a 31-day-old set is excluded; retry-only is excluded.
 - After a promoted proposal, pre-promotion episodes no longer count and K post-promotion sessions become eligible again.
 - Reports and metrics expose policy/recognizer versions, counts, `since`, candidate reason, and target; observe exposes episode/pattern counts.
-- Injecting a policy version changes cursor/reprojection behavior without changing Observation facts.
+- Changing policy or classifier versions changes only `derivationKey`/Derived outputs; Observation and Classification memo facts remain unchanged. Reprojecting the same grouped episodes keeps the pattern id stable and keeps its Proposal source reference resolvable.
 
 ### 4. Add pattern design, target selection, and create-skill absent Base
 
 **Requirements:** R11, R12, R13, R17, R19
 
-**Depends on:** 3 and the merged ProposalLedger implementation from SKIL-121/SKIL-123.
+**Depends on:** 3 and the not-yet-merged ProposalLedger implementation specified by ADR-0021 and `docs/design/proposal-ledger-transition.md` §2.1/§2.4. Its expected implementation anchor is `packages/skill-evolution/src/ledger.ts` with exports from `types.ts`/`index.ts`; no such file exists on `origin/main` at this spec revision.
 
-**Files/modules:** `packages/skill-evolution/src/types.ts`, `proposal.ts`, `operations.ts`, Designer integration, proposal tests.
+**Files/modules:** `packages/skill-evolution/src/types.ts`, `proposal.ts`, `operations.ts`, `service.ts`, `packages/skill-evolution/src/ledger.ts` prerequisite, Designer integration in `packages/skill-evolution/src/operations.ts` and `packages/skill-evolution/bin/dsh-skill-evolution.mjs`, proposal tests.
 
 **Goal:** Add pattern-source Designer input, ordered target selection, environment-neutral validation, create-skill operation metadata, absent Base checks, and ADR-0021 ledger ids without changing the transition table.
 

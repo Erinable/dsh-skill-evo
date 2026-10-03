@@ -12,9 +12,9 @@ R5. WHEN a Correction episode is recognized THE SYSTEM SHALL persist it as a Der
 
 R6. WHEN an error signature is normalized THE SYSTEM SHALL include the failed exit code and normalized first error line as structured signature dimensions, remove volatile values while retaining meaningful host/port and exit-code distinctions, and SHALL use the stable Failure cluster id rules from ADR-0022 as the cross-projection anchor wherever a Failure cluster is referenced.
 
-R7. WHEN the correction recognizer, policy, or projection input version changes THE SYSTEM SHALL reproject correction Derived records without mutating Observations, and SHALL reuse a prior episode only when its input hash and recognizer version still match.
+R7. WHEN the correction rules, policy, classifier version, or Classification memo fingerprint changes THE SYSTEM SHALL update one cursor `derivationKey` and reproject correction Derived records without mutating Observations or memos; Projection SHALL never invoke an injected classifier.
 
-R8. WHEN Correction episodes are projected THE SYSTEM SHALL aggregate equal signature keys into patterns that retain occurrences and total session evidence but SHALL compute time-window counts, candidate status, and target Skill at read time from the supplied `now`, current policy, and proposal ledger.
+R8. WHEN Correction episodes are projected THE SYSTEM SHALL aggregate equal signature keys into patterns whose id is `pattern:<earliest episode id>` after stable `(occurredAt, episodeId)` ordering, retain occurrences and total session evidence, and compute time-window counts, candidate status, and target Skill at read time from the supplied `now`, current policy, and proposal ledger.
 
 R9. WHEN pattern assessment is requested THE SYSTEM SHALL apply the versioned CorrectionPolicy defaults `N=2`, `K=3`, `D=30` days, `maxAttemptsToSuccess=20`, and allowed scopes `project|user`; it SHALL exclude retry-only patterns, expire evidence outside the window, restart counting after a promotion, and report blocking in-progress proposals.
 
@@ -37,4 +37,3 @@ R17. WHEN the end-to-end fixture contains one session with three 443 failures fo
 R18. WHEN a caller changes the recognizer version and reprojects the same Observations THE SYSTEM SHALL update correction Derived outputs and metrics to the new recognizer result while leaving the Observation log byte-for-byte unchanged.
 
 R19. WHEN the repository implements this change THE SYSTEM SHALL preserve the core/bundle dependency direction, keep complete tool output out of the Observation log, keep runtime collection append-only and non-blocking, and leave Skill/memory/workflow boundaries as documented in CONTEXT.md.
-
