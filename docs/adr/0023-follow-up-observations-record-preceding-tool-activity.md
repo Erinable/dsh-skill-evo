@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # `user-follow-up` Observation 追加两个可选字段，记录跟进所回应那一轮的最后一次工具活动，只用 core 词汇
@@ -21,3 +21,5 @@ bundle 的默认 mapper 写 `user-follow-up` 时，在 `payload` 里多写两个
 - 记前一条助手回复的摘录，给分类器当上下文：会把模型输出写进事实流，有隐私和体积风险，也超出「向后兼容的增量字段」。被否。
 
 来源：[docs/design/follow-up-intent-classification.md §2.8](../design/follow-up-intent-classification.md)
+
+成员确认：SKIL-126

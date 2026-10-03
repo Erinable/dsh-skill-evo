@@ -29,12 +29,16 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以从 Observation log 完整重建的判断：Experience、Failure case、Failure cluster、Diagnosis。
+可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution。没注入分类器时只依赖 Observation log；注入后，分类器来源的结论还依赖 Classification memo 和推导版本（ADR-0024）。
 _Avoid_: cache, 结论
 
 **Projection**:
-从 Observation log 确定性地重建全部 Derived record 的过程。
+从 Observation log、Classification memo 和推导版本确定性地重建全部 Derived record 的过程；没注入分类器时只读 Observation log。Projection 从不调用分类器。
 _Avoid_: sync, 刷新
+
+**Classification memo**:
+分类器输出的缓存，按分类器版本和输入哈希存放，供 Projection 复现分类结论；它不是 Fact record，不当作证据，也不是 Derived record，Projection 和 repair 都不删它（ADR-0024）。
+_Avoid_: 分类结果事实, cache（它不能随意丢弃）
 
 **Exposure view**:
 一个 Skill 在一次 session 里「可见 → 请求加载 → 加载成功/失败」的三段证据；它不是成功率。
@@ -49,6 +53,14 @@ _Avoid_: lesson, memory, 经验总结
 **Attribution**:
 把一个结果归到某类原因（routing、content、tool 等）的判断；属于派生，可以修正。
 _Avoid_: blame
+
+**Follow-up intent**:
+对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0025）。显式反馈的 kind 优先于任何推断。
+_Avoid_: sentiment, 情绪
+
+**Follow-up resolution**:
+一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
+_Avoid_: label, 标注
 
 **Failure case**:
 一次能定位到某个 Skill 的失败，引用证据 Observation。

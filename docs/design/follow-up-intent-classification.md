@@ -1,7 +1,7 @@
-> 状态：SKIL-126 设计提案（父 issue SKIL-125 的 S1）。不可逆决策见 ADR-0022、0023、0024，三份都是 `proposed`，等成员确认。
+> 状态：SKIL-126 设计（父 issue SKIL-125 的 S1）。不可逆决策见 ADR-0023、0024、0025，成员已在 SKIL-126 上确认，三份都是 `accepted`。
 > 本文合并后冻结，不随代码更新。与现状不一致时，以代码、ADR 和 spec 为准。
 
-本文给维护闭环里的 follow-up 意图分类出设计：分类器的 interface、意图取值、规则降级、显式反馈优先、派生记录的形状、「确定性」的定义、bundle 的增量字段和边界。基线是 `origin/main` @ `2a442af`，第 2 轮合并到 `6accc8b`（含 PR #78）；第 2 轮另按在途的 PR #79（SKIL-134）head 对齐，见 §1.5。只出设计，不写实现代码。
+本文给维护闭环里的 follow-up 意图分类出设计：分类器的 interface、意图取值、规则降级、显式反馈优先、派生记录的形状、「确定性」的定义、bundle 的增量字段和边界。基线是 `origin/main` @ `2a442af`，第 2 轮合并到 `6accc8b`（含 PR #78），并按当时在途的 PR #79（SKIL-134）head 对齐；第 3 轮合并到 `63d2007`（PR #79 已合并），见 §1.5。只出设计，不写实现代码。
 
 ## 1. 现状
 
@@ -13,6 +13,7 @@
 - 文档：`CONTEXT.md`、`AGENTS.md`、ADR-0002、0003、0014、0016、0019，`docs/agents/domain.md`，`research/designer-subagent-readonly-tools-zh.md`，SKIL-101、SKIL-104 的决议评论。
 - 基线：`npm --prefix packages/skill-evolution run build` 通过，`npx vitest run tests` 输出 `Tests  134 passed (134)`。
 - 第 2 轮：PR #79（SKIL-134，`origin/agent/sleuth/52ef166cbf40`）的 `types.ts`、`experience.ts`、`tests/evolution.spec.ts` 的改动全文，以及它的 ADR `structured-failure-origins-and-stable-cluster-identities`（PR #79 里编号 0022，`accepted`）；SKIL-133、SKIL-134 的描述；`state-root.ts:11-72`、`service.ts:62-71,138-163`、`repair.ts:96-113`、`tests/core.spec.ts:73-99`。
+- 第 3 轮：`git diff 6accc8b 63d2007` 的 `types.ts`、`experience.ts:160-240`、`tests/evolution.spec.ts:89-200`，以及 main 上的 `docs/adr/0022-structured-failure-origins-and-stable-cluster-identities.md`。PR #79 在第 2 轮之后多了两个提交（评审修改、CJK 相似度上限），§1.5 列的形状、根因映射、§5.1 引用的测试名都和合并结果一致。
 
 ### 1.2 follow-up 怎么变成失败
 
@@ -54,12 +55,12 @@
 
 ### 1.5 与 SKIL-133 / SKIL-134（PR #79）的关系
 
-SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、`clusterFailureCases`、`diagnoseFailureCluster`。它的描述写明「`origin` 字段要和 SKIL-126 对齐，谁后合并谁负责适配」。PR #79 当前的形状：
+SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、`clusterFailureCases`、`diagnoseFailureCluster`。它的描述写明「`origin` 字段要和 SKIL-126 对齐，谁后合并谁负责适配」。PR #79 已在 `63d2007` 合并进 main，下面是 main 上的形状：
 
 - `SkillFailureCase` 新增**必填**的 `origin: FailureOrigin`，`FailureOrigin = 'load-failure' | 'implicit-follow-up' | 'explicit-feedback'`；另有可选的 `sessionId`、`feedbackKind`、`attributionConfidence`、`counterEvidence`。
 - `diagnoseFailureCluster` 只按 `origin` 和 `feedbackKind` 判根因：`load-failure` → `composition`；`implicit-follow-up`，以及显式的 `incorrect` / `dissatisfied` / `retry` → `content`；显式 `constraint` → `boundary`；显式 `goal-changed` → `not-skill`；其余 → `uncertain`。一个 cluster 里有多种时按 `composition > content > boundary > not-skill > uncertain` 取第一个。
-- 聚类前按 `createdAt`、`id` 排序，cluster id 改为 `cluster:<skillName>:<簇内最早的 case id>`（PR #79 的 ADR，`accepted`）。
-- `now` 缺省值没改，Diagnosis 的 `createdAt` 仍是墙钟时间（PR #79 `experience.ts:197`）。
+- 聚类前按 `createdAt`、`id` 排序，cluster id 改为 `cluster:<skillName>:<簇内最早的 case id>`（ADR-0022，`accepted`）。
+- `now` 缺省值没改，Diagnosis 的 `createdAt` 仍是墙钟时间（main `experience.ts:197`）。
 
 本设计第 2 轮按这个形状对齐（§2.3、§2.6）：**`origin`、`FailureOrigin`、`feedbackKind` 沿用 PR #79 的名字、取值和必填性，不另起同名字段**；本设计只新增不撞名的字段，根因只留一张表，以 PR #79 的映射为底。两种合并顺序下 S2 怎么写，见 §5.2。
 
@@ -77,7 +78,7 @@ SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、
 
 推荐 A3。理由有三条。第一，`repair` 和重投影里不会出现任何模型调用，「确定性重算」直接成立。第二，花钱的时机只有一个，就是人或 worker 显式触发的那次。第三，Projection 仍在锁里，几毫秒就能完成。代价是注入了分类器但还没跑 `classifyFollowUps` 时，新的 follow-up 先按规则处理，结果里标 `source: 'rule'`，能看出来。
 
-### 2.2 分类器的 interface 和注入点（不可逆，ADR-0024）
+### 2.2 分类器的 interface 和注入点（不可逆，ADR-0025）
 
 - C1 裸函数，和 `Designer` 一样，另传 `classifierVersion`：换实现时容易忘记换版本号，memo 会把新模型的输出记在旧版本名下。
 - ★C2 带 `version` 的对象：`{ version, classify(context, signal) }`，版本和行为绑在一起。
@@ -92,7 +93,7 @@ SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、
 - 调用方的 signal 被 abort 时，立刻停止，返回已经完成的部分。已经写进 memo 的条目保留。
 - Projection 看不到这些失败。凡是 memo 里没有有效条目的 follow-up，Projection 一律走规则，并标 `fallbackReason: 'not-classified'`。
 
-### 2.3 意图取值和对齐表（不可逆，ADR-0024）
+### 2.3 意图取值和对齐表（不可逆，ADR-0025）
 
 - 选项 I1：另起一套意图词表，再维护一张到 `FEEDBACK_KINDS` 的映射表。同一个意思会有两个名字。
 - 选项 I2：把「继续」和「无关」拆成两个值。下游对这两个值的处理完全一样。
@@ -219,7 +220,7 @@ readonly attributionSource?: 'override' | 'tool'
 - **`failures`**：JSON 输出里的每个 case 多出 `intentSource`、`intent`、`attribution` 等字段（`origin` 由 PR #79 引入）。SKIL-104 说过 `--format json` 保持不动，这里只是追加字段，不改已有字段。Markdown 的每一行在严重度后面追加来源，例如 `[medium · rule]`、`[high · explicit]`。SKIL-104 把 `failures` 改成按 cluster 分组的改动先合并的话，每个 cluster 的摘要里再加一列按来源的计数。
 - **`metrics`**：每个 Skill 新增 `followUpIntents: { explicit, classifier, rule }`，每个来源下是 `{ total, failures, byIntent }`。现有的 `followUps` / `followUpRate` 保持今天的语义，不改（§1.4 的问题 5 记为已知缺口）。`service.metrics()` 改为先调用 `refreshDerived()`，取到 Follow-up resolution 之后，作为第 4 个可选参数传给 `aggregateMetrics`。
 
-### 2.7 「确定性」的定义（不可逆，ADR-0023）
+### 2.7 「确定性」的定义（不可逆，ADR-0024）
 
 - 选项 M1：不做 memo，每次投影都调用分类器。结果会漂移，每次运行 `failures` 都要花钱。被否。
 - 选项 M2：把分类结果当作 Fact record 写入。模型的判断就成了权威事实，违反 ADR-0016。被否。
@@ -249,7 +250,7 @@ T1 的代价：Diagnosis 的 `createdAt` 语义从「这次投影的时间」变
   - 今天没有任何代码按 `role` 分支（`grep -rn "\.role\b" packages/skill-evolution/src` 没有命中）。以后要写「按 role 清空 derived store」的代码时，`memo` 是单独的取值，不会被误删，这是另设 role 的原因。
   - Retention（`state-root.ts:147` 的 `rotateFile`）只作用于 Observation log，不碰 memo。
 
-### 2.8 Observation 增量字段（不可逆，ADR-0022）
+### 2.8 Observation 增量字段（不可逆，ADR-0023）
 
 - 选项 O1：不改 bundle，只按 log 顺序离线推断。
 - ★选项 O2：`user-follow-up` 的 payload 里追加 `precedingToolKind`、`precedingToolFailed` 两个字段，O1 作为旧记录的退路。
@@ -331,9 +332,9 @@ export function classifyFollowUps(service: EvolutionService, options?: { readonl
 
 ### 5.1 现有测试
 
-- 保持通过，不用改：`bundle.spec.mjs:298-330`。原因：`Please correct timeout diagnosis.` 命中 `correction`，`snapshot.failures.length` 仍为 1，显式 `incorrect` 仍为 high。`evolution.spec.ts:49-62`（`Please correct step two.` 仍然产生失败，数量仍为 2）、`:572-596`、`core.spec.ts:213-230` 同样不用改。
+- 保持通过，不用改：`bundle.spec.mjs:298-330`。原因：`Please correct timeout diagnosis.` 命中 `correction`，`snapshot.failures.length` 仍为 1，显式 `incorrect` 仍为 high。`evolution.spec.ts:49-62`（`Please correct step two.` 仍然产生失败，数量仍为 2）、`:683-697`（第 3 轮 main 上的行号）、`core.spec.ts:213-230` 同样不用改。
 - 行为变化，需要在 spec 里标出：显式 `goal-changed` 从 low 级失败变为不算失败；不带 `skill` 的显式反馈不再按隐式跟进处理；Skill 加载之前的跟进不再归给这个 Skill；隐式跟进不再一律判 `content`，没命中规则的是 `unknown`，不算失败；Diagnosis 的 `createdAt` 改为最后一条证据的时间；部分 Failure cluster 的 id 会变一次（§2.6）；旧的 projection cursor 第一次会触发一次重投影。
-- PR #79 的测试（按它的 head）：
+- PR #79 带进 main 的测试（`63d2007`，`evolution.spec.ts:89-200`）：
   - `maps explicit feedback kind %s to %s` 的 6 行里，`goal-changed → not-skill` 那一行要改：显式 `goal-changed` 不再产生 case，`buildFailureCases` 返回空数组。改成断言「没有 case」，另加一条直接构造 `feedbackKind: 'goal-changed'` 的 case 喂给 `diagnoseFailureCluster`、断言 `not-skill` 的测试，保留映射本身的覆盖。其余 5 行不用改。
   - `records structured failure origins…` 里的隐式跟进原文是 `upload this again`，§2.4 的规则判 `unknown`，不再产生 case，`failure:implicit` 的断言要改。把原文换成命中 `correction` 的句子（如 `wrong, upload this again`），断言就能保留，而「`upload` 不再判成 `composition`」这条反例也仍然成立。
   - `uses evidence strength…` 用的 `still wrong` 命中 `correction`，case 数不变，不用改。
@@ -342,22 +343,19 @@ export function classifyFollowUps(service: EvolutionService, options?: { readonl
 ### 5.2 Builder 拆分建议
 
 - **T1 规则与解析（core，纯函数）**：`FOLLOW_UP_INTENTS`、`follow-up.ts` 里的规则、策略表、`resolveFollowUps`、`classificationInputFor`；把 `buildFailureCases`、`attributionFor`、`confidenceFor`、`diagnoseFailureCluster` 改成读解析结果；`SkillFailureCase` 的可选字段；`diagnoseFailureCluster` 的 `now` 缺省值改为取证据时间（§2.7 选项 T1）；`failures` 的输出。覆盖用例 1–4 的规则路径。
-- **和 PR #79 的合并顺序**（T1 的写法按实际顺序二选一，S2 的 spec 两种都要写清）：
-  - PR #79 先合并（预期情况，它已 `in_review`）：T1 以它为底。`origin`、`FailureOrigin`、`feedbackKind`、排序和簇 id 规则都已存在，T1 只追加 §2.6 的新字段，把 `diagnoseFailureCluster` 按 §2.6 的五步改写（第 1、3、4 步就是 PR #79 现有的分支，第 2 步是新增），并按 §5.1 改 PR #79 的两条测试。
-  - T1 先合并：T1 把 PR #79 的 `FailureOrigin` 类型、必填的 `origin` 字段和 `feedbackKind` 按 PR #79 的名字、取值原样带进来（只有这几个字段，不带聚类、置信度的改动），`diagnoseFailureCluster` 同样按 §2.6 的五步写。PR #79 之后合并时，`types.ts` 里的这几行是相同改动，只需在 `experience.ts` 上解冲突。按 SKIL-134 的约定，谁后合并谁适配，T1 的 PR 描述里要写明这一点。
-  - 两种顺序下，根因表都只有 §2.3 这一张，也就是 PR #79 的映射。
+- **以 PR #79 为底**：PR #79 已在 `63d2007` 合并，T1 以 main 为底。`origin`、`FailureOrigin`、`feedbackKind`、排序和簇 id 规则都已存在，T1 只追加 §2.6 的新字段，把 `diagnoseFailureCluster` 按 §2.6 的五步改写（第 1、3、4 步就是 main 现有的分支，第 2 步是新增），并按 §5.1 改 PR #79 带进来的两条测试。根因表只有 §2.3 这一张，也就是 PR #79 的映射。
 - **T2 分类器、memo 和 cursor（core）**：`FollowUpClassifier`、`EvolutionServiceOptions.followUpClassifier`、`classifications.jsonl`（role `memo`）、`follow-ups.jsonl`、`classifyFollowUps`、`derivationKey`、`metrics` 的来源拆分。覆盖用例 3 的分类器路径、用例 4 的分类器部分、用例 5。依赖 T1。
-- **T3 bundle 增量字段**：按 ADR-0022 写两个字段，外加 `bundle.spec.mjs` 的映射测试。不依赖 T1、T2，可以并行。T1 的离线退路保证 T3 合并之前也能工作。
+- **T3 bundle 增量字段**：按 ADR-0023 写两个字段，外加 `bundle.spec.mjs` 的映射测试。不依赖 T1、T2，可以并行。T1 的离线退路保证 T3 合并之前也能工作。
 
 ## 6. 不可逆决策
 
-- ADR-0022：`user-follow-up` 的 payload 追加 `precedingToolKind`、`precedingToolFailed` 两个可选字段，只用 core 的词汇。
-- ADR-0023：分类器的输出存进 Classification memo，Projection 是「Observation log + memo + 版本」的纯函数。
-- ADR-0024：意图取值是 `FEEDBACK_KINDS` 的超集，分类器以带 `version` 的对象注入。
+- ADR-0023：`user-follow-up` 的 payload 追加 `precedingToolKind`、`precedingToolFailed` 两个可选字段，只用 core 的词汇。
+- ADR-0024：分类器的输出存进 Classification memo，Projection 是「Observation log + memo + 版本」的纯函数。
+- ADR-0025：意图取值是 `FEEDBACK_KINDS` 的超集，分类器以带 `version` 的对象注入。
 
-编号：`origin/main`（`6accc8b`）上最大是 0021（PR #78 已合并），本 PR 取 0022–0024，和 main 不冲突。在途的 PR #79、#80、#82 也用了 0022，#82 还用了 0023；按契约，后合并的 PR 改号，本 PR 如果不是这几个里第一个合并的，合并前按当时 `origin/main` 的最大号顺延，并同步改本文和 ADR 之间的引用。
+编号：第 3 轮的 `origin/main`（`63d2007`）上最大是 0022（PR #79 已合并），本 PR 顺延为 0023–0025，本文和 ADR 之间的引用已同步改号。在途的 PR #80、#82 也用了 0022、0023；按契约，后合并的 PR 改号，本 PR 合并前如果 main 又有新 ADR，再按当时的最大号顺延。
 
-**ADR 冲突**：ADR-0023 修订了 ADR-0002 和 `CONTEXT.md` 里 **Derived record**、**Projection** 的表述（「从 Observation log 完整重建」），注入分类器以后还要加上 memo。之所以值得修订，是因为模型分类本身不确定，只靠 Observation log 做不到父 issue 要的「确定性重算」。ADR-0016 不冲突。
+**ADR 冲突**：ADR-0024 修订了 ADR-0002 和 `CONTEXT.md` 里 **Derived record**、**Projection** 的表述（「从 Observation log 完整重建」），注入分类器以后还要加上 memo。之所以值得修订，是因为模型分类本身不确定，只靠 Observation log 做不到父 issue 要的「确定性重算」。ADR-0016 不冲突。
 
 ## 7. 待定项与默认答案
 
@@ -372,4 +370,4 @@ export function classifyFollowUps(service: EvolutionService, options?: { readonl
 - `origin`、`feedbackKind` 沿用 PR #79，本设计只追加 `intentSource` 等字段（§2.6 选项 F2）；根因表以 PR #79 的映射为准，`constraint` 判 `boundary`（§2.3）。
 - Diagnosis 的 `createdAt` 取簇内最晚的 case 时间，本需求一并修（§2.7 选项 T1）。
 - DSH 上的分类器后端和子命令不在本需求内（§2.9）。
-- `CONTEXT.md` 要新增三个词条：**Follow-up intent**（对一条用户跟进的意图判断，取值见 ADR-0024）、**Follow-up resolution**（一条跟进的意图、来源和版本，属于 Derived record）、**Classification memo**（分类器输出的缓存，不是 Fact record，也不是 Derived record）。**Derived record**、**Projection** 两个词条按 ADR-0023 修订。成员确认 ADR 以后，这些改动放在同一个设计 PR 里提交。
+- `CONTEXT.md` 要新增三个词条：**Follow-up intent**（对一条用户跟进的意图判断，取值见 ADR-0025）、**Follow-up resolution**（一条跟进的意图、来源和版本，属于 Derived record）、**Classification memo**（分类器输出的缓存，不是 Fact record，也不是 Derived record）。**Derived record**、**Projection** 两个词条按 ADR-0024 修订。成员确认 ADR 后，第 3 轮已在本 PR 里提交。

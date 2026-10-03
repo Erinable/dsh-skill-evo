@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 分类器输出存进 Classification memo；Projection 是 Observation log + memo + 版本的纯函数
@@ -21,3 +21,5 @@ status: proposed
 - 分类器实现方必须在模型、prompt 或输出映射变化时换 `version`；core 无法校验这一点。
 
 来源：[docs/design/follow-up-intent-classification.md §2.7](../design/follow-up-intent-classification.md)
+
+成员确认：SKIL-126
