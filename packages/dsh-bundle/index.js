@@ -369,17 +369,10 @@ export function tokenize(input) {
 
 function redactRecord(value, depth = 0) {
   if (depth > 4) return '[REDACTED_NESTED_VALUE]'
-  if (typeof value === 'string') return redactText(value)
+  if (typeof value === 'string') return redactSensitiveText(value)
   if (Array.isArray(value)) return value.map(item => redactRecord(item, depth + 1))
   if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactRecord(item, depth + 1)]))
   return value
-}
-
-function redactText(value) {
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
-    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '[REDACTED_AUTH]')
-    .replace(/\b(password|passwd|token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
 }
 
 function isObservationInput(value) {
@@ -499,6 +492,7 @@ function mapToolCall(base, event, sessionId, toolCalls, sessions) {
       ...base.payload,
       ...(callId === undefined ? {} : { toolCallId: callId }),
       ...(toolName === undefined ? {} : { toolName }),
+      ...toolSummary(toolName, args),
     },
   }
 }
@@ -510,11 +504,13 @@ function mapToolResult(base, event, sessionId, toolCalls, sessions) {
   if (callId !== undefined) toolCalls.delete(`${sessionId}:${callId}`)
 
   const failed = toolResultFailed(data)
+  const resultSummary = commandResultSummary(call?.toolName, data)
   const payload = {
     ...base.payload,
     ...(callId === undefined ? {} : { toolCallId: callId }),
     ...(call?.toolName === undefined ? {} : { toolName: call.toolName }),
     ...(failed ? { failed: true } : {}),
+    ...resultSummary,
   }
   const correlationIds = call === undefined ? [] : [call.observationId]
 
@@ -566,6 +562,97 @@ function textFromToolResult(data) {
   const result = blocks.find(block => asRecord(block)?.type === 'tool-result')
   const content = asRecord(result)?.content
   return textFromContent(content)
+}
+
+const COMMAND_TOOLS = new Set(['bash', 'pwsh'])
+
+function toolSummary(toolName, args) {
+  const argKeys = args === undefined ? [] : Object.keys(args).slice(0, 16).map(key => key.slice(0, 64))
+  const summary = argKeys.length === 0 ? {} : { argKeys }
+  if (!COMMAND_TOOLS.has(toolName)) return summary
+  const command = typeof args?.command === 'string' ? args.command : typeof args?.script === 'string' ? args.script : undefined
+  if (command === undefined) return summary
+  const redacted = redactSensitiveText(command)
+  const tokens = tokenize(redacted).slice(0, 16).map(token => token.slice(0, 64))
+  const joined = tokens.join(' ')
+  const bounded = joined.slice(0, 240)
+  return { ...summary, command: bounded, ...(tokens.length < tokenize(redacted).length || joined.length > 240 ? { commandTruncated: true } : {}) }
+}
+
+function commandResultSummary(toolName, data) {
+  if (!COMMAND_TOOLS.has(toolName)) return {}
+  const structured = findResultMetadata(data)
+  const text = textFromToolResult(data) ?? textFromAny(data)
+  const marker = parseExitMarkers(text)
+  const exitCode = Number.isInteger(structured.exitCode) ? structured.exitCode : marker.exitCode
+  const signal = typeof structured.signal === 'string' ? structured.signal : marker.signal
+  const timedOut = structured.timedOut === true || marker.timedOut === true
+  const failed = toolResultFailed(data)
+  const summary = {
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(signal === undefined ? {} : { signal: redactSensitiveText(signal).slice(0, 32) }),
+    ...(timedOut ? { timedOut: true } : {}),
+  }
+  if (failed || exitCode !== undefined && exitCode !== 0 || signal !== undefined || timedOut) {
+    const line = errorLine(data, text)
+    if (line !== undefined) summary.errorLine = redactSensitiveText(line).replace(/\s+/g, ' ').slice(0, 200)
+  }
+  return summary
+}
+
+function findResultMetadata(value, depth = 0) {
+  if (depth > 5 || value === null || typeof value !== 'object') return {}
+  if (!Array.isArray(value)) {
+    const result = {}
+    if (Number.isInteger(value.exitCode)) result.exitCode = value.exitCode
+    if (typeof value.signal === 'string') result.signal = value.signal
+    if (value.timedOut === true) result.timedOut = true
+    for (const child of Object.values(value)) {
+      const nested = findResultMetadata(child, depth + 1)
+      Object.assign(result, nested)
+    }
+    return result
+  }
+  return value.reduce((result, child) => Object.assign(result, findResultMetadata(child, depth + 1)), {})
+}
+
+function parseExitMarkers(text) {
+  if (typeof text !== 'string') return {}
+  const exit = text.match(/\[exit code:\s*(-?\d+)\]\s*$/i)
+  const signal = text.match(/\[killed by signal:\s*([^\]]+)\]\s*$/i)
+  return {
+    ...(exit === null ? {} : { exitCode: Number(exit[1]) }),
+    ...(signal === null ? {} : { signal: signal[1].trim() }),
+    ...( /\[timed out after [^\]]+\]\s*$/i.test(text) ? { timedOut: true } : {}),
+  }
+}
+
+function errorLine(data, text) {
+  const candidates = []
+  const source = typeof text === 'string' ? text : textFromAny(data)
+  if (typeof source !== 'string') return undefined
+  const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:stdout|exit code|killed by signal|timed out)|$)/i)?.[1]
+  const stdout = source.match(/\[stdout\]([\s\S]*?)(?=\n\[(?:stderr|exit code|killed by signal|timed out)|$)/i)?.[1]
+  for (const block of [stderr, stdout, source]) {
+    if (typeof block !== 'string') continue
+    const lines = block.split(/\r?\n/).filter(line => line.trim()).slice(-64)
+    candidates.push(...lines.filter(line => /error|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line)))
+    if (candidates.length === 0) candidates.push(...lines.slice(0, 1))
+    if (candidates.length > 0) return candidates[0]
+  }
+  return undefined
+}
+
+function textFromAny(value, depth = 0) {
+  if (depth > 5 || value === null || typeof value !== 'object') return undefined
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(item => textFromAny(item, depth + 1)).filter(Boolean).join('\n') || undefined
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'text' && typeof child === 'string') return child
+    const text = textFromAny(child, depth + 1)
+    if (text !== undefined) return text
+  }
+  return undefined
 }
 
 function textFromContent(content) {

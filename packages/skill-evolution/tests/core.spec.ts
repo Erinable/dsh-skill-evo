@@ -24,10 +24,31 @@ import {
   classifyFollowUps,
   MaintenanceWorker,
   readCursor,
+  redactSensitiveText,
 } from '../src/index.js'
 
 const dirs: string[] = []
 const execFileAsync = promisify(execFile)
+
+describe('tool summary redaction', () => {
+  it('applies the approved probes idempotently', () => {
+    const inputs = [
+      'https_proxy=http://alice:s3cret@10.0.0.1:7890 git push',
+      'git push https://alice:s3cret@github.com/o/r.git',
+      "curl -H 'Authorization: Bearer abcdefghijklmnop' https://api.example.com/v1?access_token=abc#frag",
+      'mytool --token abcdefghijkl --password hunter2',
+      'GITHUB_TOKEN=secret npm publish',
+      'export NPM_AUTH=secret; token=secret',
+    ]
+    for (const input of inputs) {
+      const redacted = redactSensitiveText(input)
+      expect(redactSensitiveText(redacted)).toBe(redacted)
+      expect(redacted).not.toContain('alice')
+      expect(redacted).not.toContain('s3cret')
+      expect(redacted).not.toContain('secret')
+    }
+  })
+})
 
 afterEach(async () => {
   vi.useRealTimers()

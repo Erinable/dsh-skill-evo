@@ -344,6 +344,35 @@ test('tracks ordinary tool results and clears them at the next human turn', () =
   assert.equal(followUp.payload.precedingToolFailed, true)
 })
 
+test('bounds command and result summaries for bash', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-command-summary' }
+  const call = mapper(session, {
+    seq: 1,
+    type: 'tool/call',
+    data: {
+      callId: 'bash-1',
+      name: 'bash',
+      arguments: JSON.stringify({ command: 'curl --token secret https://alice:password@example.test/path?sig=abc', description: 'omit me', ...Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`key-${index}`, index])) }),
+    },
+  }, { id: 'session-command-summary:1' })
+  assert.equal(call.payload.argKeys.length, 16)
+  assert.equal(call.payload.command, 'curl --token [REDACTED] https://[REDACTED]@example.test/path?[REDACTED]')
+  assert.equal('description' in call.payload, false)
+
+  const result = mapper(session, {
+    seq: 2,
+    type: 'tool/result',
+    data: {
+      callId: 'bash-1',
+      message: { content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text: 'fatal: denied\n[exit code: 7]' }] }] },
+    },
+  }, { id: 'session-command-summary:2' })
+  assert.equal(result.payload.exitCode, 7)
+  assert.equal(result.payload.errorLine, 'fatal: denied')
+  assert.equal(JSON.stringify(result).includes('secret'), false)
+})
+
 test('omits precedingToolFailed after successful tool activity', () => {
   const mapEvent = createDefaultEventMapper()
   const session = { id: 'session-successful-tool' }
