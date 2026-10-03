@@ -47,6 +47,11 @@ journal 不放正文，正文按 hash 从候选目录或 `versions/<to>` 取。j
 
 Rollback 是逃生口，任何旧 journal 都挡不住它。
 
+**Rollback 的回滚对象**在锁内、写 journal 之前推断一次，写进 journal 的 `proposalId` / `fromRecordId`，之后只读 journal：
+- 本次隔离了旧 journal：被隔离的 journal 的 `proposalId`，前提是它最新记录是 `promoted`；否则不做台账转移。
+- 否则按 live **正文** hash 匹配最新记录是 `promoted` 的 Proposal 的候选 hash；多个时用 live manifest 版本区分；匹配不到或仍有歧义就不做台账转移，只做文件步骤和 Skill 级记录。
+- 正文和 manifest 不一致时以正文为准。今天的 `latestPromoted` 按 manifest 版本匹配，manifest 落后于正文时会把上一个 Proposal 标成 `rolled-back`（设计稿 §1.3 R1b、§4 G6）。
+
 这样做是因为 SKIL-124 的复现（设计稿 §1.3）：
 
 - Promote 在 W1 中途、W1 之后的 8 个崩溃点里，重跑有 6 个卡在 `stale-base`，1 个卡在不完整的快照，1 个卡在 `invalid-transition`。
@@ -60,7 +65,7 @@ Rollback 是逃生口，任何旧 journal 都挡不住它。
 - **P0**（journal 之前）：什么都没写，重跑就是正常执行，repair 什么都不做。
 - **P1a–P1f**（W1 中途）：收尾从第一个与 journal 不一致的文件开始写，已经一致的跳过。快照写了一半时，live 仍等于 `from.contentHash`，快照照样补齐。
 - **P2–P4**（W1 之后）：Observation id 是 `adoption:<root>`，`append` 返回 `false` 就说明写过；台账转移按 `fromRecordId` 判断是否写过，缺 decision 就补上。
-- **R1a–R1c**：收尾按 journal 的 `to` 写 live，回滚对象取 journal 的 `proposalId`，不再重新推断。
+- **R1a–R1c**：收尾按 journal 的 `to` 写 live，回滚对象取 journal 的 `proposalId`（写 journal 前按正文推断好的），不再重新推断。
 - **R2–R5**：Observation 和 decision 的 id 用 `startedAt` 的毫秒值；台账转移同 P3、P4。
 - **收尾之后的重跑**：Promote 的 Proposal 已是 `promoted` 并且 current 等于它的版本，或者 Rollback 的 current 已是目标版本，就什么都不写、直接返回成功。
 - **提交点之后有人 reject 同一个 Proposal**：
@@ -93,6 +98,7 @@ Rollback 是逃生口，任何旧 journal 都挡不住它。
 - **不可完成时保留 journal、一直报 `failed`**，被拒绝。同一 Skill 的下一次 Promote / Rollback 要么永远被挡，要么每次都得跳过同一个 journal，两者都会让 health 的报告失去意义。隔离之后 journal 目录只剩还能做完的发布。
 - **纯读路径继续取发布锁**，被拒绝。W2–W5 挪进锁内之后，持锁时间变长，health、propose、evaluate、dry-run 在这段时间里都会报「already in progress」，health 也就报告不出 `lock: 'held'`。读路径取锁本来只为了串行化「读时恢复」，恢复挪走之后，这把锁对读已经没有用处。
 - **发现半截发布就回退到发布前**，被拒绝。W1 写完 live 之后，Skill 的下一次加载可能已经读到新版，回退会让外部看到版本来回跳。前滚只有一个方向，也不需要保存回退用的旧文件。
+- **回滚对象沿用 `latestPromoted`（按 live manifest 版本匹配）**，被拒绝。manifest 落后于正文时（被隔离的半截 Promote 留下的 live），它指向的是正文并未生效的上一个 Proposal，会把它标成 `rolled-back`。按正文匹配的代价是：正文来自未完成的 Promote 时，台账里不会留下这次回滚的转移，只能从 Skill 级 decision、Observation 和隔离文件看出来。
 
 ## Consequences
 

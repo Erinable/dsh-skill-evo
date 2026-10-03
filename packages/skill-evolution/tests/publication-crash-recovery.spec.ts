@@ -286,7 +286,7 @@ describe('promote crash points', () => {
   pending('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root, proposalRef, reference } = await crashPromote(row)
-    await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toThrow()
+    await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toMatchObject({ code: expect.stringMatching(/^(invalid-transition|conflict)$/) })
     expect(await publicationState(root)).toEqual(reference)
   })
 })
