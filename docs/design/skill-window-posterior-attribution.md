@@ -10,12 +10,13 @@ SKIL-132（父 issue SKIL-131）的 S1 设计。本文定下窗口边界与降�
 
 - `CONTEXT.md`：Derived record、Projection、Attribution、Failure case（「一次能定位到某个 Skill 的失败」）、Failure cluster 的定义。
 - `docs/adr/0002`、`0003`、`0014`、`0015`、`0016`、`0020`。
-- `packages/skill-evolution/src/experience.ts`：`buildExperiences`（:20-74）、`buildFailureCases`（:77-135）、`clusterFailureCases`（:143）、`withAttribution`（:222-227）、`attributionFor`（:238-247）、`confidenceFor`（:254-258）。
-- `packages/skill-evolution/src/types.ts`：`ObservationKind`、`RuntimeObservation`、`Attribution`、`Experience`（:83）、`SkillFailureCase`（:99）、`FailureCluster`（:112）、`FEEDBACK_KINDS`（:304）。
+- `packages/skill-evolution/src/experience.ts` @ `9975647`：`buildExperiences`（:21-75）、`buildFailureCases`（:78-152）、`clusterFailureCases`（:160）、`diagnoseFailureCluster`（:193，按 `origin` 定根因）、`withAttribution`（:260-265）、`attributionFor`（:276-285）、`confidenceFor`（:292-306）。
+- `packages/skill-evolution/src/types.ts` @ `9975647`：`ObservationKind`、`RuntimeObservation`、`Attribution`、`Experience`（:83）、`FailureOrigin`（:99）、`SkillFailureCase`（:101）、`FailureCluster`（:120）、`FEEDBACK_KINDS`（:313）。
 - `packages/skill-evolution/src/workflow.ts`（`snapshot()` 同步投影链）、`service.ts`（`refreshDerived` :387-414 的游标和 `replaceAll`；`metrics()` :133-135 不刷新派生；`recordFeedback` :75-128）、`state-root.ts`（`StoreName`、`resolveLayout` :51-61）、`metrics.ts`、`evaluator.ts`、`lifecycle.ts`（`readCurrent`、`listVersions`、`contentHash`）、`events.ts`（`createContentHash`、`isObservationValue` :41 不校验 payload 内部）、`proposal.ts`（`isClusterReadyForProposal` :141）。
 - `packages/dsh-bundle/index.js`：`createDefaultEventMapper`（:17）、`mapUserMessage`（:343）、`mapToolCall`（:400）、`mapToolResult`（:431）、`skillContentHash`（:505）、`isObservationInput` 的 kind 白名单（:322）。
 - `packages/dsh-adapter/src/types.ts`、`evaluator.ts`（`DshEvaluationRunResult.toolCalls`、`tokenCost`）。
-- 相邻未合并 PR 的设计稿和 ADR：#79 SKIL-134（`FailureOrigin`、`attributionConfidence` 是证据强度不是概率、稳定 cluster id）、#81 SKIL-126（`FollowUpClassifier`、Classification memo、`derivationKey`、「follow-up 之前恰好加载一个 Skill」的归因目标规则）、#82 SKIL-128（`ToolAttempt`、`CorrectionEpisode`、`DerivedJudge<Input,Output>`、§6.2 目标判断规则）。
+- 已合并的相邻设计：ADR-0022（SKIL-134，`FailureOrigin`、`attributionConfidence` 是证据强度不是概率、稳定 cluster id）；SKIL-128 的 `docs/design/tool-correction-create-skill.md`（§3 采集字段与脱敏、§4.1 `ToolAttempt`、§4.2 `DerivedJudge<Input,Output>`、§4.3 意图规则、§4.4 `CorrectionEpisode`、§4.5 cursor 的 `judges`、§6.2 目标判断规则）和 ADR-0023、ADR-0024。
+- 未合并的相邻设计：#81 SKIL-126（`FollowUpClassifier`、Classification memo 与 ADR-0034、cursor 的 `derivationKey`、「follow-up 之前恰好加载一个 Skill」的归因目标规则）。
 - DSH 源码 `github.com/lens077/deepseek-harness` @ `6ce94ee1`，文件见 §2.1。
 
 ### 1.2 探针：多 Skill session 今天完全没有归因
@@ -27,7 +28,9 @@ SKIL-132（父 issue SKIL-131）的 S1 设计。本文定下窗口边界与降�
 [["api-debugging",1,0],["git-workflow",1,0]]
 ```
 
-Failure case 为 0（`experience.ts:121` 的 `skills.length !== 1` 直接跳过），follow-up 进了 `unattributed` 组并标为 `not-attributable`，metrics 的 `followUps` 两个 Skill 都是 0（bundle 的 follow-up 不带 `skill`）。
+合并 SKIL-134 / SKIL-128 之后在 `9975647` 上重跑 `buildFailureCases` 和 `buildExperiences`，结论不变：`{"failures":0,"experiences":[["experience:s1\u0000git-workflow","unknown"],["experience:s1\u0000api-debugging","unknown"],["experience:s1\u0000unattributed","not-attributable"]]}`。
+
+Failure case 为 0（`experience.ts:134` 的 `skills.length !== 1` 直接跳过），follow-up 进了 `unattributed` 组并标为 `not-attributable`，metrics 的 `followUps` 两个 Skill 都是 0（bundle 的 follow-up 不带 `skill`）。
 
 ## 2. Skill 窗口边界与降级
 
@@ -82,7 +85,7 @@ user/message | agent-step | {"eventType":"user/message","sessionSeq":12} | []
 
 W1 违反需求给的边界；W3 丢掉验收项。选 W2。采用默认答案，成员可推翻。
 
-步骤：窗口内除结束条件以外的 Observation 都是步骤。bundle 标了 `surfaceReplace` 的替换事件（ADR-0025）不算步骤。`skill-load-requested` / `skill-load-failed` 算步骤，`skill-load-failed` 仍走现有的 composition 归因（`experience.ts:238-247`），不开窗口。
+步骤：窗口内除结束条件以外的 Observation 都是步骤。bundle 标了 `surfaceReplace` 的替换事件（ADR-0025）不算步骤。`skill-load-requested` / `skill-load-failed` 算步骤，`skill-load-failed` 仍走现有的 composition 归因（`experience.ts:276-285`），不开窗口。
 
 ### 2.4 降级规则
 
@@ -130,7 +133,7 @@ interface SkillWindow {
 | **T2 每次工具尝试（推荐）** | SKIL-128 的 `ToolAttempt`（一次 `tool/call` 加它的结果），排除 `skill` 工具本身和 `surfaceReplace` 事件 | 低 | 好 | 纯文本回答没有时间步；它们对归因的影响通过 §5.2 的「附近步骤」间接体现 |
 | T3 每个窗口 | 窗口 | 最低 | 差 | 回答不了「这一步是哪个 Skill 的」 |
 
-选 T2。`ToolAttempt` 的形状和配对规则以 SKIL-128 为准。采用默认答案，成员可推翻。
+选 T2。`ToolAttempt` 的形状和配对规则以 `tool-correction-create-skill.md` §4.1 为准：按 `correlationIds` 把一条 `agent-step`（tool/call）和对应的 `tool-result` 配成一次尝试，排序用 `sessionSeq`，没有时用 `occurredAt`。本设计在它之上只多一道过滤：`toolName === 'skill'` 的尝试和带 `surfaceReplace` 的事件不是时间步。替换用的 `tool/result` 本来就不带被配对调用的 correlation id（§2.2），过滤是为了不让它变成一条只有结果的孤立尝试。采用默认答案，成员可推翻。
 
 ### 3.2 模型
 
@@ -156,23 +159,25 @@ interface SkillWindow {
 | **E2 按 session 批量（推荐）** | `judge({ sessionId, steps, skills }) → { logRatios, alignment? }` | 低：一个方法 | 注入假实现即可测 HMM 和归因；规则实现用夹具测 | 同上 | 无 |
 | E3 发射直接给后验 | 注入实现自己算后验 | 最低 | 差 | — | 硬约束无法由 core 保证，违反验收第 3 项，被否 |
 
-选 E2。形状沿用 SKIL-128 的 `DerivedJudge<Input, Output>`（谁先合并谁定形状，另一方对齐）：
+选 E2。形状直接用已合并的 `tool-correction-create-skill.md` §4.2 定义的 `DerivedJudge<Input, Output>`（`version` 加 `judge(input)`，同版本同输入必须同输出），本设计不另定义：
 
 ```ts
 type SkillEmissionJudge = DerivedJudge<EmissionInput, EmissionOutput>
 
 interface EmissionInput {
   readonly sessionId: string
-  readonly steps: readonly EmissionStep[]        // 由 ToolAttempt 投影出来，字段以 SKIL-128 为准
+  readonly steps: readonly EmissionStep[]        // 由 ToolAttempt 投影出来，见 §8
   readonly skills: readonly EmissionSkill[]      // 本 session 里出现过的全部 Skill
 }
+/** 字段名、类型与 ToolAttempt（tool-correction-create-skill.md §4.1）的同名字段一一对应。 */
 interface EmissionStep {
-  readonly index: number
-  readonly toolName: string
-  readonly command?: string                      // SKIL-128，已脱敏
-  readonly argKeys: readonly string[]            // SKIL-128
-  readonly outcome: 'failure' | 'success' | 'unknown'
-  readonly errorLine?: string                    // SKIL-128，已脱敏
+  readonly index: number                         // 时间步序号；对应 PosteriorStep 的下标
+  readonly toolName: string                      // ToolAttempt.toolName
+  readonly command?: string                      // ToolAttempt.command，ADR-0023 已脱敏
+  readonly argKeys: readonly string[]            // ToolAttempt.argKeys
+  readonly outcome: 'failure' | 'success' | 'unknown'   // ToolAttempt.outcome
+  readonly exitCode?: number                     // ToolAttempt.exitCode
+  readonly errorLine?: string                    // ToolAttempt.errorLine，ADR-0023 已脱敏
 }
 interface EmissionSkill {
   readonly skillName: string
@@ -188,7 +193,8 @@ interface EmissionOutput {
 - 发射实现只打分，不知道资格区间：它对每个 Skill 都给分，core 在 forward-backward 里只用 `E_t` 内的列。这样硬约束只有一处实现。
 - core 校验输出：维度一致、全是有限数、裁剪到 [−10, 10]、`skillStep` 为正整数。不合格时整个 session 回退到规则实现，记 `fallbackReason: 'invalid-output'`。
 - **跳过的步骤由 core 算**，发射实现只报告对齐：对一个窗口里对齐到 Skill k 的最大 `skillStep = m`，`1..m` 里没有任何动作对齐到的就是跳过的步骤。发射实现不用各自实现一遍「跳过」。
-- 输入里有 `command`、`errorLine`，都来自 SKIL-128 已脱敏的字段；本设计不另外采集，也不另外脱敏。发给外部模型的内容就是这些字段和 Skill 正文。
+- 输入里有 `command`、`errorLine`，都来自 ADR-0023 已脱敏的字段；本设计不另外采集，也不另外脱敏。发给外部模型的内容就是这些字段和 Skill 正文。ADR-0023 列出的「会留在事实里的」值（代理地址、URL 的 host 和路径、位置参数）因此也会到达注入的 judge，这是注入方要知道的暴露面，本设计不扩大它。
+- `EmissionStep` 不带 `signal`、`timedOut`、`commandTruncated`：`ToolAttempt` 本身不带它们，前两者已经折进 `outcome`。
 
 ### 3.4 注入点和调用时机
 
@@ -196,9 +202,9 @@ interface EmissionOutput {
 
 - `EvolutionServiceOptions.emissionJudge?: SkillEmissionJudge`。没注入时用规则实现 `RULE_EMISSION`（`version: 'rule-1'`），它是同步纯函数，直接在 Projection 里调。
 - 注入的实现只在显式的 Maintenance operation `scoreSkillEmissions({ signal, limit })` 里调用，结果写进 memo store `emissions`，键是 `emission:<judge version>:<inputHash>`。Projection 只读 memo；memo 里没有当前版本、当前输入的条目时，这个 session 回退到规则实现，记 `fallbackReason: 'not-scored'`。
-- 投影 cursor 的 `derivationKey`（SKIL-126 定义）里加入序列模型版本、参数哈希、发射版本、memo 条数和 lastId、正文来源的哈希集合（§3.5）。任何一项变了就全量重投影。移除注入后 `derivationKey` 回到 `rule-1`，结果回到规则结果。
+- 投影 cursor 的版本键里加入序列模型版本、参数哈希、发射版本、memo 条数和 lastId、正文来源的哈希集合（§3.5）。任何一项变了就全量重投影。移除注入后版本键回到 `rule-1`，结果回到规则结果。本文用 `derivationKey` 指这个版本键。main 上已合并的是 `tool-correction-create-skill.md` §4.5 的 `judges` 字段，它是记版本的 record，老 cursor 没有就按不一致处理；SKIL-126（#81，未合并）提议的是一个哈希 `derivationKey`。这几项写进先落地的那个机制：`judges` 先落地时，加 `emission`、`posteriorModel`、`posteriorParams`、`emissionMemo`、`skillContent` 五个键。两者以后合成一个时本设计跟着改，记录形状不变。采用默认答案，成员可推翻。
 
-SKIL-128 的识别器是在 Projection 里直接调用、按 `inputHash` 复用上次结果；SKIL-126 是显式 operation 写 memo。两者接口形状相同，只是调用时机不同。发射模型可能是 LLM，一个 session 一次调用，放在 Projection 里会让 `failures`、`metrics` 隐式花钱，所以这里选 SKIL-126 的时机。两份设计合并时如果统一成另一种时机，本设计跟随，不影响接口形状。采用默认答案，成员可推翻。
+已合并的 SKIL-128 识别器在 Projection 里直接调用，按 `inputHash` 复用上次结果；SKIL-126 是显式 operation 写 memo。两者接口形状相同，只是调用时机不同。发射模型可能是 LLM，一个 session 一次调用，放在 Projection 里会让 `failures`、`metrics` 隐式花钱，所以这里选 SKIL-126 的时机。SKIL-128 的 `rule-1` 识别器是同步纯函数，不受影响；以后有人给它注入模型识别器，也会遇到同样的隐式花钱问题。采用默认答案，成员可推翻。
 
 ### 3.5 默认规则实现 `rule-1` 与正文来源
 
@@ -217,9 +223,9 @@ interface SkillContentSource {
 
 `rule-1` 的画像（profile）从正文抽取：
 
-1. 代码块和行内代码里的 shell 命令行，按 SKIL-128 规则识别器的意图规则（最后一段、去前缀、程序名加第一个非 flag 参数）得到 `intents` 和 `programs`。**意图规则以 SKIL-128 为准**，两边共用同一个函数。
+1. 代码块和行内代码里的 shell 命令行，按 `tool-correction-create-skill.md` §4.3 第 2 步的意图规则（按 `&&`、`||`、`;`、`|` 切段取最后一段；去掉 `VAR=值` 和 `sudo`、`env`、`command`、`time` 前缀；程序名加第一个非 flag 参数，跳过 `git -C` 这类全局选项的值）得到 `intents` 和 `programs`。**意图规则以该节为准**，两边共用同一个函数，它的已知限制（`bash -c`、`npx <pkg>`）在这里同样成立。
 2. 正文里出现的工具名（frontmatter `allowed-tools`，以及和 `EmissionStep.toolName` 取值相同的行内代码）。
-3. 带扩展名或通配符的文件模式（`*.ts`、`package.json`、`.github/workflows/*`），只和 `command` 里的路径匹配，因为 SKIL-128 不采集非命令型工具的参数值。
+3. 带扩展名或通配符的文件模式（`*.ts`、`package.json`、`.github/workflows/*`），只和 `command` 里的路径匹配，因为 ADR-0023 不采集非命令型工具的参数值，`command` 也只对 `bash`、`pwsh` 采集。
 4. 有序列表项（`1.`）或 `Step N` 标题下的命令，额外记下所在的步骤号，用于对齐。
 
 打分：步骤的意图在画像里 +2；否则程序名在画像里 +1；否则如果这一步有可识别的意图，−0.5（不匹配惩罚）；没有 `command` 的步骤只看工具名和文件模式，命中 +1，否则 0。命中第 4 条里的命令时报告 `skillStep`。`errorLine` 在 `rule-1` 里不用，留给注入的实现。
@@ -366,7 +372,7 @@ interface FailureAttribution {
 | `tool-failure`（新） | task 以失败结束（`task-finished` 的 outcome 为 failed），且这个 task 里最后一次失败的 ToolAttempt 之后没有同意图的成功 | `low` |
 | Correction episode | SKIL-128 定义；只做分流（§6.3），不产生 Failure case | — |
 
-`tool-failure` 只看以失败结束的 task，因为探索性的失败（`grep` 没搜到退出 1）在成功的 task 里很常见，不是 Skill 的问题。已经恢复的失败由 SKIL-128 的 episode 覆盖。采用默认答案，成员可推翻。
+`tool-failure` 只看以失败结束的 task，因为探索性的失败（`grep` 没搜到退出 1）在成功的 task 里很常见，不是 Skill 的问题。已经恢复的失败由 SKIL-128 的 Correction episode 覆盖。采用默认答案，成员可推翻。
 
 ### 5.2 「失败附近」怎么汇总
 
@@ -453,7 +459,7 @@ readonly attributionId?: string         // 指回 failure-attributions
 
 ### 6.3 Correction episode 的分流
 
-episode 的份额按 §5.2 从它引用的全部步骤汇总。SKIL-128 §6.2 的规则 2（「过半 episode 加载过同一个 Skill」）改为：
+episode 的份额按 §5.2 从它引用的全部步骤汇总，引用的步骤是 `CorrectionEpisode` 的 `failureObservationIds`、`correctionObservationIds`、`successObservationId`（`tool-correction-create-skill.md` §4.2、§4.4）。`tool-correction-create-skill.md` §6.2 的规则 2（「过半 episode 加载过同一个 Skill（`loadedSkills`）」）改为：
 
 - 2a. pattern 里过半 episode 的 `noneShare ≥ uncoveredShare`：跳过规则 2、3，直接走规则 4 `create-skill`。
 - 2b. 否则，pattern 里过半 episode 的主导 Skill 是同一个：`patch-content` 这个 Skill。
@@ -461,7 +467,7 @@ episode 的份额按 §5.2 从它引用的全部步骤汇总。SKIL-128 §6.2 �
 
 规则 0（已 promote 过）和规则 1（人给了 `--skill`）仍然先于它。判断理由照 SKIL-128 写进 `source.targetReason`，写明用了哪条规则和各 episode 的主导 Skill。后验没校准，但这里只选提案目标，不是门槛，提案仍要走评测和人工。
 
-这一条修改了 SKIL-128 尚未合并的设计：两份设计谁后合并，谁把这条对齐。
+这一条修改的是已合并的 `tool-correction-create-skill.md` §6.2，那里写明目标判断规则是可逆的业务判断（「可逆，规则在 core 里」），所以不需要新 ADR。本 PR 不改那份设计稿的正文，以本节为准；S2 写 spec 时两处合成一条规则。没有后验（单 Skill、没加载 Skill、旧日志）的 episode，2a、2b 都按原规则 2 的 `loadedSkills` 计。
 
 ## 7. 因果校验操作（可选，抽样）
 
@@ -486,7 +492,7 @@ interface CounterfactualReplay {
 ```
 
 - core 定义 `CounterfactualReplay`，dsh-adapter 用 `DshEvaluationExecutor`（`dsh-adapter/src/evaluator.ts:52`）实现一个 adapter。`DshEvaluationRunInput` 今天只带一个 `skillContent`，adapter 需要支持「一组 Skill、去掉其中一个」，这属于 dsh-adapter 的改动，由 S3 Builder 做，不影响 core。
-- 抽样：从有 `posterior` 来源的多 Skill session 里，按 `seed` 确定性地抽 `sessions` 个（默认 20）。每个 session 对每个被加载的 Skill k 跑两次：全部 Skill，和去掉 k。任务文本取 session 第一条用户消息的摘要，**字段以 SKIL-128 为准**；取不到的 session 跳过并计数。
+- 抽样：从有 `posterior` 来源的多 Skill session 里，按 `seed` 确定性地抽 `sessions` 个（默认 20）。每个 session 对每个被加载的 Skill k 跑两次：全部 Skill，和去掉 k。任务文本取 `payload.taskSummary`，也就是 `taskText`（`experience.ts:312`）读的那个字段；取不到的 session 跳过并计数。已合并的 SKIL-128 没有定义任务文本的采集。在 `9975647` 上，bundle 和 dsh-adapter 都不写 `taskSummary`，第一条用户消息也不落正文（`mapUserMessage` 只给 follow-up 记 `text`，`dsh-bundle/index.js:377-394`）。所以今天每个 session 都会被跳过。补任务文本的采集属于采集层，要另立一张票，并且要先过 ADR-0023 那样的隐私确认，本设计不定义（见 §13 待定项）。
 - 花钱：每次调用最多 `sessions × (1 + 加载的 Skill 数)` 次重放。只在成员显式运行时发生，不在 `refreshDerived`、worker 或评测里调用。
 
 ### 7.2 比较什么
@@ -494,7 +500,7 @@ interface CounterfactualReplay {
 对 session 里的每个 Skill k：
 
 - **后验侧**：`π(k)`（§3.2 的轨迹级份额）。
-- **重放侧**：去掉 k 之后的行为变化 `Δ(k)`：两次重放的工具步序列按意图（SKIL-128 的意图规则）做编辑距离，除以较长一方的长度；outcome 变了另记一项。
+- **重放侧**：去掉 k 之后的行为变化 `Δ(k)`：两次重放的工具步序列按意图（`tool-correction-create-skill.md` §4.3 的意图规则）做编辑距离，除以较长一方的长度；outcome 变了另记一项。
 - **报告**：
   - 按 `π(k)` 分 5 档，每档的 `Δ(k)` 均值和样本数（可靠性曲线的数据）。
   - `π(k)` 与 `Δ(k)` 的 Spearman 秩相关。
@@ -514,22 +520,25 @@ interface CounterfactualReplay {
 
 ## 8. 对 SKIL-128 的依赖
 
-以下字段和规则都以 SKIL-128 为准，本设计不定义、不另外脱敏：
+SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-correction-create-skill.md` §3 为准，投影层形状以同一份设计稿的 §4 为准。本设计不定义、不另外脱敏。逐项核对结果如下，「来源」都指那份设计稿：
 
-| 用在哪 | 依赖 SKIL-128 的什么 |
-|---|---|
-| §3.1 时间步 | `ToolAttempt` 的形状和 call / result 的配对规则 |
-| §3.3 `EmissionStep.command` | `tool/call` 的 `command`、`commandTruncated`，以及它的脱敏规则 |
-| §3.3 `EmissionStep.argKeys` | `tool/call` 的 `argKeys` |
-| §3.3 `EmissionStep.outcome` | `ToolAttempt.outcome` 的判定（`failed`、`exitCode`、`signal`、`timedOut`） |
-| §3.3 `EmissionStep.errorLine` | `tool/result` 的 `errorLine` |
-| §3.5 画像抽取、§7.2 编辑距离 | 规则识别器 `rule-1` 的意图规则（两边共用一个函数） |
-| §5.1 `tool-failure` 的「同意图的成功」 | 同上 |
-| §6.3 分流 | `CorrectionEpisode` 的形状、`loadedSkills`，§6.2 目标判断规则 |
-| §3.3 注入接口 | `DerivedJudge<Input, Output>` 的形状（与 SKIL-126 谁先合并谁定） |
-| §7.1 任务文本 | session 任务摘要的来源字段 |
+| 用在哪 | 本设计用的名字 | 来源 | 核对 |
+|---|---|---|---|
+| §3.1 时间步 | `ToolAttempt`；按 `correlationIds` 配对；按 `sessionSeq`，缺省用 `occurredAt` 排序 | §4.1、§4.3 第 3 步 | 一致 |
+| §3.3 `EmissionStep.toolName` | `toolName` | §4.1；payload 已有字段 | 一致 |
+| §3.3 `EmissionStep.command` | `command` | §3.1（tool/call，只限 `bash` / `pwsh`，前 16 token，≤ 240 字符，R1–R7 已脱敏），§4.1 | 一致。`commandTruncated` 在 §3.1 里有，但 `ToolAttempt` 不带，本设计也不用；上一版写依赖它，已删 |
+| §3.3 `EmissionStep.argKeys` | `argKeys: readonly string[]` | §3.1（≤ 16 个），§4.1 | 一致；老记录缺字段时为 `[]` |
+| §3.3 `EmissionStep.outcome` | `'failure' \| 'success' \| 'unknown'` | §4.1（core 按 `failed`、`exitCode ≠ 0`、`signal`、`timedOut` 判） | 一致。`signal`、`timedOut` 只通过 `outcome` 间接使用 |
+| §3.3 `EmissionStep.exitCode` | `exitCode?: number` | §3.1（tool/result），§4.1 | 本轮新增，上一版漏了。可选字段，`rule-1` 不用 |
+| §3.3 `EmissionStep.errorLine` | `errorLine` | §3.1、§3.3（失败时才写，≤ 200 字符，已脱敏），§4.1 | 一致；`rule-1` 不用 |
+| §3.5 画像抽取、§5.1「同意图的成功」、§7.2 编辑距离 | 意图规则 | §4.3 第 2 步 | 一致，两边共用一个函数 |
+| §5.1、§5.2「同一 task」 | Observation 的 `taskId` | `RuntimeObservation.taskId`（`types.ts`）；`ToolAttempt` 不带，按 `callObservationId` 回查 | `ToolAttempt` 没有 `taskId`，本设计不往它上面加字段 |
+| §6.3 分流 | `CorrectionEpisode` 的 `failureObservationIds`、`correctionObservationIds`、`successObservationId`、`loadedSkills`；§6.2 的规则 0–4 | §4.2、§4.4、§6.2 | 一致 |
+| §3.3 注入接口 | `DerivedJudge<Input, Output>` | §4.2 | 一致，已定稿；SKIL-126（#81）跟随 |
+| §3.4 重投影 | cursor 的 `judges` | §4.5 | 本设计加 5 个键（§3.4） |
+| §7.1 任务文本 | `payload.taskSummary` | SKIL-128 没有定义 | 依赖缺口，见 §13 |
 
-SKIL-128 的字段清单还在等成员确认。S2 spec 要等 SKIL-128 合并后再定稿（父 issue 的依赖说明）。字段改名只影响 `EmissionStep` 的映射，不影响本设计的记录形状。
+字段名都对上了，`EmissionStep` 的映射是一对一的字段拷贝，没有改名。
 
 ## 9. 验收判据
 
@@ -566,22 +575,24 @@ SKIL-128 的字段清单还在等成员确认。S2 spec 要等 SKIL-128 合并�
 |---|---|---|
 | B1 | bundle 遮蔽映射；core 增加 `context-shadowed` kind（ADR-0025） | 无 |
 | B2 | Skill window 切分与 `skill-windows` store；验收 1、7 的 core 部分 | B1 |
-| B3 | 序列模型、`rule-1`、`SkillContentSource`、`skill-posteriors` store、`derivationKey`；验收 2、3、8 | B2、SKIL-128 实现 |
-| B4 | `failure-attributions`、Failure case 扇出、Experience 与 `failures` / `metrics` 输出；验收 4、5、9、10 | B3、SKIL-126 和 SKIL-134 实现 |
+| B3 | 序列模型、`rule-1`、`SkillContentSource`、`skill-posteriors` store、cursor 版本键；验收 2、3、8 | B2、SKIL-128 S3 第 1 张（采集）和第 2 张（`ToolAttempt` 与意图规则）的实现 |
+| B4 | `failure-attributions`、Failure case 扇出、Experience 与 `failures` / `metrics` 输出；验收 4、5、9、10 | B3、SKIL-126 实现（SKIL-134 已在 main） |
 | B5 | judge 注入、`emissions` memo、`scoreSkillEmissions`；验收 6 | B3、SKIL-126 的 memo |
-| B6 | SKIL-128 §6.2 分流对齐、SKIL-129 步数和 token 分摊 | B4、SKIL-128 / SKIL-130 实现 |
+| B6 | `tool-correction-create-skill.md` §6.2 分流对齐、SKIL-129 步数和 token 分摊 | B4、SKIL-128 S3 第 3 张、SKIL-130 实现 |
 | B7 | `calibrateSkillPosteriors` 和 dsh-adapter 的重放 adapter | B3 |
 
 ## 12. 与已有 ADR 和相邻设计的关系
 
-- _与 ADR-0002 的字面冲突_：`emissions` memo 保存注入模型的输出，派生记录不再只靠 Observation log 就能重建，而是靠 Observation log 加 memo。SKIL-126 的 ADR-0023（未合并）为 Classification memo 做了同样的解释，本设计沿用那份解释，不另起一套。没有注入 judge 时，派生记录仍只依赖 Observation log 和按内容寻址的 Skill 正文。
+- _与 ADR-0002 的字面冲突_：`emissions` memo 保存注入模型的输出，派生记录不再只靠 Observation log 就能重建，而是靠 Observation log 加 memo。SKIL-126 的 ADR-0034（#81，未合并）为 Classification memo 做了同样的解释，本设计沿用那份解释，不另起一套。没有注入 judge 时，派生记录仍只依赖 Observation log 和按内容寻址的 Skill 正文。
 - CONTEXT.md 的 Derived record 定义和列表随之更新，并补 Skill window、Skill posterior、Failure attribution 和资格区间（本 PR 已改）。Failure case 仍然「定位到某个 Skill」，只是多了权重，定义补一句。
 - ADR-0014：core 只读 bundle 写的核心词汇，不读 `payload.eventType`，一致。
 - ADR-0015：后验不改 Provider rank，也不改会话行为，一致。
 - ADR-0016：后验、窗口、归因都是派生，引用 Observation id，不写回事实，一致。
-- SKIL-134（#79）ADR-0022：本设计给 `FailureOrigin` 增加 `tool-failure`，是对未合并取值集合的扩展。
+- ADR-0022（SKIL-134，已合并）：本设计给 `FailureOrigin`（`types.ts:99`）增加 `tool-failure`，扩展的是已接受的取值集合，不改另外三个值的含义，也不改 cluster id 规则。扇出 case 的 id `failure:<subjectId>#<skillName>` 按同样的 `createdAt`、`id` 排序参与聚类，最早的 case id 仍然决定簇 id。`diagnoseFailureCluster`（`experience.ts:193`）对只含 `tool-failure` 的簇得到 `rootCause: 'uncertain'`，结论是 `observe-only`，也就是只看不提案。诊断规则不改，采用默认答案，成员可推翻。
+- ADR-0023（SKIL-128，已合并）：只读它定义的字段，不新增采集，不另外脱敏（§8）。
+- ADR-0024（SKIL-128，已合并）：Correction episode 留在 `episodes` store，不冒充 Failure case；「未覆盖」的主体同样不产生 Failure case（§5.3），一致。
 - SKIL-126（#81）：single-skill 的归因结果与它的规则一致；多 Skill 由本设计补上。
-- SKIL-128（#82）：§6.3 修改了它 §6.2 的规则 2。
+- `tool-correction-create-skill.md`（SKIL-128，已合并）：§6.3 修改了它 §6.2 的规则 2。那条规则在原设计稿里写明可逆，不涉及 ADR。
 
 ## 13. 不可逆决策
 
@@ -590,8 +601,14 @@ SKIL-128 的字段清单还在等成员确认。S2 spec 要等 SKIL-128 合并�
 - **ADR-0027**：多 Skill 失败扇出成按 Skill 的 Failure case，带 `attributionWeight`，id 为 `failure:<subject>#<skill>`；提案门槛只数主导 case。
 - **ADR-0028**：发射模型的注入 interface 是按 session 的 `SkillEmissionJudge`，输出相对 none 的对数似然比；硬约束和跳过步骤由 core 计算。
 
-ADR 编号：`origin/main` 最大号是 0021，0022–0024 已被未合并的 #79 / #80 / #81 / #82 占用，本 PR 从 0025 开始。合并时如果仍有冲突，后合并的 PR 改号。
+ADR 编号：`origin/main`（`9975647`）最大号是 0024。开着的设计 PR 的号段由 Mika 在 SKIL-132 上统一分配：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 都是 `status: proposed`，成员确认后在本 PR 里改成 `accepted`。
 
 ## 14. 可逆取舍（采用默认答案，成员可推翻）
 
-§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.4 门槛只数主导 case；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳。
+§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.4 门槛只数主导 case；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳；§3.4 新键写进 `judges`；§12 只含 `tool-failure` 的簇只看不提案。
+
+## 15. 待定项
+
+- **ADR-0025–0028 待成员确认**（不可逆）。确认之前 S2 不定稿。
+- **§7.1 任务文本没有采集来源**：`payload.taskSummary` 今天没人写。在补上之前，`calibrateSkillPosteriors` 会把所有 session 都跳过，报告里只有跳过计数。补采集属于采集层，会把用户原话写进事实，需要另立一张票，并像 ADR-0023 那样先做隐私确认。这一项只影响可选的 §7，不影响验收 1–10。默认：本票不做，S2 把 §7 的 `CounterfactualReplay` 写成接受宿主传入的 `task`。采用默认答案，成员可推翻。
+- **cursor 版本键的落点**：main 上已有 `judges`（§4.5），SKIL-126 提议 `derivationKey`，两者谁统一谁，留给 SKIL-126 合并时决定（§3.4）。
