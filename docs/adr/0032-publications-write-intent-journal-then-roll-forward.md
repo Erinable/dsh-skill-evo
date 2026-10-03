@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Promote / Rollback 先写 intent journal 再前滚提交；收尾只在写路径和 repair 里做，不可完成就隔离；纯读不写文件、不取发布锁
@@ -110,5 +110,7 @@ Rollback 是逃生口，任何旧 journal 都挡不住它。
 - journal 未收尾期间，`readCurrent` 返回的可能是一半新、一半旧的 live 文件（例如正文是新版、manifest 是旧版），和今天崩溃之后、下一次读之前的状态相同。消费方以 `healthReport().publications` 为准。
 - 旧的 `.publish.json` 要兼容读，直到所有部署都跑过一次 repair。之后可以另开 ADR 删掉这段兼容代码。
 - SKIL-121 的实现合并后，`completePublication` 的台账步骤换成 `ProposalLedger.transition`，journal 格式不变。
+
+成员确认：SKIL-124（PR #80 由成员合并）
 
 来源：[docs/design/publication-crash-recovery.md](../design/publication-crash-recovery.md)
