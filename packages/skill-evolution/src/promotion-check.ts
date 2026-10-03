@@ -2,7 +2,7 @@ import { createContentHash } from './events.js'
 import { DEFAULT_EVALUATION_POLICY, validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { proposalRootId } from './proposal.js'
 import type { CurrentSkill } from './lifecycle.js'
-import type { EvaluationArtifact, EvaluationPolicy, SkillEvalResult, SkillProposal } from './types.js'
+import type { EvaluationArtifact, EvaluationPolicyInput, SkillEvalResult, SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
 
 export interface PromotionCheckInput {
@@ -85,7 +85,7 @@ function sameResultEvidence(left: SkillEvalResult, right: SkillEvalResult): bool
   return left.candidateId === right.candidateId && left.baseContentHash === right.baseContentHash && left.candidateContentHash === right.candidateContentHash && left.passedGate === right.passedGate && left.policyVersion === right.policyVersion && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds])
 }
 
-export const defaultPolicyVersion = (policy: EvaluationPolicy | undefined): string => (policy ?? DEFAULT_EVALUATION_POLICY).version
+export const defaultPolicyVersion = (policy: EvaluationPolicyInput | undefined): string => (policy ?? DEFAULT_EVALUATION_POLICY).version
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null

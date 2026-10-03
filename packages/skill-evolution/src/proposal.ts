@@ -36,7 +36,7 @@ export const PROPOSAL_TRANSITIONS: Readonly<Record<ProposalStatus, readonly Prop
   reverted: [],
 }
 
-export type ProposalLedgerErrorCode = 'ambiguous' | 'not-found' | 'invalid-transition'
+export type ProposalLedgerErrorCode = 'ambiguous' | 'not-found' | 'invalid-transition' | 'conflict'
 
 export class ProposalLedgerError extends Error {
   constructor(readonly code: ProposalLedgerErrorCode, message: string) {
