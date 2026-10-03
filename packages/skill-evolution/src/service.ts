@@ -15,6 +15,7 @@ import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEntry } from './follow-up.js'
+import { inferSkillAttribution, type FailureAttribution, type SkillPosterior, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
@@ -57,6 +58,9 @@ export class EvolutionService {
   readonly failures: JsonlRecordStore<SkillFailureCase>
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
+  readonly skillWindows: JsonlRecordStore<SkillWindow>
+  readonly skillPosteriors: JsonlRecordStore<SkillPosterior>
+  readonly failureAttributions: JsonlRecordStore<FailureAttribution>
   readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
   readonly followUps: JsonlRecordStore<FollowUpResolution>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
@@ -83,6 +87,9 @@ export class EvolutionService {
     this.failures = new JsonlRecordStore(path('failures'))
     this.clusters = new JsonlRecordStore(path('clusters'))
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
+    this.skillWindows = new JsonlRecordStore(path('skill-windows'))
+    this.skillPosteriors = new JsonlRecordStore(path('skill-posteriors'))
+    this.failureAttributions = new JsonlRecordStore(path('failure-attributions'))
     this.classifications = new JsonlRecordStore(path('classifications'))
     this.followUps = new JsonlRecordStore(path('follow-ups'))
     this.feedback = new JsonlRecordStore(path('feedback'))
@@ -355,7 +362,8 @@ export class EvolutionService {
     const memo = new Map(memoEntries.map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
     const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
-    if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
+    const derivedReady = observations.every(event => event.kind !== 'skill-loaded') || (await this.skillWindows.readAll()).length > 0
+    if (!options.force && derivedReady && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
       return {
         experiences: await this.experiences.readAll(),
         failures: await this.failures.readAll(),
@@ -367,6 +375,10 @@ export class EvolutionService {
     const workflow = new EvolutionWorkflow({ memo, ...(this.followUpClassifier === undefined ? {} : { classifierVersion: this.followUpClassifier.version }) })
     workflow.add(observations)
     const snapshot = workflow.snapshot()
+    const attribution = inferSkillAttribution(observations)
+    await this.skillWindows.replaceAll(attribution.windows)
+    await this.skillPosteriors.replaceAll(attribution.posteriors)
+    await this.failureAttributions.replaceAll(attribution.attributions)
     await this.experiences.replaceAll(snapshot.experiences)
     await this.followUps.replaceAll(snapshot.followUps)
     await this.failures.replaceAll(snapshot.failures)

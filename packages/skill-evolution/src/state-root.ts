@@ -9,7 +9,7 @@ import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
 export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows' | 'skill-posteriors' | 'failure-attributions'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -61,6 +61,9 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['failures', 'derived', false, join(stateDir, 'failures.jsonl')],
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
+    ['skill-windows', 'derived', false, join(stateDir, 'skill-windows.jsonl')],
+    ['skill-posteriors', 'derived', false, join(stateDir, 'skill-posteriors.jsonl')],
+    ['failure-attributions', 'derived', false, join(stateDir, 'failure-attributions.jsonl')],
   ]
   const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
   return {
