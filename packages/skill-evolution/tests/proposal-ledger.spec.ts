@@ -138,12 +138,14 @@ describe('proposal ledger', () => {
       expect(proposalRootId(id)).toBe('proposal:abc')
     }
     expect(proposalRootId('proposal:abc:2')).toBe('proposal:abc:2')
-    expect(() => findLedgerRecord([draft('proposal:abc:evaluated')], 'proposal:abc:evaluated:1')).toThrowError(
-      expect.objectContaining({ code: 'not-found' }),
-    )
-    expect(() => findLedgerRecord([draft('proposal:abc:evaluated')], 'proposal:abc:evaluated:02')).toThrowError(
-      expect.objectContaining({ code: 'not-found' }),
-    )
+    const invalidIds = ['proposal:abc:evaluated:1', 'proposal:abc:evaluated:02']
+    const records = invalidIds.map(id => ({ ...draft('proposal:abc'), id }))
+    for (const id of invalidIds) {
+      expect(proposalRootId(id)).toBe(id)
+      expect(() => findLedgerRecord(records, id)).toThrowError(
+        expect.objectContaining({ code: 'not-found' }),
+      )
+    }
   })
 
   it('accepts plain roots and rejects status-suffixed roots', () => {
