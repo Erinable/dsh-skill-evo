@@ -117,7 +117,7 @@ _Avoid_: parent version, original
 _Avoid_: proposal id 前缀
 
 **Ledger record**:
-Proposal 在某个状态下追加的一条记录，身份由 Proposal root 和该状态组成。
+Proposal 在某个状态下追加的一条记录，身份由 Proposal root、该状态和进入该状态的次数组成；第一次进入省略次数后缀。
 _Avoid_: proposal version
 
 **Proposal ledger**:
