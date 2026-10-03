@@ -38,6 +38,12 @@ async function setup() {
   return root
 }
 
+async function setupSchema2() {
+  const root = await setup()
+  await writeFile(join(root, 'policy.json'), JSON.stringify({ schema: 2, version: '2', maxRegressionCount: 0, maxSecurityViolations: 0, requireNoNewSideEffects: true, originalFailure: { costMetric: 'steps' }, historicalSuccess: { maxStepIncrease: null, maxTokenIncrease: null }, context: { maxCatalogIncreaseTokens: null, maxLoadIncreaseTokens: null } }))
+  return root
+}
+
 describe('CLI command help', () => {
   it.each(['--help', 'help'])('prints usage and exits successfully for %s', async command => {
     const result = await run(packageDir, command)
@@ -64,6 +70,30 @@ describe('CLI command help', () => {
 })
 
 describe('CLI maintenance lifecycle', () => {
+  it('surfaces schema 2 cost data and no-data metrics in JSON and Markdown', async () => {
+    const root = await setupSchema2()
+    await writeFile(join(root, 'cases.json'), JSON.stringify([{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Use curl.'] } }]))
+    const proposed = JSON.parse((await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'candidate.md', '--proposed-version', '1.1.0', '--intent', 'Improve diagnostics')).stdout).proposal
+    const evaluated = await run(root, 'evaluate', '--policy', 'policy.json', '--proposal', proposed.id, '--cases', 'cases.json')
+    expect(evaluated.code).toBe(0)
+    const result = JSON.parse(evaluated.stdout)
+    expect(result.cost.context).toMatchObject({ estimator: 'utf8-bytes-div4-v1', delta: expect.any(Object) })
+    expect(result.cost.categories['original-failure'].passRate).toEqual({ base: 1, candidate: 1 })
+    expect(result.cost.categories['historical-success'].steps.status).toBe('not-applicable')
+    const ids = result.cost.checks.map(item => item.id)
+    expect(ids).toEqual(expect.arrayContaining(['original-failure-regressed', 'original-failure-improvement', 'historical-success-pass-rate-schema2', 'historical-success-steps', 'historical-success-tokens', 'catalog-context', 'load-context']))
+    const markdown = await readFile(join(root, '.skill-evolution', 'proposals', `${proposed.id}.md`), 'utf8')
+    expect(markdown).toContain('| Category | Base pass rate | Candidate pass rate | Steps | Tokens |')
+    expect(markdown).toContain('no data')
+    for (const id of ids) expect(markdown).toContain(id)
+
+    const second = JSON.parse((await run(root, 'propose', '--skill', 'api-debugging', '--base-file', 'base.md', '--candidate-file', 'candidate.md', '--proposed-version', '1.2.0', '--intent', 'Markdown output')).stdout).proposal
+    const markdownCli = await run(root, 'evaluate', '--policy', 'policy.json', '--proposal', second.id, '--cases', 'cases.json', '--format', 'markdown')
+    expect(markdownCli.code).toBe(0)
+    expect(markdownCli.stdout).toContain('| Category | Base pass rate | Candidate pass rate | Steps | Tokens |')
+    expect(markdownCli.stdout).toContain('no data')
+    for (const check of JSON.parse((await readFile(join(root, '.skill-evolution', 'evaluations', `${second.id}.json`), 'utf8'))).result.cost.checks) expect(markdownCli.stdout).toContain(check.id)
+  })
   it('exports content-derived context metrics for current Skills and preserves host context cost', async () => {
     const root = await setup()
     const skill = { name: 'api-debugging', provider: 'unknown', source: 'runtime' }
