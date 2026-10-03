@@ -8,7 +8,7 @@ import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
-import { classificationInputFor } from './follow-up.js'
+import { classificationInputFor, isFollowUpClassification } from './follow-up.js'
 import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
 
 export { OperationError } from './errors.js'
@@ -100,18 +100,28 @@ export async function classifyFollowUps(service: EvolutionService, options: { re
     if (existing.has(id)) { cached += 1; continue }
     if (options.signal?.aborted) break
     const controller = new AbortController()
-    const onAbort = () => controller.abort()
+    let timedOut = false
+    let callerAborted = false
+    const onAbort = () => { callerAborted = true; controller.abort() }
     options.signal?.addEventListener('abort', onAbort, { once: true })
-    const timer = setTimeout(() => controller.abort(), service.classifierTimeoutMs)
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, service.classifierTimeoutMs)
     try {
-      const result = await classifier.classify(computed.input, controller.signal)
-      const validIntent = typeof result?.intent === 'string' && (['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'not-attributable', 'unknown'] as readonly string[]).includes(result.intent)
-      const validConfidence = typeof result?.confidence === 'number' && Number.isFinite(result.confidence) && result.confidence >= 0 && result.confidence <= 1
-      if (!validIntent || !validConfidence) { failed.push({ observationId: event.id, reason: 'invalid-output', message: 'classifier returned invalid intent or confidence' }); continue }
+      const call = classifier.classify(computed.input, controller.signal)
+      call.catch(() => undefined)
+      const abort = new Promise<never>((_, reject) => {
+        const check = () => reject(new Error(callerAborted ? 'classifier call aborted by caller' : 'classifier timed out'))
+        if (options.signal?.aborted) { callerAborted = true; check() }
+        else if (timedOut) check()
+        else {
+          const poll = setInterval(() => { if (callerAborted || timedOut) { clearInterval(poll); check() } }, 1)
+          call.finally(() => clearInterval(poll)).catch(() => undefined)
+        }
+      })
+      const result = await Promise.race([call, abort])
+      if (!isFollowUpClassification(result)) { failed.push({ observationId: event.id, reason: 'invalid-output', message: 'classifier returned invalid intent or confidence' }); continue }
       const memo: ClassificationMemoEntry = { id, classifierVersion: classifier.version, inputHash: computed.inputHash, observationId: event.id, intent: result.intent as Exclude<FollowUpIntent, 'other'>, confidence: result.confidence, ...(typeof result.rationale === 'string' ? { rationale: redactSensitiveText(result.rationale).slice(0, 500) } : {}), createdAt: new Date().toISOString() }
       await service.classifications.append(memo); existing.set(id, memo); classified += 1
     } catch (error) {
-      const timedOut = controller.signal.aborted
       failed.push({ observationId: event.id, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) })
     } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort) }
   }

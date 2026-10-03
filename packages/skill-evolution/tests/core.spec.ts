@@ -492,4 +492,69 @@ describe('follow-up classification memo', () => {
     expect(classify).toHaveBeenCalledTimes(1)
     expect((await service.refreshDerived()).followUps[0]?.source).toBe('classifier')
   })
+
+  it('skips explicit and pending rows and bounds redacted classifier context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-input-'))
+    dirs.push(root)
+    const inputs: unknown[] = []
+    const classify = vi.fn(async (input: unknown) => { inputs.push(input); return { intent: 'satisfied' as const, confidence: 0.8 } })
+    const service = new EvolutionService({ root, followUpClassifier: { version: 'input-v1', classify } })
+    const before = Array.from({ length: 25 }, (_, index) => observation(`before-${index}`, 'tool-result', skill(), { toolName: 'tool', input: index }))
+    await service.observations.appendMany([
+      ...before,
+      observation('explicit', 'user-follow-up', skill(), { explicit: true, feedbackKind: 'satisfied', text: 'explicit' }),
+      observation('pending', 'user-follow-up', skill(), { text: 'pending' }),
+      observation('closed', 'user-follow-up', skill(), { text: 'password: secret-value please continue' }),
+      ...Array.from({ length: 25 }, (_, index) => observation(`after-${index}`, 'tool-result', skill(), { toolName: 'tool', failed: index === 0 })),
+      observation('finish', 'task-finished'),
+      observation('pending-tail', 'user-follow-up', skill(), { text: 'pending' }),
+    ])
+    const result = await classifyFollowUps(service)
+    expect(result.skipped).toEqual({ explicit: 1, pending: 1 })
+    expect(result.classified).toBe(2)
+    expect(classify).toHaveBeenCalledTimes(2)
+    const input = inputs.find(item => (item as { text?: string }).text?.includes('[REDACTED]')) as { text?: string; before: unknown[]; after: unknown[] }
+    expect(input.text).toContain('[REDACTED]')
+    expect(input.text).not.toContain('secret-value')
+    expect(input.before.length).toBeLessThanOrEqual(20)
+    expect(input.after.length).toBeLessThanOrEqual(20)
+  })
+
+  it('isolates timeout, thrown, and invalid classifier results while continuing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-errors-'))
+    dirs.push(root)
+    const classify = vi.fn(async (input: { observationId: string }, signal: AbortSignal) => {
+      if (input.observationId === 'timeout') return new Promise<never>(resolve => setTimeout(() => resolve({ intent: 'satisfied', confidence: 0.5 } as never), 80))
+      if (input.observationId === 'throw') throw new Error('model failed')
+      if (input.observationId === 'invalid') return { intent: 'other' as never, confidence: 2 }
+      signal.throwIfAborted()
+      return { intent: 'satisfied' as const, confidence: 0.7 }
+    })
+    const service = new EvolutionService({ root, followUpClassifier: { version: 'errors-v1', classify }, classifierTimeoutMs: 10 })
+    for (const id of ['timeout', 'throw', 'invalid', 'success']) {
+      await service.observations.appendMany([observation(id, 'user-follow-up', skill(), { text: id }), observation(`${id}-done`, 'task-finished')])
+    }
+    const result = await classifyFollowUps(service)
+    expect(result.failed.map(item => [item.observationId, item.reason])).toEqual([['timeout', 'timeout'], ['throw', 'error'], ['invalid', 'invalid-output']])
+    expect(result.classified).toBe(1)
+    expect(await service.classifications.readAll()).toHaveLength(1)
+  })
+
+  it('fails before model calls when no classifier is configured and exposes source-split metrics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-classifier-metrics-'))
+    dirs.push(root)
+    const service = new EvolutionService({ root })
+    await service.observations.appendMany([
+      observation('explicit-metric', 'user-follow-up', skill(), { explicit: true, feedbackKind: 'incorrect', text: 'wrong' }),
+      observation('explicit-done', 'task-finished'),
+      observation('rule-metric', 'user-follow-up', skill(), { text: 'wrong' }),
+      observation('rule-done', 'task-finished'),
+    ])
+    await expect(classifyFollowUps(service)).rejects.toMatchObject({ code: 'classifier-unavailable' })
+    const metrics = await service.metrics()
+    expect(metrics.followUpIntents.explicit).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
+    expect(metrics.followUpIntents.rule).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
+    expect(metrics.skills[0]).toMatchObject({ followUps: 1, followUpRate: 0 })
+    expect(metrics.skills[0]?.followUpIntents.explicit).toMatchObject({ total: 1, failures: 1, byIntent: { incorrect: 1 } })
+  })
 })

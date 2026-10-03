@@ -20,6 +20,7 @@ export interface EvolutionMetrics {
   readonly skills: readonly SkillUsageMetric[]
   readonly proposals: { readonly total: number; readonly promoted: number; readonly rejected: number; readonly rolledBack: number }
   readonly contextCost: number
+  readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
 }
 
 /** Aggregate exportable operational metrics without assigning causal credit. */
@@ -81,11 +82,16 @@ export function aggregateMetrics(
       rolledBack: rolledBack.size,
     },
     contextCost,
+    followUpIntents: intentMetrics(resolutions),
   }
 }
 
-function intentMetrics(resolutions: readonly FollowUpResolution[]): SkillUsageMetric['followUpIntents'] {
-  const result = { explicit: { total: 0, failures: 0, byIntent: {} as Record<string, number> }, classifier: { total: 0, failures: 0, byIntent: {} as Record<string, number> }, rule: { total: 0, failures: 0, byIntent: {} as Record<string, number> } }
+function intentMetrics(resolutions: readonly FollowUpResolution[]): EvolutionMetrics['followUpIntents'] {
+  const result = {
+    explicit: { total: 0, failures: 0, byIntent: {} as Record<string, number> },
+    classifier: { total: 0, failures: 0, byIntent: {} as Record<string, number> },
+    rule: { total: 0, failures: 0, byIntent: {} as Record<string, number> },
+  }
   for (const resolution of resolutions) {
     const item = result[resolution.source]
     item.total += 1

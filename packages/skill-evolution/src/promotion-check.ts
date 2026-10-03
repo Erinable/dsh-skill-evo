@@ -2,7 +2,7 @@ import { createContentHash } from './events.js'
 import { DEFAULT_EVALUATION_POLICY, validateSkillCandidate, validateSkillDocument } from './evaluator.js'
 import { proposalRootId } from './proposal.js'
 import type { CurrentSkill } from './lifecycle.js'
-import type { EvaluationArtifact, EvaluationPolicy, EvaluationPolicyInput, SkillEvalResult, SkillProposal } from './types.js'
+import type { EvaluationArtifact, EvaluationPolicyInput, SkillEvalResult, SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
 
 export interface PromotionCheckInput {
