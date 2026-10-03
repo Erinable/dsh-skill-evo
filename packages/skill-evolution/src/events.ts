@@ -14,7 +14,7 @@ export function redactSensitiveText(value: string): string {
     // Signed URLs and callback fragments are never durable evidence.
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s"']*?)(\?[^\s"'#]*)/gi, '$1?[REDACTED]')
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s"']*?)(#[^\s"']*)/gi, '$1#[REDACTED]')
-    .replace(/(['"])(\b(?:proxy-)?authorization|x-api-key|x-auth-token|cookie)\s*:[^\r\n]*?\1/gi, '$1$2: [REDACTED]$1')
+    .replace(/(['"])(\b(?:proxy-)?authorization|x-api-key|x-auth-token|cookie)\s*:\s*(?:(?:\\.)|(?!\1)[^\r\n])*\1/gi, '$1$2: [REDACTED]$1')
     .replace(/(\b(?:proxy-)?authorization|x-api-key|x-auth-token|cookie)\s*:\s*(?:"[^"]*"|'[^']*'|[^\n"']+)/gi, '$1: [REDACTED]')
     .replace(/(--(?:token|password|passwd|pass|secret|api-key|apikey|auth|auth-token|access-token|client-secret))(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1 [REDACTED]')
     .replace(/((?:^|\s)(?:-u|--user))\s+(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s"']+:[^\s"']+)/gi, '$1 [REDACTED]')

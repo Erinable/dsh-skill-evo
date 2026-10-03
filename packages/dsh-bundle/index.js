@@ -617,20 +617,28 @@ function structuredResultMetadata(data) {
 
 function parseExitMarkers(text) {
   if (typeof text !== 'string') return {}
-  const markers = [...text.matchAll(/\[(?:timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]/gi)]
+  const lines = text.split(/\r?\n/)
+  while (lines.length > 0 && lines.at(-1)?.trim() === '') lines.pop()
+  const markers = []
+  while (lines.length > 0) {
+    const line = lines.at(-1)?.trim() ?? ''
+    const match = line.match(/^\[(timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]$/i)
+    if (match === null) break
+    markers.unshift(match[1])
+    lines.pop()
+  }
   const result = {}
   for (const marker of markers) {
-    const value = marker[0]
-    if (/^\[timed out after/i.test(value)) result.timedOut = true
-    else if (/^\[killed by signal:/i.test(value)) result.signal = value.replace(/^\[killed by signal:\s*/i, '').replace(/\]$/, '').trim()
-    else result.exitCode = Number(value.replace(/^\[exit code:\s*/i, '').replace(/\]$/, ''))
+    if (/^timed out after/i.test(marker)) result.timedOut = true
+    else if (/^killed by signal:/i.test(marker)) result.signal = marker.replace(/^killed by signal:\s*/i, '').trim()
+    else result.exitCode = Number(marker.replace(/^exit code:\s*/i, ''))
   }
   return result
 }
 
 function errorLine(data, text) {
   const candidates = []
-  const source = typeof text === 'string' ? text : textFromAny(data)
+  const source = stripTrailingMarkers(typeof text === 'string' ? text : textFromAny(data))
   if (typeof source !== 'string') return undefined
   const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:exit code|killed by signal|timed out)|$)/i)?.[1]
   const stdout = source.split(/\[stderr\]/i, 1)[0].replace(/\n?\[(?:exit code|killed by signal|timed out)[^\]]*\]\s*$/i, '')
@@ -647,6 +655,14 @@ function errorLine(data, text) {
     if (match !== undefined) return match
   }
   return undefined
+}
+
+function stripTrailingMarkers(text) {
+  if (typeof text !== 'string') return text
+  const lines = text.split(/\r?\n/)
+  while (lines.length > 0 && lines.at(-1)?.trim() === '') lines.pop()
+  while (lines.length > 0 && /^\[(?:timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]$/i.test(lines.at(-1)?.trim() ?? '')) lines.pop()
+  return lines.join('\n')
 }
 
 function textFromAny(value, depth = 0) {

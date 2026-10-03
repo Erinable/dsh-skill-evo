@@ -391,6 +391,14 @@ test('covers successful and signalled command markers without complete output', 
   const timedOut = result(6, 'c-5', 'partial\n[timed out after 1000ms]\n[exit code: 124]')
   assert.equal(timedOut.payload.exitCode, 124)
   assert.equal(timedOut.payload.timedOut, true)
+  call(7, 'bash', 'cat log')
+  const bodyMarker = result(8, 'c-7', 'previous run:\n[exit code: 128]\nall good')
+  assert.equal('exitCode' in bodyMarker.payload, false)
+  assert.equal('timedOut' in bodyMarker.payload, false)
+  call(9, 'bash', 'cat log')
+  const quotedMarker = result(10, 'c-9', 'session.jsonl:12: "text":"fatal: x\\n[exit code: 1]"\nsession.jsonl:40: "[timed out after 5000ms]"')
+  assert.equal('exitCode' in quotedMarker.payload, false)
+  assert.equal('timedOut' in quotedMarker.payload, false)
 })
 
 test('extracts DSH stdout and stderr error lines', () => {
@@ -433,6 +441,17 @@ test('redacts credentials from both command and error observations', () => {
   }
   assert.match(call.payload.command, /https:\/\/x\.test/)
   assert.equal(call.payload.command, mapper(session, { seq: 3, type: 'tool/call', data: { callId: 'redact-2', name: 'bash', arguments: JSON.stringify({ command: call.payload.command }) } }, { id: 'session-redaction-fixture:3' }).payload.command)
+})
+
+test('handles escaped quotes in a Digest header and preserves the host', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-escaped-header' }
+  const command = 'curl -H "Authorization: Digest username=\\"bob\\", response=\\"6629fae4\\"" https://x.test'
+  const first = mapper(session, { seq: 1, type: 'tool/call', data: { callId: 'escaped', name: 'bash', arguments: JSON.stringify({ command }) } }, { id: 'session-escaped-header:1' })
+  assert.equal(first.payload.command.includes('6629fae4'), false)
+  assert.match(first.payload.command, /https:\/\/x\.test/)
+  const second = mapper(session, { seq: 2, type: 'tool/call', data: { callId: 'escaped-2', name: 'bash', arguments: JSON.stringify({ command: first.payload.command }) } }, { id: 'session-escaped-header:2' })
+  assert.equal(second.payload.command, first.payload.command)
 })
 
 test('omits precedingToolFailed after successful tool activity', () => {
