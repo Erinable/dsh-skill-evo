@@ -334,8 +334,9 @@ describe('promote crash points', () => {
     const proposalRef = await accept(evolution, root, 'proposal-other', currentBase, `${currentBase}Another change.\n`, '1.2.0', 'Another change')
     const evaluationsPath = join(root, '.skill-evolution', 'evaluations.jsonl')
     const evaluations = await readFile(evaluationsPath, 'utf8')
-    await writeFile(evaluationsPath, evaluations.replace(/"expiresAt":"[^"]+"/g, '"expiresAt":"2000-01-01T00:00:00.000Z"'))
-    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: expect.stringMatching(/evaluation-expired|evaluation-missing|policy|invalid/) })
+    const invalidArtifact = evaluations.split('\n').map(line => line.includes('proposal-other') ? line.replace('\"passedGate\":true', '\"passedGate\":false') : line).join('\n')
+    await writeFile(evaluationsPath, invalidArtifact)
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'gate-failed' })
   })
 })
 
