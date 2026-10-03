@@ -29,6 +29,7 @@ import {
   transitionProposal,
   type RuntimeObservation,
 } from '../src/index.js'
+import { measureSkillContext } from '../src/evaluation-cost.js'
 
 const dirs: string[] = []
 
@@ -354,6 +355,61 @@ describe('phase 3 proposal and evaluation', () => {
       cases: [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Check'] } }],
     })
     expect(result.gateReasons.some(reason => reason.startsWith('candidate:'))).toBe(true)
+  })
+})
+
+describe('evaluation execution cost gates', () => {
+  const policy = (extra: Record<string, unknown> = {}) => ({ schema: 2 as const, version: '2', maxRegressionCount: 0, maxSecurityViolations: 0, requireNoNewSideEffects: true, ...extra })
+  const original = { id: 'original', category: 'original-failure' as const, task: 'debug' }
+  const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+
+  it('collects interleaved samples and reports the exact 6-to-2 reduction', async () => {
+    const order: string[] = []
+    const result = await evaluateCandidate({ candidateId: 'cost-6-2', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, item, context) => { order.push(`${item.id}:${context!.exposure}#${context!.sample}`); return { passed: true, toolCalls: context!.exposure === 'base' ? 6 : 2 } } })
+    expect(order).toEqual(['original:base#0', 'original:candidate#0', 'original:base#1', 'original:candidate#1', 'original:base#2', 'original:candidate#2', 'original:base#3', 'original:candidate#3', 'original:base#4', 'original:candidate#4'])
+    expect(result.cost?.categories['original-failure'].steps).toMatchObject({ relativeChange: -2 / 3, pValue: 1 / 252 })
+  })
+
+  it('rejects historical step increases and context growth', async () => {
+    const historical = { id: 'history', category: 'historical-success' as const, task: 'debug' }
+    const increased = base.replace('Debug APIs.', `Debug APIs.${'x'.repeat(300)}`) + 'x'.repeat(4101)
+    const result = await evaluateCandidate({ candidateId: 'cost-growth', baseContent: base, candidateContent: increased, cases: [original, historical], policy: policy({ originalFailure: { requireImprovement: false }, historicalSuccess: { maxStepIncrease: 0.1 }, context: { maxCatalogIncreaseTokens: 64, maxLoadIncreaseTokens: 1024 } }), runner: async (_content, item, context) => ({ passed: true, toolCalls: item.id === 'history' && context!.exposure === 'candidate' ? 5 : 4 }) })
+    expect(result.gateReasons).toEqual(expect.arrayContaining(['historical-success steps increase exceeded policy', 'catalog context increase exceeded policy', 'load context increase exceeded policy']))
+    expect(result.decision).toBe('needs-review')
+    expect(result.cost?.context).toEqual({ estimator: 'utf8-bytes-div4-v1', base: measureSkillContext(base), candidate: measureSkillContext(increased), delta: { catalogTokens: measureSkillContext(increased).catalogTokens - measureSkillContext(base).catalogTokens, loadTokens: measureSkillContext(increased).loadTokens - measureSkillContext(base).loadTokens } })
+  })
+
+  it('reports unstable candidate sample rates and exact no-data reasons', async () => {
+    const unstable = await evaluateCandidate({ candidateId: 'unstable', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 3 }) })
+    expect(unstable.cost?.unstable).toContainEqual({ caseId: 'original', exposure: 'candidate', passRate: 0.6 })
+    const unstable40 = await evaluateCandidate({ candidateId: 'unstable-40', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 2 }) })
+    expect(unstable40.cost?.unstable).toContainEqual({ caseId: 'original', exposure: 'candidate', passRate: 0.4 })
+    const noData = await evaluateCandidate({ candidateId: 'no-data', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async () => ({ passed: true }) })
+    expect(noData.gateReasons).toContain('original-failure steps: no data')
+  })
+
+  it('reports every original-failure regression and guards the cost path', async () => {
+    const improved = { id: 'improved', category: 'original-failure' as const, task: 'debug' }
+    const regressed = { id: 'regressed', category: 'original-failure' as const, task: 'debug' }
+    const result = await evaluateCandidate({ candidateId: 'regressed', baseContent: base, candidateContent: base, cases: [regressed, improved], policy: policy(), runner: async (_content, item, context) => ({ passed: item.id === 'improved' ? context!.exposure === 'candidate' : context!.exposure === 'base', toolCalls: 1 }) })
+    expect(result.gateReasons).toContain('original-failure case regressed: regressed')
+    expect(result.gateReasons).not.toContain('original-failure case regressed: improved')
+    const costPath = await evaluateCandidate({ candidateId: 'cost-path', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 3, toolCalls: context!.exposure === 'base' ? 5 : 3 }) })
+    expect(costPath.cost?.checks.find(check => check.id === 'original-failure-improvement')?.detail).toContain('k_b = 5, k_c = 3')
+    expect(costPath.passedGate).toBe(false)
+    expect(costPath.gateReasons).toContain('original-failure did not improve')
+    const control = await evaluateCandidate({ candidateId: 'cost-control', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: true, toolCalls: context!.exposure === 'base' ? 6 : 2 }) })
+    expect(control.passedGate).toBe(true)
+    expect(control.cost?.checks.find(check => check.id === 'original-failure-improvement')).toMatchObject({ status: 'passed' })
+    expect(control.cost?.categories['original-failure'].steps.pValue).toBe(1 / 252)
+  })
+
+  it('retains schema 1 boundary and missing-token gates', async () => {
+    const boundary = { id: 'boundary', category: 'boundary' as const, severity: 'high' as const, task: 'boundary' }
+    let calls = 0
+    const result = await evaluateCandidate({ candidateId: 'schema1', baseContent: base, candidateContent: base, cases: [original, boundary], policy: { version: '1', maxRegressionCount: 1, maxSecurityViolations: 0, requireNoNewSideEffects: true, requireOriginalFailureImprovement: false, maxTokenIncreaseRatio: 0.1 }, runner: async (_content, item, context) => { calls += 1; return { passed: item.id === 'original' || context!.exposure === 'base' } } })
+    expect(result.gateReasons).toEqual(expect.arrayContaining(['new high-severity boundary failure', 'token cost: no data']))
+    expect(calls).toBe(4)
   })
 })
 

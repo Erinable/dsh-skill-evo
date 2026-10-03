@@ -1,3 +1,5 @@
+import type { EvaluationCostReport, EvaluationSample } from './evaluation-cost.js'
+
 export interface SkillRef {
   readonly name: string
   readonly provider: string
@@ -229,6 +231,8 @@ export interface SkillEvalResult {
   readonly candidateContentHash: string
   readonly caseIds: readonly string[]
   readonly createdAt: string
+  readonly cost?: EvaluationCostReport
+  readonly samples?: readonly EvaluationSample[]
 }
 
 /** Persisted evaluation evidence that promotion is allowed to consume. */
