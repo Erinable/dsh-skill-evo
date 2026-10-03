@@ -79,8 +79,9 @@ describe('policy-bound evaluation artifacts', () => {
     const schema1Policy = { version: 'same', maxRegressionCount: 0, maxSecurityViolations: 0, requireNoNewSideEffects: true, requireOriginalFailureImprovement: true }
     const schema1 = new EvolutionService({ root: first.root, evaluationPolicy: schema1Policy })
     await expect(promoteProposal(schema1, { proposalRef: evaluated.id, evaluation: result, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
-    const strippedTop = { ...artifact, policyHash: undefined }
-    await expect(promoteProposal(schema1, { proposalRef: evaluated.id, evaluation: strippedTop, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
+    const { policyHash: _drop, ...strippedTop } = artifact
+    await writeFile(first.service.layout.stores.find(item => item.name === 'evaluations')!.path, `${JSON.stringify(strippedTop)}\n`)
+    await expect(promoteProposal(schema1, { proposalRef: evaluated.id, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
     const strippedBoth = { ...artifact, policyHash: undefined, result: { ...artifact.result, policyHash: undefined } }
     await writeFile(first.service.layout.stores.find(item => item.name === 'evaluations')!.path, `${JSON.stringify(strippedBoth)}\n`)
     await expect(promoteProposal(first.service, { proposalRef: evaluated.id, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
@@ -89,6 +90,13 @@ describe('policy-bound evaluation artifacts', () => {
     const matching = { ...artifact, policyHash: matchingHash, result: { ...artifact.result, policyHash: matchingHash } }
     await writeFile(first.service.layout.stores.find(item => item.name === 'evaluations')!.path, `${JSON.stringify(matching)}\n`)
     await expect(promoteProposal(schema1, { proposalRef: evaluated.id, evaluation: matching, scope: 'project', dryRun: true })).resolves.toMatchObject({ dryRun: true })
+  })
+
+  it('rejects hashless schema 1 evidence after switching to schema 2', async () => {
+    const legacy = await setup()
+    const { evaluated } = await evaluateAndAccept(legacy.service, legacy.proposal)
+    const switched = new EvolutionService({ root: legacy.root, evaluationPolicy: { ...schema2, version: '1' } })
+    await expect(promoteProposal(switched, { proposalRef: evaluated.id, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'evaluation-mismatch' })
   })
 
   it('records policy hashes in evaluated and promoted decision records', async () => {
