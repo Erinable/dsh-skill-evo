@@ -118,10 +118,14 @@ export async function completePublication(journal: PublicationJournal, context: 
         const oldManifest = await readJson<SkillManifest>(join(directory, 'manifest.json'))
         if (oldManifest !== undefined) await writeAtomic(join(previous, 'manifest.json'), `${JSON.stringify(oldManifest, null, 2)}\n`)
       }
+      const previousManifest = await readJson<SkillManifest>(join(previous, 'manifest.json'))
+      if (previousManifest !== undefined && previousManifest.contentHash !== journal.from.contentHash) throw new PublicationPermanentError('publication snapshot manifest does not match journal')
     }
     const target = join(versions, journal.to.version); await mkdir(target, { recursive: true })
     const existing = await readText(join(target, 'SKILL.md'))
     if (existing !== undefined && createContentHash(existing) !== journal.to.contentHash) throw new PublicationPermanentError('publication target does not match journal')
+    const existingManifest = await readJson<SkillManifest>(join(target, 'manifest.json'))
+    if (existingManifest !== undefined && existingManifest.contentHash !== journal.to.contentHash) throw new PublicationPermanentError('publication target manifest does not match journal')
     const manifest = await context.manifestFor(journal)
     await writeIfDifferent(join(target, 'SKILL.md'), content); await writeIfDifferent(join(target, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
     await writeIfDifferent(join(directory, 'SKILL.md'), content); await writeIfDifferent(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`); await writeIfDifferent(join(directory, 'current.json'), `${JSON.stringify({ version: manifest.version, contentHash: manifest.contentHash }, null, 2)}\n`)

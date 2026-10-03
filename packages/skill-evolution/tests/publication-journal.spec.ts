@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SkillVersionStore, createContentHash, createProposal } from '../src/index.js'
+import { SkillVersionStore, completePublication, createContentHash, createProposal, readPublication, resolveLayout } from '../src/index.js'
 
 const roots: string[] = []
 const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
@@ -60,10 +60,26 @@ describe('file publication journals', () => {
     expect(invalidations).toEqual([])
   })
 
+  it('completes an explicit-only journal without touching live files', async () => {
+    const invalidations: string[] = []; const { root } = await store(); const layout = resolveLayout({ root })
+    const journal = { v: 1 as const, operation: 'promote' as const, skillName: 'api-debugging', scope: 'explicit-only' as const, proposalId: 'explicit-journal', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z' }
+    await (await import('node:fs/promises')).mkdir(layout.publicationsDir, { recursive: true }); await writeFile(layout.publicationJournalPath('api-debugging'), `${JSON.stringify(journal)}\n`)
+    await completePublication(journal, { root, layout, invalidate: async name => invalidations.push(name), manifestFor: async () => ({ name: 'api-debugging', version: '1.0.0', contentHash: journal.to.contentHash, status: 'observed', scope: 'explicit-only', createdBy: 'human', createdAt: journal.startedAt, updatedAt: journal.startedAt }) })
+    await expect(readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8')).resolves.toBe(base); await expect(readdir(join(root, 'api-debugging', 'versions'))).rejects.toMatchObject({ code: 'ENOENT' }); expect(invalidations).toEqual([])
+  })
+
   it('leaves an active journal untouched on read paths', async () => {
     const { root, value } = await store(); const p = proposal('read-only'); await value.writeCandidate(p)
     const path = join(root, '.skill-evolution', 'publications', 'api-debugging.json'); await (await import('node:fs/promises')).mkdir(join(root, '.skill-evolution', 'publications'), { recursive: true })
     const raw = JSON.stringify({ v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z', proposalId: 'read-only' })
     await writeFile(path, raw); await value.readCurrent('api-debugging'); await value.healthIssues(); expect(await readFile(path, 'utf8')).toBe(raw)
+  })
+
+  it('rejects invalid journal field types, scope, filename, and candidate hash', async () => {
+    const { root } = await store(); const directory = join(root, '.skill-evolution', 'publications'); await (await import('node:fs/promises')).mkdir(directory, { recursive: true })
+    const valid = { v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', from: { version: 'unversioned', contentHash: createContentHash(base) }, to: { version: '1.0.0', contentHash: createContentHash(candidate) }, startedAt: '2026-10-03T00:00:00.000Z' }
+    for (const [name, value] of [['bad-v', { ...valid, v: 2 }], ['bad-scope', { ...valid, scope: 'bad' }], ['bad-time', { ...valid, startedAt: 1 }], ['bad-name', { ...valid, skillName: 'other' }]]) {
+      const path = join(directory, `${name}.json`); await writeFile(path, JSON.stringify(value)); await expect(readPublication(path)).rejects.toThrow()
+    }
   })
 })
