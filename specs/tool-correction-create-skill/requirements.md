@@ -1,8 +1,8 @@
 ## Requirements
 
-R1. WHEN a command-capable ordinary tool call is observed THE SYSTEM SHALL append only the approved optional summaries `argKeys`, a redacted bounded `command`, and `commandTruncated` to the `tool/call` Observation, without appending complete arguments, descriptions, stdout, stderr, workdir, query, or fragment values.
+R1. WHEN a command-capable ordinary tool call is observed THE SYSTEM SHALL append only the approved optional summaries `argKeys` (at most 16 keys, each at most 64 characters), a redacted bounded `command`, and `commandTruncated` to the `tool/call` Observation, without appending complete arguments, descriptions, stdout, stderr, workdir, query, or fragment values.
 
-R2. WHEN a command result is observed THE SYSTEM SHALL append structured `exitCode`, `signal`, and `timedOut` values when available and SHALL append a redacted bounded `errorLine` only when the result is failed, non-zero, signalled, or timed out; the existing `failed` meaning SHALL remain unchanged.
+R2. WHEN a command result is observed THE SYSTEM SHALL append structured `exitCode`, `signal` (at most 32 characters), and `timedOut` values when available and SHALL append a redacted bounded `errorLine` only when the result is failed, non-zero, signalled, or timed out; the existing `failed` meaning SHALL remain unchanged.
 
 R3. WHEN any approved summary or error line is persisted THE SYSTEM SHALL apply the shared `redactSensitiveText` rules R1–R7 before tokenization or truncation, including URL userinfo, URL query/fragment, authorization headers, credential flags, credential environment assignments, and known token formats; repeated redaction SHALL be idempotent and legacy Observations SHALL remain readable.
 
@@ -18,7 +18,7 @@ R8. WHEN Correction episodes are projected THE SYSTEM SHALL aggregate equal sign
 
 R9. WHEN pattern assessment is requested THE SYSTEM SHALL apply the versioned CorrectionPolicy defaults `N=2`, `K=3`, `D=30` days, `maxAttemptsToSuccess=20`, and allowed scopes `project|user`; it SHALL exclude retry-only patterns, expire evidence outside the window, restart counting after a promotion, and report blocking in-progress proposals.
 
-R10. WHEN failures or metrics are rendered THE SYSTEM SHALL expose recognizer and policy versions, episode and pattern counts, window session count versus K, count start, candidate decision, rejection reason, and target decision using the same pure assessment result.
+R10. WHEN failures or metrics are rendered THE SYSTEM SHALL expose recognizer and policy versions, episode and pattern counts, window session count versus K, count start, candidate decision, rejection reason, target decision, and correction-classifier failure counts using the same pure assessment result.
 
 R11. WHEN a human invokes design from an eligible pattern THE SYSTEM SHALL select patch-content or create-skill using the ordered target rules (previously promoted target, explicit `--skill`, majority loaded Skill, portfolio similarity, otherwise new Skill), SHALL pass only redacted summaries to the Designer, and SHALL reject non-neutral candidates containing observed environment values or `[REDACTED]`.
 
@@ -37,3 +37,7 @@ R17. WHEN the end-to-end fixture contains one session with three 443 failures fo
 R18. WHEN a caller changes the recognizer version and reprojects the same Observations THE SYSTEM SHALL update correction Derived outputs and metrics to the new recognizer result while leaving the Observation log byte-for-byte unchanged.
 
 R19. WHEN the repository implements this change THE SYSTEM SHALL preserve the core/bundle dependency direction, keep complete tool output out of the Observation log, keep runtime collection append-only and non-blocking, and leave Skill/memory/workflow boundaries as documented in CONTEXT.md.
+
+R20. WHEN a maintainer invokes `classifyCorrections(service, { signal, limit })` THE SYSTEM SHALL classify only sessions closed by `task-finished`, write only correction-namespaced Classification memo entries, report `classifier-unavailable` when no classifier is injected, report classifier failures without writing partial memo entries, and leave open sessions for a later invocation; a Projection memo miss SHALL fall back to `rule-1` with `fallbackReason='not-classified'`.
+
+R21. WHEN either the follow-up or correction rules, policy, classifier version, or namespaced Classification memo fingerprint changes THE SYSTEM SHALL change the composite `derivationKey`, while changing only one judge SHALL not overwrite the other judge's memo entries or version contribution.

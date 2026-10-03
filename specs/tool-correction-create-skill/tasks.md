@@ -25,15 +25,16 @@ Tasks are ordered by dependency. A task may run in parallel with another task on
 
 **Depends on:** 1
 
-**Files/modules:** `packages/skill-evolution/src/correction.ts`, `experience.ts`, `projection.ts`, `state-root.ts`, `service.ts`, `records.ts` and `classifications.jsonl` (ADR-0034 memo role), correction/projection tests.
+**Files/modules:** `packages/skill-evolution/src/correction.ts`, `experience.ts`, `projection.ts`, `operations.ts`, `state-root.ts`, `service.ts`, `records.ts` and `classifications.jsonl` (ADR-0034 memo role), correction/projection tests.
 
-**Goal:** Add ToolAttempt correlation, rule-1 recognition, structured error signatures, episode/Experience emission, derived stores, ADR-0034 Classification memo reads, one `derivationKey`, and the ADR-0035-shaped injected classifier seam. Projection must never call the injected classifier.
+**Goal:** Add ToolAttempt correlation, rule-1 recognition, structured error signatures, episode/Experience emission, derived stores, the `classifyCorrections(service, { signal, limit })` maintenance operation, ADR-0034 namespaced Classification memo reads, the composite `derivationKey`, and the ADR-0035-shaped injected classifier seam. Projection must never call the injected classifier.
 
 **Acceptance tests:**
 
 - One session with three exit-128/443 failures followed by proxy setup and success yields exactly one correction episode and one tool-attributed Experience without a loaded Skill; unrelated intent between retries does not reset the run.
-- Missing command/result, invalid references, too-short drafts, and recognizer exceptions produce no episode and increment rejection/fallback metrics.
-- Error signature includes exit code and normalized first line; changing correction rules or classifier version updates `derivationKey`, changes episodes/pattern inputs while Observation and memo bytes remain unchanged, and does not invoke a classifier from Projection.
+- Missing command/result, invalid references, and too-short drafts produce no episode. Memo misses and open sessions produce no classifier call; a memo miss falls back to `rule-1` with `fallbackReason: 'not-classified'`. Classifier exceptions produce no memo and increment `classifyCorrections.failed` and the correction-classifier failure metric.
+- A closed-session fixture with a fake classifier first projects rule result R, then runs `classifyCorrections` and projects a different memo-backed result, then removes the classifier and projects back to a deep-equal R; no Projection call invokes the classifier.
+- Error signature includes exit code and normalized first line. Reprojecting after a correction-rule or classifier-version change updates the composite `derivationKey` and Derived outputs without changing Observation or existing memo bytes; changing only the correction classifier version, or only the follow-up classifier version, also changes the same key without changing the other judge's memo entries. A later `classifyCorrections` run may append a new versioned correction memo by its explicit contract.
 - Stable Failure cluster references use the ADR-0022 earliest-case id, and classifier-version reprojection of the same grouped episodes preserves the `pattern:<earliest episode id>` and leaves a Proposal source reference resolvable.
 
 ### 3. Aggregate patterns and expose policy-aware reports
@@ -51,15 +52,15 @@ Tasks are ordered by dependency. A task may run in parallel with another task on
 - One recent session reports 1/K and is not a candidate; three distinct recent sessions report K/K and are candidates; a 31-day-old set is excluded; retry-only is excluded.
 - After a promoted proposal, pre-promotion episodes no longer count and K post-promotion sessions become eligible again.
 - Reports and metrics expose policy/recognizer versions, counts, `since`, candidate reason, and target; observe exposes episode/pattern counts.
-- Changing policy or classifier versions changes only `derivationKey`/Derived outputs; Observation and Classification memo facts remain unchanged. Reprojecting the same grouped episodes keeps the pattern id stable and keeps its Proposal source reference resolvable.
+- Reprojecting after a policy or classifier-version change changes only `derivationKey`/Derived outputs; Observation and existing Classification memo facts remain unchanged. Reprojecting the same grouped episodes keeps the pattern id stable and keeps its Proposal source reference resolvable.
 
 ### 4. Add pattern design, target selection, and create-skill absent Base
 
 **Requirements:** R11, R12, R13, R17, R19
 
-**Depends on:** 3 and the not-yet-merged ProposalLedger implementation specified by ADR-0021 and `docs/design/proposal-ledger-transition.md` §2.1/§2.4. Its expected implementation anchor is `packages/skill-evolution/src/ledger.ts` with exports from `types.ts`/`index.ts`; no such file exists on `origin/main` at this spec revision.
+**Depends on:** 3 and SKIL-135 (spec PR #86, merged on `origin/main`). Consume the merged ProposalLedger implementation specified by ADR-0021 and `specs/proposal-ledger-transition/` §2.1/§2.4, anchored at `packages/skill-evolution/src/ledger.ts` with its `types.ts`/`index.ts` exports and service call-site migration.
 
-**Files/modules:** `packages/skill-evolution/src/types.ts`, `proposal.ts`, `operations.ts`, `service.ts`, `packages/skill-evolution/src/ledger.ts` prerequisite, Designer integration in `packages/skill-evolution/src/operations.ts` and `packages/skill-evolution/bin/dsh-skill-evolution.mjs`, proposal tests.
+**Files/modules:** `packages/skill-evolution/src/types.ts`, `proposal.ts`, `operations.ts`, `service.ts`, `packages/skill-evolution/src/ledger.ts`, Designer integration in `packages/skill-evolution/src/operations.ts` and `packages/skill-evolution/bin/dsh-skill-evolution.mjs`, proposal tests.
 
 **Goal:** Add pattern-source Designer input, ordered target selection, environment-neutral validation, create-skill operation metadata, absent Base checks, and ADR-0021 ledger ids without changing the transition table.
 

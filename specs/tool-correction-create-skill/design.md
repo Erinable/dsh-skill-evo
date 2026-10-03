@@ -17,14 +17,14 @@ The runtime loop remains append-only and non-blocking. The maintenance loop perf
 
 - **Collection seam:** `packages/dsh-bundle/index.js` maps ordinary tool calls/results. Command mapping is explicit for `bash` and `pwsh`; exit markers are parsed in the bundle. Core owns the shared redactor and summary contracts.
 - **Projection seam:** new correction projection code belongs in `packages/skill-evolution/src/correction.ts`. The injected correction classifier adopts ADR-0035's versioned object shape, `classify(input, signal)`, with correction-specific input, signal, and `EpisodeDraft[]` output. The deterministic `rule-1` implementation is pure and may run directly in projection; a future model classifier is invoked outside projection and its output is written to the Classification memo first. Projection never calls a classifier (ADR-0034).
-- **State seam:** `state-root.ts` adds derived stores `episodes` and `patterns` plus ADR-0034's `classifications.jsonl` store with role `memo` for classifier outputs. The cursor contains one `derivationKey`, computed from rules version, correction policy version, classifier version (or `none`), and memo fingerprint. It does not add a separate `judges` field. Derived records may be deleted and rebuilt; Observations and Classification memos are never rewritten or deleted by projection.
+- **State seam:** `state-root.ts` adds derived stores `episodes` and `patterns` plus ADR-0034's `classifications.jsonl` store with role `memo` for classifier outputs. Every memo entry carries `judge: 'follow-up' | 'correction'`; its key is `classification:<judge>:<version>:<inputHash>`, so the two classifiers cannot collide. The cursor contains one `derivationKey` composed from both judges' rules/policy/classifier versions plus the memo fingerprint; it does not add a separate `judges` field. Derived records may be deleted and rebuilt; Observations and Classification memos are never rewritten or deleted by projection.
 - **Proposal seam:** `types.ts`, `proposal.ts`, `operations.ts`, `service.ts`, `lifecycle.ts`, and `evaluator.ts` add the create-skill operation, absent Base handling, pattern source metadata, target selection, scope gate, and empty-Base evaluation. The transfer table remains the single source of truth (ADR-0004), and record ids follow ADR-0021.
 - **Adapter seam:** CLI/bundle design flows accept `--pattern` and preserve existing cluster flows. Designer input is a discriminated source union; pattern inputs contain only bounded, redacted attempts and recent episodes.
 
 ## Data flow
 
 1. Bundle maps tool call/result payloads, redacts once before tokenization/truncation, and appends optional fields. It never blocks on recognition and never stores complete output.
-2. Projection correlates call/result Observations into ToolAttempt values and classifies outcome from `failed`, exit code, signal, timeout, and missing result. Rule recognizer `rule-1` runs as a deterministic pure function. A model correction classifier is run by a maintenance caller using ADR-0035's `classify(input, signal)` contract; the caller stores its output in the Classification memo, and projection consumes that memo rather than invoking the classifier.
+2. Projection correlates call/result Observations into ToolAttempt values and classifies outcome from `failed`, exit code, signal, timeout, and missing result. Rule recognizer `rule-1` runs as a deterministic pure function. The explicit maintenance operation `classifyCorrections(service, { signal, limit })` is the only path that invokes an injected correction classifier: it scans closed sessions, writes only correction-namespaced Classification memo entries, and returns classified/cached/skipped/failed counts. A missing classifier raises `classifier-unavailable`; classifier errors write no memo and increment the operation's `failed` count. Projection consumes a matching memo when present, otherwise runs `rule-1` and marks the episode `fallbackReason: 'not-classified'`; Projection never invokes a classifier.
 3. Valid EpisodeDrafts become Correction episodes and one tool-attributed Experience each. Invalid references, too-short failure runs, or overlong fields are rejected and counted. Episodes are grouped by signature into patterns.
 4. Pattern assessment is a pure read-time function. It applies `now`, D, promotion reset, K, retry-only exclusion, and proposal blocking; reports and metrics call this same function.
 5. Human-triggered design selects a target, invokes the Designer, validates the Skill document and environment neutrality, writes a proposal and case draft, then stops at `proposed`. The Designer cannot mutate lifecycle state.
@@ -36,13 +36,34 @@ The structured failure/error signature is part of the correction signature and a
 
 ## Collection and redaction contract
 
-The exact field list, caps, extraction order, and R1–R7 patterns are normative in ADR-0023 and design §3: `argKeys`; command token cap of 16 tokens, 64 characters per token and 240 characters total; `commandTruncated`; result `exitCode`, `signal`, `timedOut`; and `errorLine` capped at 200 characters. Redaction precedes tokenization and truncation. Structured DSH results are preferred; compatible exit-marker parsing is the fallback. Full stdout/stderr, descriptions, workdir, query, and fragment are excluded.
+The exact field list, caps, extraction order, and R1–R7 patterns are normative in ADR-0023 and design §3: `argKeys` capped at 16 keys with 64 characters per key; command token cap of 16 tokens, 64 characters per token and 240 characters total; `commandTruncated`; result `exitCode`, `signal` capped at 32 characters, `timedOut`; and `errorLine` capped at 200 characters. Redaction precedes tokenization and truncation. Structured DSH results are preferred; compatible exit-marker parsing is the fallback. Full stdout/stderr, descriptions, workdir, query, and fragment are excluded.
 
 ## Recognition and aggregation contract
 
 The default rule recognizer normalizes intent by removing assignments and shell wrappers, groups attempts by session order, allows unrelated intents between retries, and compares the final failure with the later success to derive named actions such as `set-env:<name>`, `flag:<name>`, and `run:<intent>`; empty corrections become retry-only. Known parser limits (`bash -c`, `sh -c`, `eval`, and package-wrapper forms) are documented and covered as non-goals of `rule-1`, not silently generalized.
 
 The recognizer output is validated against the session input. Correction episode ids are deterministic from session and first failure Observation. Pattern records contain the stable earliest-episode id, signature, occurrences, session counts, first/last seen times, and policy version, but no cached window candidate decision or target Skill. `assessPattern` is the sole implementation of K/N/D, promotion reset, in-progress blocking, and candidate status.
+
+`classifyCorrections` follows the accepted `classifyFollowUps` maintenance-operation boundary. A session is closed only after a `task-finished` Observation; growing sessions are skipped and are later classified from the complete input. The operation never mutates Observations or Derived stores. A memo miss is intentionally not an error: Projection uses `rule-1` and records `fallbackReason: 'not-classified'`. A classifier exception is reported in the operation result's `failed` list and metrics, with no partial memo entry.
+
+Its core contract is:
+
+```ts
+classifyCorrections(
+  service: EvolutionService,
+  options?: { readonly signal?: AbortSignal; readonly limit?: number },
+): Promise<{
+  readonly classifierVersion: string
+  readonly classified: number
+  readonly cached: number
+  readonly skipped: { readonly open: number }
+  readonly failed: readonly { readonly sessionId: string; readonly reason: 'timeout' | 'error' | 'invalid-output'; readonly message: string }[]
+}>
+```
+
+The operation selects closed sessions in deterministic Observation order, hashes the complete ToolAttempt input, reuses an existing `classification:correction:<version>:<inputHash>` memo when present, and otherwise calls `classify(input, signal)` once. It validates the returned EpisodeDraft references before appending one memo entry. `limit` bounds sessions processed in one invocation; it does not make an open session classifiable.
+
+The shared cursor and memo coordinate system is explicit: `derivationKey = sha256(JSON.stringify({ followUp: { rulesVersion, policyVersion, classifierVersion: classifier?.version ?? 'none' }, correction: { rulesVersion, policyVersion, classifierVersion: classifier?.version ?? 'none' }, memoFingerprint }))`. The memo fingerprint covers namespaced `follow-up` and `correction` keys. This extends ADR-0034's single-judge formula to the two accepted classifier paths without allowing one path's version or memo entry to shadow the other; **flagged ADR-0034 extension** is limited to the key namespace and composite key, while its memo role and Projection rule remain unchanged.
 
 Defaults are adopted business judgments and may be overturned by members: N=2, K=3, D=30 days, max 20 attempts, retry-only never candidate, and no memory channel for environment facts. Environment facts belong in project/user configuration; Skill content contains conditional procedures only.
 
@@ -75,7 +96,9 @@ Use focused unit tests for redaction probes, field caps, exit-marker parsing, in
 ## Assumptions and adopted defaults
 
 - SKIL-126 is merged as ADR-0034/0035. This spec adopts ADR-0035's `{ version, classify(input, signal) }` classifier object shape for any injected correction classifier, while keeping `rule-1` as a pure projection function. It adopts ADR-0034's memo-backed model path and single `derivationKey`; this explicitly supersedes the accepted design's `judges` cursor field and in-projection classifier call. The correction classifier's input/signal/output types remain correction-specific, so follow-up intent values are not reused as correction episode values.
-- The ProposalLedger implementation described by ADR-0021 and `docs/design/proposal-ledger-transition.md` is not present on `origin/main` yet. Task 4 is blocked on that prerequisite landing as `packages/skill-evolution/src/ledger.ts` (plus its `types.ts`/`index.ts` exports and service call-site migration); this spec does not invent a second ledger implementation.
+- Adopted defaults, members may overturn: `classifyCorrections` is the sole correction-classifier operation; only `task-finished` closes a session; memo misses fall back to `rule-1` with `fallbackReason: 'not-classified'`; classifier errors are counted without writing a memo; correction and follow-up memo keys use explicit judge namespaces; and both classifier paths contribute to the composite `derivationKey`.
+- Adopted defaults, members may overturn: correction pattern identity uses the earliest episode id and the correction classifier adopts ADR-0035's object shape, rather than the accepted design's signature-derived id and `DerivedJudge` method shape.
+- SKIL-135's ProposalLedger implementation is merged on `origin/main`; Task 4 consumes the implementation anchored at `packages/skill-evolution/src/ledger.ts`, with its exports and service call-site migration, as specified by `specs/proposal-ledger-transition/` and ADR-0021. This spec does not invent a second ledger implementation.
 - DSH structured result metadata may be unavailable; marker parsing is the required fallback.
 - `user` scope remains a manifest label until a separate issue changes the physical write path.
 - The Skill/memory/workflow boundary, N/K/D defaults, target rules, post-promotion reset, absent-Base retirement behavior, and pattern-only accept gate are business judgments recorded as “采用默认答案，成员可推翻”.
