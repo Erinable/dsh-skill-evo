@@ -122,7 +122,7 @@ export function analyzeEvaluationCost(input: AnalyzeEvaluationCostInput): Evalua
   const candidatePassed = originalEntries.filter(item => majority(item.candidate)).length
   const regressed = originalEntries.find(item => majority(item.base) && !majority(item.candidate))
   checks.push(regressed
-    ? { id: 'original-failure-regressed', status: 'failed', detail: `case ${regressed.id}: Base passed; Candidate passed samples = ${itemPassCount(regressed.candidate)} of ${regressed.candidate.length}` }
+    ? { id: 'original-failure-regressed', status: 'failed', detail: `Base passed; Candidate passed samples = ${itemPassCount(regressed.candidate)} of ${regressed.candidate.length}` }
     : { id: 'original-failure-regressed', status: 'passed', detail: 'no original-failure case regressed' })
   const metricName = input.policy.originalFailure.costMetric
   if (!input.policy.originalFailure.requireImprovement || metricName === null) checks.push({ id: 'original-failure-improvement', status: input.policy.originalFailure.requireImprovement ? 'disabled' : 'disabled', detail: 'disabled by policy' })
