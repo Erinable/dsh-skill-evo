@@ -29,7 +29,7 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution。没注入分类器时只依赖 Observation log；注入后，分类器来源的结论还依赖 Classification memo 和推导版本（ADR-0024）。
+可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution。没注入分类器时只依赖 Observation log；注入后，分类器来源的结论还依赖 Classification memo 和推导版本（ADR-0034）。
 _Avoid_: cache, 结论
 
 **Projection**:
@@ -37,7 +37,7 @@ _Avoid_: cache, 结论
 _Avoid_: sync, 刷新
 
 **Classification memo**:
-分类器输出的缓存，按分类器版本和输入哈希存放，供 Projection 复现分类结论；它不是 Fact record，不当作证据，也不是 Derived record，Projection 和 repair 都不删它（ADR-0024）。
+分类器输出的缓存，按分类器版本和输入哈希存放，供 Projection 复现分类结论；它不是 Fact record，不当作证据，也不是 Derived record，Projection 和 repair 都不删它（ADR-0034）。
 _Avoid_: 分类结果事实, cache（它不能随意丢弃）
 
 **Exposure view**:
@@ -55,7 +55,7 @@ _Avoid_: lesson, memory, 经验总结
 _Avoid_: blame
 
 **Follow-up intent**:
-对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0025）。显式反馈的 kind 优先于任何推断。
+对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0035）。显式反馈的 kind 优先于任何推断。
 _Avoid_: sentiment, 情绪
 
 **Follow-up resolution**:

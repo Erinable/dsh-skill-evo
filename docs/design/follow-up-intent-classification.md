@@ -1,4 +1,4 @@
-> 状态：SKIL-126 设计（父 issue SKIL-125 的 S1）。不可逆决策见 ADR-0023、0024、0025，成员已在 SKIL-126 上确认，三份都是 `accepted`。
+> 状态：SKIL-126 设计（父 issue SKIL-125 的 S1）。不可逆决策见 ADR-0033、0034、0035，成员已在 SKIL-126 上确认，三份都是 `accepted`。
 > 本文合并后冻结，不随代码更新。与现状不一致时，以代码、ADR 和 spec 为准。
 
 本文给维护闭环里的 follow-up 意图分类出设计：分类器的 interface、意图取值、规则降级、显式反馈优先、派生记录的形状、「确定性」的定义、bundle 的增量字段和边界。基线是 `origin/main` @ `2a442af`，第 2 轮合并到 `6accc8b`（含 PR #78），并按当时在途的 PR #79（SKIL-134）head 对齐；第 3 轮合并到 `63d2007`（PR #79 已合并），见 §1.5。只出设计，不写实现代码。
@@ -78,7 +78,7 @@ SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、
 
 推荐 A3。理由有三条。第一，`repair` 和重投影里不会出现任何模型调用，「确定性重算」直接成立。第二，花钱的时机只有一个，就是人或 worker 显式触发的那次。第三，Projection 仍在锁里，几毫秒就能完成。代价是注入了分类器但还没跑 `classifyFollowUps` 时，新的 follow-up 先按规则处理，结果里标 `source: 'rule'`，能看出来。
 
-### 2.2 分类器的 interface 和注入点（不可逆，ADR-0025）
+### 2.2 分类器的 interface 和注入点（不可逆，ADR-0035）
 
 - C1 裸函数，和 `Designer` 一样，另传 `classifierVersion`：换实现时容易忘记换版本号，memo 会把新模型的输出记在旧版本名下。
 - ★C2 带 `version` 的对象：`{ version, classify(context, signal) }`，版本和行为绑在一起。
@@ -93,7 +93,7 @@ SKIL-134 是 SKIL-133 的 S1，改的是同一批函数：`buildFailureCases`、
 - 调用方的 signal 被 abort 时，立刻停止，返回已经完成的部分。已经写进 memo 的条目保留。
 - Projection 看不到这些失败。凡是 memo 里没有有效条目的 follow-up，Projection 一律走规则，并标 `fallbackReason: 'not-classified'`。
 
-### 2.3 意图取值和对齐表（不可逆，ADR-0025）
+### 2.3 意图取值和对齐表（不可逆，ADR-0035）
 
 - 选项 I1：另起一套意图词表，再维护一张到 `FEEDBACK_KINDS` 的映射表。同一个意思会有两个名字。
 - 选项 I2：把「继续」和「无关」拆成两个值。下游对这两个值的处理完全一样。
@@ -220,7 +220,7 @@ readonly attributionSource?: 'override' | 'tool'
 - **`failures`**：JSON 输出里的每个 case 多出 `intentSource`、`intent`、`attribution` 等字段（`origin` 由 PR #79 引入）。SKIL-104 说过 `--format json` 保持不动，这里只是追加字段，不改已有字段。Markdown 的每一行在严重度后面追加来源，例如 `[medium · rule]`、`[high · explicit]`。SKIL-104 把 `failures` 改成按 cluster 分组的改动先合并的话，每个 cluster 的摘要里再加一列按来源的计数。
 - **`metrics`**：每个 Skill 新增 `followUpIntents: { explicit, classifier, rule }`，每个来源下是 `{ total, failures, byIntent }`。现有的 `followUps` / `followUpRate` 保持今天的语义，不改（§1.4 的问题 5 记为已知缺口）。`service.metrics()` 改为先调用 `refreshDerived()`，取到 Follow-up resolution 之后，作为第 4 个可选参数传给 `aggregateMetrics`。
 
-### 2.7 「确定性」的定义（不可逆，ADR-0024）
+### 2.7 「确定性」的定义（不可逆，ADR-0034）
 
 - 选项 M1：不做 memo，每次投影都调用分类器。结果会漂移，每次运行 `failures` 都要花钱。被否。
 - 选项 M2：把分类结果当作 Fact record 写入。模型的判断就成了权威事实，违反 ADR-0016。被否。
@@ -250,7 +250,7 @@ T1 的代价：Diagnosis 的 `createdAt` 语义从「这次投影的时间」变
   - 今天没有任何代码按 `role` 分支（`grep -rn "\.role\b" packages/skill-evolution/src` 没有命中）。以后要写「按 role 清空 derived store」的代码时，`memo` 是单独的取值，不会被误删，这是另设 role 的原因。
   - Retention（`state-root.ts:147` 的 `rotateFile`）只作用于 Observation log，不碰 memo。
 
-### 2.8 Observation 增量字段（不可逆，ADR-0023）
+### 2.8 Observation 增量字段（不可逆，ADR-0033）
 
 - 选项 O1：不改 bundle，只按 log 顺序离线推断。
 - ★选项 O2：`user-follow-up` 的 payload 里追加 `precedingToolKind`、`precedingToolFailed` 两个字段，O1 作为旧记录的退路。
@@ -345,17 +345,19 @@ export function classifyFollowUps(service: EvolutionService, options?: { readonl
 - **T1 规则与解析（core，纯函数）**：`FOLLOW_UP_INTENTS`、`follow-up.ts` 里的规则、策略表、`resolveFollowUps`、`classificationInputFor`；把 `buildFailureCases`、`attributionFor`、`confidenceFor`、`diagnoseFailureCluster` 改成读解析结果；`SkillFailureCase` 的可选字段；`diagnoseFailureCluster` 的 `now` 缺省值改为取证据时间（§2.7 选项 T1）；`failures` 的输出。覆盖用例 1–4 的规则路径。
 - **以 PR #79 为底**：PR #79 已在 `63d2007` 合并，T1 以 main 为底。`origin`、`FailureOrigin`、`feedbackKind`、排序和簇 id 规则都已存在，T1 只追加 §2.6 的新字段，把 `diagnoseFailureCluster` 按 §2.6 的五步改写（第 1、3、4 步就是 main 现有的分支，第 2 步是新增），并按 §5.1 改 PR #79 带进来的两条测试。根因表只有 §2.3 这一张，也就是 PR #79 的映射。
 - **T2 分类器、memo 和 cursor（core）**：`FollowUpClassifier`、`EvolutionServiceOptions.followUpClassifier`、`classifications.jsonl`（role `memo`）、`follow-ups.jsonl`、`classifyFollowUps`、`derivationKey`、`metrics` 的来源拆分。覆盖用例 3 的分类器路径、用例 4 的分类器部分、用例 5。依赖 T1。
-- **T3 bundle 增量字段**：按 ADR-0023 写两个字段，外加 `bundle.spec.mjs` 的映射测试。不依赖 T1、T2，可以并行。T1 的离线退路保证 T3 合并之前也能工作。
+- **T3 bundle 增量字段**：按 ADR-0033 写两个字段，外加 `bundle.spec.mjs` 的映射测试。不依赖 T1、T2，可以并行。T1 的离线退路保证 T3 合并之前也能工作。
 
 ## 6. 不可逆决策
 
-- ADR-0023：`user-follow-up` 的 payload 追加 `precedingToolKind`、`precedingToolFailed` 两个可选字段，只用 core 的词汇。
-- ADR-0024：分类器的输出存进 Classification memo，Projection 是「Observation log + memo + 版本」的纯函数。
-- ADR-0025：意图取值是 `FEEDBACK_KINDS` 的超集，分类器以带 `version` 的对象注入。
+- ADR-0033：`user-follow-up` 的 payload 追加 `precedingToolKind`、`precedingToolFailed` 两个可选字段，只用 core 的词汇。
+- ADR-0034：分类器的输出存进 Classification memo，Projection 是「Observation log + memo + 版本」的纯函数。
+- ADR-0035：意图取值是 `FEEDBACK_KINDS` 的超集，分类器以带 `version` 的对象注入。
 
-编号：第 3 轮的 `origin/main`（`63d2007`）上最大是 0022（PR #79 已合并），本 PR 顺延为 0023–0025，本文和 ADR 之间的引用已同步改号。在途的 PR #80、#82 也用了 0022、0023；按契约，后合并的 PR 改号，本 PR 合并前如果 main 又有新 ADR，再按当时的最大号顺延。
+编号：按 SKIL-126 上的统一号段表（Mika 协调、成员授权），本 PR 用 0033–0035，本文、`CONTEXT.md` 和 ADR 之间的引用已同步。号段表之前的 `origin/main`（`9975647`）编到 0024；PR #84 用 0025–0028，#83 用 0029–0031，#80 用 0032，互不重叠。
 
-**ADR 冲突**：ADR-0024 修订了 ADR-0002 和 `CONTEXT.md` 里 **Derived record**、**Projection** 的表述（「从 Observation log 完整重建」），注入分类器以后还要加上 memo。之所以值得修订，是因为模型分类本身不确定，只靠 Observation log 做不到父 issue 要的「确定性重算」。ADR-0016 不冲突。
+main 上的 ADR-0023（SKIL-128）给 `tool-result` 加了 `exitCode` 等字段，但明确保持 `failed` 的含义不变（只表示工具报错）。ADR-0033 的 `precedingToolFailed` 照旧按 `payload.failed === true` 判，非零退出码不算，两者不冲突。
+
+**ADR 冲突**：ADR-0034 修订了 ADR-0002 和 `CONTEXT.md` 里 **Derived record**、**Projection** 的表述（「从 Observation log 完整重建」），注入分类器以后还要加上 memo。之所以值得修订，是因为模型分类本身不确定，只靠 Observation log 做不到父 issue 要的「确定性重算」。ADR-0016 不冲突。
 
 ## 7. 待定项与默认答案
 
@@ -370,4 +372,4 @@ export function classifyFollowUps(service: EvolutionService, options?: { readonl
 - `origin`、`feedbackKind` 沿用 PR #79，本设计只追加 `intentSource` 等字段（§2.6 选项 F2）；根因表以 PR #79 的映射为准，`constraint` 判 `boundary`（§2.3）。
 - Diagnosis 的 `createdAt` 取簇内最晚的 case 时间，本需求一并修（§2.7 选项 T1）。
 - DSH 上的分类器后端和子命令不在本需求内（§2.9）。
-- `CONTEXT.md` 要新增三个词条：**Follow-up intent**（对一条用户跟进的意图判断，取值见 ADR-0025）、**Follow-up resolution**（一条跟进的意图、来源和版本，属于 Derived record）、**Classification memo**（分类器输出的缓存，不是 Fact record，也不是 Derived record）。**Derived record**、**Projection** 两个词条按 ADR-0024 修订。成员确认 ADR 后，第 3 轮已在本 PR 里提交。
+- `CONTEXT.md` 要新增三个词条：**Follow-up intent**（对一条用户跟进的意图判断，取值见 ADR-0035）、**Follow-up resolution**（一条跟进的意图、来源和版本，属于 Derived record）、**Classification memo**（分类器输出的缓存，不是 Fact record，也不是 Derived record）。**Derived record**、**Projection** 两个词条按 ADR-0034 修订。成员确认 ADR 后，第 3 轮已在本 PR 里提交。
