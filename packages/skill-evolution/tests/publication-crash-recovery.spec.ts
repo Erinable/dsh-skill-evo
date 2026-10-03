@@ -361,6 +361,8 @@ describe('one promotion check', () => {
       { name: 'artifact candidate id', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, candidateId: 'other' } }) },
       { name: 'result candidate id', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, candidateId: 'other' } } }) },
       { name: 'base hash', expected: 'stale-base', mutate: () => ({ ...input, artifact: { ...artifact, baseContentHash: 'wrong' } }) },
+      { name: 'current missing', expected: 'stale-base', mutate: () => ({ ...input, current: undefined }) },
+      { name: 'current hash', expected: 'stale-base', mutate: () => ({ ...input, current: { ...current!, manifest: { ...current!.manifest, contentHash: 'wrong' } } }) },
       { name: 'base version', expected: 'stale-base', mutate: () => ({ ...input, proposal: { ...proposal, baseVersion: '0.9.0' }, current: { ...current!, manifest: { ...current!.manifest, version: '1.0.0' } } }) },
       { name: 'candidate hash artifact', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, candidateContentHash: 'wrong' } }) },
       { name: 'candidate hash result', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, candidateContentHash: 'wrong' } } }) },
@@ -370,7 +372,7 @@ describe('one promotion check', () => {
       { name: 'empty case ids', expected: 'evaluation-mismatch', mutate: () => ({ ...input, proposal: { ...proposal, comparisonCaseIds: [] }, artifact: { ...artifact, caseIds: ['unexpected'] } }) },
       { name: 'artifact gate', expected: 'gate-failed', mutate: () => ({ ...input, artifact: { ...artifact, passedGate: false } }) },
       { name: 'result gate', expected: 'gate-failed', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, passedGate: false } } }) },
-      { name: 'invalid document', expected: 'evaluation-mismatch', mutate: () => ({ ...input, proposal: { ...proposal, candidateContent: 'invalid' }, artifact: { ...artifact, candidateContentHash: createContentHash('invalid'), result: { ...artifact.result, candidateContentHash: createContentHash('invalid') } } }) },
+      { name: 'invalid document', expected: 'evaluation-mismatch', mutate: () => { const invalid = '---\nname: api-debugging\n---\n\nUse curl.\n'; return { ...input, proposal: { ...proposal, candidateContent: invalid }, artifact: { ...artifact, candidateContentHash: createContentHash(invalid), result: { ...artifact.result, candidateContentHash: createContentHash(invalid) } } } } },
       { name: 'invalid change', expected: 'evaluation-mismatch', mutate: () => { const invalid = base.replace('description: Debug APIs.', 'description: Debug APIs.\nmodel-invocable: true'); return { ...input, proposal: { ...proposal, candidateContent: invalid }, artifact: { ...artifact, candidateContentHash: createContentHash(invalid), result: { ...artifact.result, candidateContentHash: createContentHash(invalid) } } } } },
     ]
     for (const row of rows) expect(() => checkPromotion(row.mutate()), row.name).toThrowError(expect.objectContaining({ code: row.expected }))
