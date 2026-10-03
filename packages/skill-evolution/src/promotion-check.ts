@@ -3,6 +3,7 @@ import { DEFAULT_EVALUATION_POLICY, validateSkillCandidate, validateSkillDocumen
 import { proposalRootId } from './proposal.js'
 import type { CurrentSkill } from './lifecycle.js'
 import type { EvaluationArtifact, EvaluationPolicyInput, SkillEvalResult, SkillProposal } from './types.js'
+import { normalizedPolicyHash } from './policy.js'
 import { OperationError } from './errors.js'
 
 export interface PromotionCheckInput {
@@ -10,6 +11,7 @@ export interface PromotionCheckInput {
   readonly artifact: EvaluationArtifact
   readonly current: CurrentSkill | undefined
   readonly policyVersion: string
+  readonly policy?: EvaluationPolicyInput
   readonly now: number
 }
 
@@ -29,6 +31,15 @@ export function checkPromotion(input: PromotionCheckInput): void {
   }
   if (artifact.policyVersion !== input.policyVersion || artifact.result.policyVersion !== input.policyVersion) {
     throw new OperationError('evaluation-mismatch', 'evaluation policy does not match the current policy')
+  }
+  {
+    const currentPolicy = input.policy ?? DEFAULT_EVALUATION_POLICY
+    const currentHash = normalizedPolicyHash(currentPolicy)
+    if ('schema' in currentPolicy && currentPolicy.schema === 2) {
+      if (artifact.policyHash === undefined || artifact.result.policyHash !== currentHash || artifact.policyHash !== currentHash) throw new OperationError('evaluation-mismatch', 'evaluation policy hash does not match the current policy')
+    } else if (artifact.policyHash !== undefined && artifact.policyHash !== currentHash) {
+      throw new OperationError('evaluation-mismatch', 'evaluation policy hash does not match the current policy')
+    }
   }
   if (Date.parse(artifact.expiresAt) <= input.now) throw new OperationError('evaluation-mismatch', 'evaluation artifact has expired')
   if (JSON.stringify([...proposal.comparisonCaseIds]) !== JSON.stringify([...artifact.caseIds])) {
@@ -74,15 +85,15 @@ function normalizeArtifact(value: SkillEvalResult | EvaluationArtifact, proposal
     if (result.candidateId === undefined) throw new OperationError('evaluation-mismatch', 'evaluation artifact has an invalid shape')
     throw new OperationError('evaluation-missing', `proposal ${proposal.id} requires a persisted evaluation artifact`)
   }
-  return { id: result.artifactId, proposalId: proposalRootId(proposal.id), candidateId: result.candidateId, baseVersion: proposal.baseVersion, baseContentHash: result.baseContentHash, candidateContentHash: result.candidateContentHash, caseIds: result.caseIds, policyVersion: result.policyVersion, passedGate: result.passedGate, createdAt: result.createdAt, expiresAt: '', result }
+  return { id: result.artifactId, proposalId: proposalRootId(proposal.id), candidateId: result.candidateId, baseVersion: proposal.baseVersion, baseContentHash: result.baseContentHash, candidateContentHash: result.candidateContentHash, caseIds: result.caseIds, policyVersion: result.policyVersion, passedGate: result.passedGate, createdAt: result.createdAt, expiresAt: '', result, ...(result.schemaVersion === 2 ? { schemaVersion: 2 as const, policy: result.policy, policyHash: result.policyHash, statisticId: result.statisticId } : {}) }
 }
 
 function sameArtifactEvidence(left: EvaluationArtifact, right: EvaluationArtifact): boolean {
-  return left.proposalId === right.proposalId && left.candidateId === right.candidateId && left.baseVersion === right.baseVersion && left.baseContentHash === right.baseContentHash && left.candidateContentHash === right.candidateContentHash && left.policyVersion === right.policyVersion && left.passedGate === right.passedGate && left.expiresAt === right.expiresAt && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds]) && sameResultEvidence(left.result, right.result)
+  return left.proposalId === right.proposalId && left.candidateId === right.candidateId && left.baseVersion === right.baseVersion && left.baseContentHash === right.baseContentHash && left.candidateContentHash === right.candidateContentHash && left.policyVersion === right.policyVersion && left.passedGate === right.passedGate && left.expiresAt === right.expiresAt && (left.policyHash === undefined || right.policyHash === undefined || left.policyHash === right.policyHash) && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds]) && sameResultEvidence(left.result, right.result)
 }
 
 function sameResultEvidence(left: SkillEvalResult, right: SkillEvalResult): boolean {
-  return left.candidateId === right.candidateId && left.baseContentHash === right.baseContentHash && left.candidateContentHash === right.candidateContentHash && left.passedGate === right.passedGate && left.policyVersion === right.policyVersion && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds])
+  return left.candidateId === right.candidateId && left.baseContentHash === right.baseContentHash && left.candidateContentHash === right.candidateContentHash && left.passedGate === right.passedGate && left.policyVersion === right.policyVersion && (left.policyHash === undefined || right.policyHash === undefined || left.policyHash === right.policyHash) && JSON.stringify([...left.caseIds]) === JSON.stringify([...right.caseIds])
 }
 
 export const defaultPolicyVersion = (policy: EvaluationPolicyInput | undefined): string => (policy ?? DEFAULT_EVALUATION_POLICY).version

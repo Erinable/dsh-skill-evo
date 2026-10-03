@@ -1,4 +1,5 @@
 import type { EvaluationPolicyInput, NormalizedEvaluationPolicy } from './types.js'
+import { createHash } from 'node:crypto'
 
 export function normalizeEvaluationPolicy(policy: EvaluationPolicyInput): NormalizedEvaluationPolicy {
   validateEvaluationPolicy(policy)
@@ -25,6 +26,22 @@ export function normalizeEvaluationPolicy(policy: EvaluationPolicyInput): Normal
     context: { maxCatalogIncreaseTokens: null, maxLoadIncreaseTokens: null },
     legacy: { ...(legacyPolicy.maxTokenIncreaseRatio === undefined ? {} : { maxTokenIncreaseRatio: legacyPolicy.maxTokenIncreaseRatio }), ...(legacyPolicy.maxContextIncreaseRatio === undefined ? {} : { maxContextIncreaseRatio: legacyPolicy.maxContextIncreaseRatio }) },
   }
+}
+
+/** Hash the canonical normalized policy used to produce evaluation evidence. */
+export function normalizedPolicyHash(policy: EvaluationPolicyInput | NormalizedEvaluationPolicy): string {
+  const normalized = 'schema' in policy && (policy.schema === 1 || policy.schema === 2) && 'sampling' in policy && 'legacy' in policy
+    ? policy as NormalizedEvaluationPolicy
+    : normalizeEvaluationPolicy(policy as EvaluationPolicyInput)
+  return createHash('sha256').update(canonicalJson(normalized), 'utf8').digest('hex')
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 export function validateEvaluationPolicy(policy: EvaluationPolicyInput): void {
