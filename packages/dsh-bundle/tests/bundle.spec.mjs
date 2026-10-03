@@ -344,6 +344,116 @@ test('tracks ordinary tool results and clears them at the next human turn', () =
   assert.equal(followUp.payload.precedingToolFailed, true)
 })
 
+test('bounds command and result summaries for bash', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-command-summary' }
+  const call = mapper(session, {
+    seq: 1,
+    type: 'tool/call',
+    data: {
+      callId: 'bash-1',
+      name: 'bash',
+      arguments: JSON.stringify({ command: 'curl --token secret https://alice:password@example.test/path?sig=abc', description: 'omit me', ...Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`key-${index}`, index])) }),
+    },
+  }, { id: 'session-command-summary:1' })
+  assert.equal(call.payload.argKeys.length, 16)
+  assert.equal(call.payload.command, 'curl --token [REDACTED] https://[REDACTED]@example.test/path?[REDACTED]')
+  assert.equal('description' in call.payload, false)
+
+  const result = mapper(session, {
+    seq: 2,
+    type: 'tool/result',
+    data: {
+      callId: 'bash-1',
+      message: { content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text: '[stderr]\nfatal: denied\n[exit code: 7]' }] }] },
+    },
+  }, { id: 'session-command-summary:2' })
+  assert.equal(result.payload.exitCode, 7)
+  assert.equal(result.payload.errorLine, 'fatal: denied')
+  assert.equal(JSON.stringify(result).includes('secret'), false)
+})
+
+test('covers successful and signalled command markers without complete output', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-command-outcomes' }
+  const call = (seq, name, command) => mapper(session, { seq, type: 'tool/call', data: { callId: `c-${seq}`, name, arguments: JSON.stringify({ command }) } }, { id: `session-command-outcomes:${seq}` })
+  const result = (seq, callId, text) => mapper(session, { seq, type: 'tool/result', data: { callId, message: { content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text }] }] } } }, { id: `session-command-outcomes:${seq}` })
+  call(1, 'pwsh', 'Write-Output ok')
+  const success = result(2, 'c-1', 'stdout that must not persist\n[exit code: 0]')
+  assert.equal(success.payload.exitCode, 0)
+  assert.equal('errorLine' in success.payload, false)
+  assert.equal(JSON.stringify(success).includes('stdout that must not persist'), false)
+  call(3, 'bash', 'kill -TERM $$')
+  const signalled = result(4, 'c-3', 'partial\n[timed out after 1000ms]\n[killed by signal: SIGTERM]')
+  assert.equal(signalled.payload.signal, 'SIGTERM')
+  assert.equal(signalled.payload.timedOut, true)
+  call(5, 'bash', 'sleep 1')
+  const timedOut = result(6, 'c-5', 'partial\n[timed out after 1000ms]\n[exit code: 124]')
+  assert.equal(timedOut.payload.exitCode, 124)
+  assert.equal(timedOut.payload.timedOut, true)
+  call(7, 'bash', 'cat log')
+  const bodyMarker = result(8, 'c-7', 'previous run:\n[exit code: 128]\nall good')
+  assert.equal('exitCode' in bodyMarker.payload, false)
+  assert.equal('timedOut' in bodyMarker.payload, false)
+  call(9, 'bash', 'cat log')
+  const quotedMarker = result(10, 'c-9', 'session.jsonl:12: "text":"fatal: x\\n[exit code: 1]"\nsession.jsonl:40: "[timed out after 5000ms]"')
+  assert.equal('exitCode' in quotedMarker.payload, false)
+  assert.equal('timedOut' in quotedMarker.payload, false)
+})
+
+test('extracts DSH stdout and stderr error lines', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-error-lines' }
+  const call = (seq, id) => mapper(session, { seq, type: 'tool/call', data: { callId: id, name: 'bash', arguments: JSON.stringify({ command: 'run' }) } }, { id: `session-error-lines:${seq}` })
+  const result = (seq, id, text) => mapper(session, { seq, type: 'tool/result', data: { callId: id, message: { content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text }] }] } } }, { id: `session-error-lines:${seq}` })
+  call(1, 'stdout-match')
+  assert.equal(result(2, 'stdout-match', 'npm ERR! missing script: build\n[exit code: 1]').payload.errorLine, 'npm ERR! missing script: build')
+  call(3, 'stderr-fallback')
+  assert.equal(result(4, 'stderr-fallback', 'out\n[stderr]\nwarning: something odd\n[exit code: 2]').payload.errorLine, 'warning: something odd')
+  call(5, 'stderr-match')
+  assert.equal(result(6, 'stderr-match', 'out\n[stderr]\nwarning: odd\nerror: denied\n[exit code: 3]').payload.errorLine, 'error: denied')
+})
+
+test('enforces all summary caps', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-command-caps' }
+  const command = `${'a'.repeat(100)} ${'b'.repeat(100)} ${'c'.repeat(100)}`
+  const mapped = mapper(session, { seq: 1, type: 'tool/call', data: { callId: 'caps', name: 'bash', arguments: JSON.stringify({ command, ['k'.repeat(100)]: 1 }) } }, { id: 'session-command-caps:1' })
+  assert.ok(mapped.payload.command.length <= 240)
+  assert.equal(mapped.payload.commandTruncated, true)
+  assert.ok(mapped.payload.command.split(' ').every(token => token.length <= 64))
+  assert.ok(mapped.payload.argKeys.every(key => key.length <= 64))
+  const result = mapper(session, { seq: 2, type: 'tool/result', data: { callId: 'caps', result: { signal: 'S'.repeat(80), timedOut: true }, message: { content: [{ type: 'tool-result', isError: true, content: [{ type: 'text', text: `[stderr]\nerror: ${'x'.repeat(400)}\n[killed by signal: ${'S'.repeat(80)}` }] }] } } }, { id: 'session-command-caps:2' })
+  assert.ok(result.payload.signal.length <= 32)
+  assert.ok(result.payload.errorLine.length <= 200)
+})
+
+test('redacts credentials from both command and error observations', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-redaction-fixture' }
+  const call = mapper(session, { seq: 1, type: 'tool/call', data: { callId: 'redact', name: 'bash', arguments: JSON.stringify({ command: 'https_proxy=http://alice:proxy-pass@10.0.0.1:7890 curl -H "Authorization: Bearer auth-secret" --password "quoted-pass" https://x.test' }) } }, { id: 'session-redaction-fixture:1' })
+  const result = mapper(session, { seq: 2, type: 'tool/result', data: { callId: 'redact', message: { content: [{ type: 'tool-result', isError: true, content: [{ type: 'text', text: '[stderr]\nerror: mysql --password "quoted-pass"\n[exit code: 1]' }] }] } } }, { id: 'session-redaction-fixture:2' })
+  for (const value of [JSON.stringify(call), JSON.stringify(result)]) {
+    assert.equal(value.includes('alice'), false)
+    assert.equal(value.includes('proxy-pass'), false)
+    assert.equal(value.includes('auth-secret'), false)
+    assert.equal(value.includes('quoted-pass'), false)
+  }
+  assert.match(call.payload.command, /https:\/\/x\.test/)
+  assert.equal(call.payload.command, mapper(session, { seq: 3, type: 'tool/call', data: { callId: 'redact-2', name: 'bash', arguments: JSON.stringify({ command: call.payload.command }) } }, { id: 'session-redaction-fixture:3' }).payload.command)
+})
+
+test('handles escaped quotes in a Digest header and preserves the host', () => {
+  const mapper = createDefaultEventMapper()
+  const session = { id: 'session-escaped-header' }
+  const command = 'curl -H "Authorization: Digest username=\\"bob\\", response=\\"6629fae4\\"" https://x.test'
+  const first = mapper(session, { seq: 1, type: 'tool/call', data: { callId: 'escaped', name: 'bash', arguments: JSON.stringify({ command }) } }, { id: 'session-escaped-header:1' })
+  assert.equal(first.payload.command.includes('6629fae4'), false)
+  assert.match(first.payload.command, /https:\/\/x\.test/)
+  const second = mapper(session, { seq: 2, type: 'tool/call', data: { callId: 'escaped-2', name: 'bash', arguments: JSON.stringify({ command: first.payload.command }) } }, { id: 'session-escaped-header:2' })
+  assert.equal(second.payload.command, first.payload.command)
+})
+
 test('omits precedingToolFailed after successful tool activity', () => {
   const mapEvent = createDefaultEventMapper()
   const session = { id: 'session-successful-tool' }

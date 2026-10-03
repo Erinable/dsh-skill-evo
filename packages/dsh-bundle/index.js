@@ -369,17 +369,10 @@ export function tokenize(input) {
 
 function redactRecord(value, depth = 0) {
   if (depth > 4) return '[REDACTED_NESTED_VALUE]'
-  if (typeof value === 'string') return redactText(value)
+  if (typeof value === 'string') return redactSensitiveText(value)
   if (Array.isArray(value)) return value.map(item => redactRecord(item, depth + 1))
   if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactRecord(item, depth + 1)]))
   return value
-}
-
-function redactText(value) {
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
-    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '[REDACTED_AUTH]')
-    .replace(/\b(password|passwd|token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
 }
 
 function isObservationInput(value) {
@@ -499,6 +492,7 @@ function mapToolCall(base, event, sessionId, toolCalls, sessions) {
       ...base.payload,
       ...(callId === undefined ? {} : { toolCallId: callId }),
       ...(toolName === undefined ? {} : { toolName }),
+      ...toolSummary(toolName, args),
     },
   }
 }
@@ -510,11 +504,13 @@ function mapToolResult(base, event, sessionId, toolCalls, sessions) {
   if (callId !== undefined) toolCalls.delete(`${sessionId}:${callId}`)
 
   const failed = toolResultFailed(data)
+  const resultSummary = commandResultSummary(call?.toolName, data)
   const payload = {
     ...base.payload,
     ...(callId === undefined ? {} : { toolCallId: callId }),
     ...(call?.toolName === undefined ? {} : { toolName: call.toolName }),
     ...(failed ? { failed: true } : {}),
+    ...resultSummary,
   }
   const correlationIds = call === undefined ? [] : [call.observationId]
 
@@ -566,6 +562,119 @@ function textFromToolResult(data) {
   const result = blocks.find(block => asRecord(block)?.type === 'tool-result')
   const content = asRecord(result)?.content
   return textFromContent(content)
+}
+
+const COMMAND_TOOLS = new Set(['bash', 'pwsh'])
+
+function toolSummary(toolName, args) {
+  const argKeys = args === undefined ? [] : Object.keys(args).slice(0, 16).map(key => key.slice(0, 64))
+  const summary = argKeys.length === 0 ? {} : { argKeys }
+  if (!COMMAND_TOOLS.has(toolName)) return summary
+  const command = typeof args?.command === 'string' ? args.command : typeof args?.script === 'string' ? args.script : undefined
+  if (command === undefined) return summary
+  const redacted = redactSensitiveText(command)
+  const rawTokens = tokenize(redacted)
+  const tokens = rawTokens.slice(0, 16).map(token => token.slice(0, 64))
+  const joined = tokens.map(formatCommandToken).join(' ')
+  const bounded = joined.slice(0, 240)
+  return { ...summary, command: bounded, ...(tokens.length < rawTokens.length || rawTokens.some(token => token.length > 64) || joined.length > 240 ? { commandTruncated: true } : {}) }
+}
+
+function formatCommandToken(token) {
+  return /\s/.test(token) ? `'${token.replaceAll("'", "'\\''")}'` : token
+}
+
+function commandResultSummary(toolName, data) {
+  if (!COMMAND_TOOLS.has(toolName)) return {}
+  const structured = structuredResultMetadata(data)
+  const text = textFromToolResult(data) ?? textFromAny(data)
+  const marker = parseExitMarkers(text)
+  const exitCode = Number.isInteger(structured.exitCode) ? structured.exitCode : marker.exitCode
+  const signal = typeof structured.signal === 'string' ? structured.signal : marker.signal
+  const timedOut = structured.timedOut === true || marker.timedOut === true
+  const failed = toolResultFailed(data)
+  const summary = {
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(signal === undefined ? {} : { signal: redactSensitiveText(signal).slice(0, 32) }),
+    ...(timedOut ? { timedOut: true } : {}),
+  }
+  if (failed || exitCode !== undefined && exitCode !== 0 || signal !== undefined || timedOut) {
+    const line = errorLine(data, text)
+    if (line !== undefined) summary.errorLine = redactSensitiveText(line).replace(/\s+/g, ' ').slice(0, 200)
+  }
+  return summary
+}
+
+function structuredResultMetadata(data) {
+  const result = asRecord(data?.result) ?? asRecord(data?.foreground) ?? asRecord(asRecord(data?.message)?.result)
+  if (result === undefined) return {}
+  return {
+    ...(Number.isInteger(result.exitCode) ? { exitCode: result.exitCode } : {}),
+    ...(typeof result.signal === 'string' ? { signal: result.signal } : {}),
+    ...(result.timedOut === true ? { timedOut: true } : {}),
+  }
+}
+
+function parseExitMarkers(text) {
+  if (typeof text !== 'string') return {}
+  const lines = text.split(/\r?\n/)
+  while (lines.length > 0 && lines.at(-1)?.trim() === '') lines.pop()
+  const markers = []
+  while (lines.length > 0) {
+    const line = lines.at(-1)?.trim() ?? ''
+    const match = line.match(/^\[(timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]$/i)
+    if (match === null) break
+    markers.unshift(match[1])
+    lines.pop()
+  }
+  const result = {}
+  for (const marker of markers) {
+    if (/^timed out after/i.test(marker)) result.timedOut = true
+    else if (/^killed by signal:/i.test(marker)) result.signal = marker.replace(/^killed by signal:\s*/i, '').trim()
+    else result.exitCode = Number(marker.replace(/^exit code:\s*/i, ''))
+  }
+  return result
+}
+
+function errorLine(data, text) {
+  const candidates = []
+  const source = stripTrailingMarkers(typeof text === 'string' ? text : textFromAny(data))
+  if (typeof source !== 'string') return undefined
+  const stderr = source.match(/\[stderr\]([\s\S]*?)(?=\n\[(?:exit code|killed by signal|timed out)|$)/i)?.[1]
+  const stdout = source.split(/\[stderr\]/i, 1)[0].replace(/\n?\[(?:exit code|killed by signal|timed out)[^\]]*\]\s*$/i, '')
+  for (const block of [stderr]) {
+    if (typeof block !== 'string') continue
+    const lines = block.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
+    candidates.push(...lines.filter(line => /error|err!?\b|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line)))
+    if (candidates.length > 0) return candidates[0]
+    if (lines.length > 0) return lines[0]
+  }
+  if (typeof stdout === 'string' && stdout.length > 0) {
+    const lines = stdout.slice(0, 8192).split(/\r?\n/).filter(line => line.trim()).slice(-64)
+    const match = lines.find(line => /error|err!?\b|fatal|failed|denied|refused|timed out|could not|unable|not found/i.test(line))
+    if (match !== undefined) return match
+  }
+  return undefined
+}
+
+function stripTrailingMarkers(text) {
+  if (typeof text !== 'string') return text
+  const lines = text.split(/\r?\n/)
+  while (lines.length > 0 && lines.at(-1)?.trim() === '') lines.pop()
+  while (lines.length > 0 && /^\[(?:timed out after [^\]]+|killed by signal:\s*[^\]]+|exit code:\s*-?\d+)\]$/i.test(lines.at(-1)?.trim() ?? '')) lines.pop()
+  return lines.join('\n')
+}
+
+function textFromAny(value, depth = 0) {
+  if (depth > 5 || value === null || typeof value !== 'object') return undefined
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(item => textFromAny(item, depth + 1)).filter(Boolean).join('\n') || undefined
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'text' && typeof child === 'string') return child
+    const text = textFromAny(child, depth + 1)
+    if (text !== undefined) return text
+  }
+  return undefined
 }
 
 function textFromContent(content) {

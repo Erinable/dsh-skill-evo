@@ -24,10 +24,55 @@ import {
   classifyFollowUps,
   MaintenanceWorker,
   readCursor,
+  redactSensitiveText,
 } from '../src/index.js'
 
 const dirs: string[] = []
 const execFileAsync = promisify(execFile)
+
+describe('tool summary redaction', () => {
+  it('returns promptly for unterminated quoted headers', () => {
+    const cases = [
+      `'Authorization: ${'a\\'.repeat(5000)}`,
+      `"Cookie: ${'a\\'.repeat(5000)}`,
+    ]
+    for (const input of cases) {
+      const started = performance.now()
+      redactSensitiveText(input)
+      expect(performance.now() - started).toBeLessThan(100)
+    }
+  })
+
+  it('matches the approved probes exactly and is idempotent', () => {
+    const cases = [
+      ['https_proxy=http://alice:s3cret@10.0.0.1:7890 git push', 'https_proxy=http://[REDACTED]@10.0.0.1:7890 git push'],
+      ['git push https://alice:s3cret@github.com/o/r.git', 'git push https://[REDACTED]@github.com/o/r.git'],
+      ["curl -H 'Authorization: Bearer abcdefghijklmnop' https://api.example.com", "curl -H 'Authorization: [REDACTED]' https://api.example.com"],
+      ["curl -H 'Cookie: theme=dark; session=sessval123' https://x.test", "curl -H 'Cookie: [REDACTED]' https://x.test"],
+      ["curl -H 'Authorization: Digest username=\"bob\", response=\"6629fae49393a053\"' https://x.test", "curl -H 'Authorization: [REDACTED]' https://x.test"],
+      ["curl -H 'Authorization: AWS4-HMAC-SHA256 Credential=AKID/2020, Signature=fe5f80f77d5f' https://x.test", "curl -H 'Authorization: [REDACTED]' https://x.test"],
+      ["curl -H 'X-Api-Key: abc def ghi' https://x.test", "curl -H 'X-Api-Key: [REDACTED]' https://x.test"],
+      ['mytool --token abcdefghijkl --password hunter2', 'mytool --token [REDACTED] --password [REDACTED]'],
+      ['GITHUB_TOKEN=secret npm publish', 'GITHUB_TOKEN=[REDACTED] npm publish'],
+      ['export NPM_AUTH=secret; token=secret', 'export NPM_AUTH=[REDACTED]; token=[REDACTED]'],
+      ['curl "https://api.example.com/v1?access_token=abc123def"', 'curl "https://api.example.com/v1?[REDACTED]"'],
+      ['curl "https://b.s3.amazonaws.com/o?X-Amz-Signature=deadbeef&X-Amz-Credential=AKID"', 'curl "https://b.s3.amazonaws.com/o?[REDACTED]"'],
+      ['curl "https://x.blob.core.windows.net/c?sv=2020&sig=abc%2Fdef"', 'curl "https://x.blob.core.windows.net/c?[REDACTED]"'],
+      ['open https://app.example.com/cb#access_token=abc123', 'open https://app.example.com/cb#[REDACTED]'],
+      ['git clone https://u:p@git.example.com/r.git?ref=main', 'git clone https://[REDACTED]@git.example.com/r.git?[REDACTED]'],
+      ['mytool --password "hunter2"', 'mytool --password [REDACTED]'],
+      ["mytool --token 'abc123'", 'mytool --token [REDACTED]'],
+      ['export GITHUB_TOKEN="plainvalue"', 'export GITHUB_TOKEN=[REDACTED]'],
+      ["API_KEY='abc123' ./run", 'API_KEY=[REDACTED] ./run'],
+      ['curl -u "alice:pw" https://x.test', 'curl -u [REDACTED] https://x.test'],
+    ]
+    for (const [input, expected] of cases) {
+      const redacted = redactSensitiveText(input)
+      expect(redacted).toBe(expected)
+      expect(redactSensitiveText(redacted)).toBe(redacted)
+    }
+  })
+})
 
 afterEach(async () => {
   vi.useRealTimers()
