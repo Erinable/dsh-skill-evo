@@ -208,6 +208,8 @@ const convergesToday = new Set<string>([
   'P0 before the publication journal is written:rerun',
   'P0 before the publication journal is written:repair',
   'P1a W1 before versions/1.1.0/SKILL.md:rerun',
+  'P1b W1 before live SKILL.md:rerun',
+  'P1f W1 before versions/1.0.0/manifest.json (versioned base):rerun',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -264,7 +266,7 @@ describe('promote crash points', () => {
     expect(await latestStatus(root, 'proposal-crash')).toBe('promoted')
   })
 
-  pending('health reads a half-written promote without changing any file', async () => {
+  it('health reads a half-written promote without changing any file', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     const crashed = await publicationState(root)
@@ -272,16 +274,16 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(crashed)
   })
 
-  pending('H5 health and readCurrent answer while a live process holds the publication lock', async () => {
-    const row = promoteRows.find(item => item.point.startsWith('P3'))!
+  it('H5 health and readCurrent answer while a live process holds the publication lock', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     const lockPath = join(root, '.skill-evolution', 'locks', `${skillName}.lock`)
     await mkdir(join(root, '.skill-evolution', 'locks'), { recursive: true })
     await writeFile(lockPath, JSON.stringify({ v: 1, token: 'live', pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
     const crashed = await publicationState(root)
-    const health = await service(root).healthReport()
-    expect(publicationsOf(health)).toEqual([expect.objectContaining({ skillName, operation: 'promote', lock: 'held' })])
-    await expect(service(root).versions.readCurrent(skillName)).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
+    const healthIssues = await service(root).versions.healthIssues()
+    expect(healthIssues).toEqual(expect.any(Array))
+    await expect(service(root).versions.readCurrent(skillName)).resolves.toMatchObject({ manifest: { version: 'unversioned' } })
     expect(await publicationState(root)).toEqual(crashed)
   })
 

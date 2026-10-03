@@ -9,7 +9,7 @@ import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
 export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -33,6 +33,9 @@ export interface EvolutionLayout {
   readonly candidatesDir: string
   readonly proposalReportsDir: string
   readonly evaluationReportsDir: string
+  readonly publicationsDir: string
+  readonly publicationJournalPath: (skillName: string) => string
+  readonly publicationQuarantineDir: string
   readonly stores: readonly StoreDescriptor[]
   readonly observations: StoreDescriptor
   readonly candidateDir: (proposalRootId: string) => string
@@ -61,6 +64,7 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['failures', 'derived', false, join(stateDir, 'failures.jsonl')],
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
+    ['skill-windows', 'derived', false, join(stateDir, 'skill-windows.jsonl')],
   ]
   const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
   return {
@@ -71,6 +75,9 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     candidatesDir: join(stateDir, 'candidates'),
     proposalReportsDir: join(stateDir, 'proposals'),
     evaluationReportsDir: join(stateDir, 'evaluations'),
+    publicationsDir: join(stateDir, 'publications'),
+    publicationJournalPath: (skillName: string) => join(stateDir, 'publications', `${skillName}.json`),
+    publicationQuarantineDir: join(stateDir, 'publications', 'quarantine'),
     stores,
     observations: stores[0],
     candidateDir: (proposalRootId: string) => join(stateDir, 'candidates', encodeURIComponent(proposalRootId)),
