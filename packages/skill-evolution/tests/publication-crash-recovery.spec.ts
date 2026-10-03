@@ -318,18 +318,18 @@ describe('rollback crash points', () => {
 })
 
 describe('one promotion check', () => {
-  pending('dry-run rejects a base version that real promotion rejects', async () => {
+  it('dry-run rejects a base version that real promotion rejects', async () => {
     const root = await tempRoot('dry-run-base-version')
     await writeVersionedBase(root)
     const evolution = service(root)
     const proposed = await proposeSkillChange(evolution, { root, id: 'proposal-version', skillName, baseContent: base, baseVersion: '0.9.0', candidateContent: first, proposedVersion: '1.1.0', intent: 'stale base version' })
     const evaluated = await evaluateProposal(evolution, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'case-version', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
     const proposalRef = (await reviewProposal(evolution, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })).recordId
-    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toThrow()
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'stale-base' })
     await expect(promoteProposal(evolution, { proposalRef, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'stale-base' })
   })
 
-  pending('service.promote and promoteProposal reject the same inconsistent artifact with the same code', async () => {
+  it('service.promote and promoteProposal reject the same inconsistent artifact with the same code', async () => {
     const { root, proposalRef } = await promoteScenario('check-parity')
     const evolution = service(root)
     const persisted = (await evolution.evaluations.readAll()).at(-1)!
