@@ -16,7 +16,7 @@ SKIL-132（父 issue SKIL-131）的 S1 设计。本文定下窗口边界与降�
 - `packages/dsh-bundle/index.js`：`createDefaultEventMapper`（:17）、`mapUserMessage`（:343）、`mapToolCall`（:400）、`mapToolResult`（:431）、`skillContentHash`（:505）、`isObservationInput` 的 kind 白名单（:322）。
 - `packages/dsh-adapter/src/types.ts`、`evaluator.ts`（`DshEvaluationRunResult.toolCalls`、`tokenCost`）。
 - 已合并的相邻设计：ADR-0022（SKIL-134，`FailureOrigin`、`attributionConfidence` 是证据强度不是概率、稳定 cluster id）；SKIL-128 的 `docs/design/tool-correction-create-skill.md`（§3 采集字段与脱敏、§4.1 `ToolAttempt`、§4.2 `DerivedJudge<Input,Output>`、§4.3 意图规则、§4.4 `CorrectionEpisode`、§4.5 cursor 的 `judges`、§6.2 目标判断规则）和 ADR-0023、ADR-0024。
-- 未合并的相邻设计：#81 SKIL-126（`FollowUpClassifier`、Classification memo 与 ADR-0034、cursor 的 `derivationKey`、「follow-up 之前恰好加载一个 Skill」的归因目标规则）。
+- 同样已合并、但还没实现的相邻设计：SKIL-126 的 `docs/design/follow-up-intent-classification.md`（#81；`FollowUpClassifier`、Classification memo 与 ADR-0033–0035、§2.7 cursor 的 `derivationKey`、「之前加载过的 Skill 恰好有一个时才归」的归因目标规则）；SKIL-130 的 `docs/design/evaluation-execution-cost.md`（#83；步数和 token 口径，ADR-0029–0031）。
 - DSH 源码 `github.com/lens077/deepseek-harness` @ `6ce94ee1`，文件见 §2.1。
 
 ### 1.2 探针：多 Skill session 今天完全没有归因
@@ -202,7 +202,7 @@ interface EmissionOutput {
 
 - `EvolutionServiceOptions.emissionJudge?: SkillEmissionJudge`。没注入时用规则实现 `RULE_EMISSION`（`version: 'rule-1'`），它是同步纯函数，直接在 Projection 里调。
 - 注入的实现只在显式的 Maintenance operation `scoreSkillEmissions({ signal, limit })` 里调用，结果写进 memo store `emissions`，键是 `emission:<judge version>:<inputHash>`。Projection 只读 memo；memo 里没有当前版本、当前输入的条目时，这个 session 回退到规则实现，记 `fallbackReason: 'not-scored'`。
-- 投影 cursor 的版本键里加入序列模型版本、参数哈希、发射版本、memo 条数和 lastId、正文来源的哈希集合（§3.5）。任何一项变了就全量重投影。移除注入后版本键回到 `rule-1`，结果回到规则结果。本文用 `derivationKey` 指这个版本键。main 上已合并的是 `tool-correction-create-skill.md` §4.5 的 `judges` 字段，它是记版本的 record，老 cursor 没有就按不一致处理；SKIL-126（#81，未合并）提议的是一个哈希 `derivationKey`。这几项写进先落地的那个机制：`judges` 先落地时，加 `emission`、`posteriorModel`、`posteriorParams`、`emissionMemo`、`skillContent` 五个键。两者以后合成一个时本设计跟着改，记录形状不变。采用默认答案，成员可推翻。
+- 投影 cursor 的版本键里加入序列模型版本、参数哈希、发射版本、memo 条数和 lastId、正文来源的哈希集合（§3.5）。任何一项变了就全量重投影。移除注入后版本键回到 `rule-1`，结果回到规则结果。本文用 `derivationKey` 指这个版本键。main 上现在有两份已合并、都未实现的设计各给 cursor 加了一个字段：`tool-correction-create-skill.md` §4.5 的 `judges`（记各判断版本的 record）和 `follow-up-intent-classification.md` §2.7 的 `derivationKey`（规则、策略、分类器版本加 memo 指纹的哈希）。本设计建议实现时合成一个：`judges` record 保留可读的各项版本，`derivationKey` 是对整份 `judges` 加各 memo 指纹的哈希，cursor 只比 `derivationKey`。本设计往 `judges` 里加 `emission`、`posteriorModel`、`posteriorParams`、`skillContent` 四个键，`emissions` memo 的条数和 lastId 作为 memo 指纹进哈希。哪张实现票先动 cursor，就由它落这个合并形状，后来的只加键。cursor 是可重建的，形状改了最多触发一次全量重投影，所以这是可逆选择。采用默认答案，成员可推翻。
 
 已合并的 SKIL-128 识别器在 Projection 里直接调用，按 `inputHash` 复用上次结果；SKIL-126 是显式 operation 写 memo。两者接口形状相同，只是调用时机不同。发射模型可能是 LLM，一个 session 一次调用，放在 Projection 里会让 `failures`、`metrics` 隐式花钱，所以这里选 SKIL-126 的时机。SKIL-128 的 `rule-1` 识别器是同步纯函数，不受影响；以后有人给它注入模型识别器，也会遇到同样的隐式花钱问题。采用默认答案，成员可推翻。
 
@@ -451,7 +451,7 @@ readonly attributionId?: string         // 指回 failure-attributions
 
 ### 6.2 SKIL-129 的步数和 token
 
-步数和 token 的口径**以 SKIL-130 为准**。本设计只给分摊规则：
+步数和 token 的口径**以 SKIL-130 为准**（已合并，ADR-0029：步数是工具调用次数，失败和重试的调用都算；token 是输入加输出、含缓存命中）。本设计的时间步正好也是工具调用，两边按同一个单位数。本设计只给分摊规则：
 
 - 步数：Skill k 分到 `expectedSteps(k) = Σ_t p(z_t = k)`，none 分到剩下的部分，总和等于总步数。
 - token：带 token 的 Observation（字段以 SKIL-130 为准，今天 `metrics.ts:45` 读 `payload.inputTokens`）按紧邻它之后的工具步的后验分摊；之后没有工具步的，按之前最近一步分摊；这个 session 没有工具步的全给 none。
@@ -534,8 +534,8 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 | §3.5 画像抽取、§5.1「同意图的成功」、§7.2 编辑距离 | 意图规则 | §4.3 第 2 步 | 一致，两边共用一个函数 |
 | §5.1、§5.2「同一 task」 | Observation 的 `taskId` | `RuntimeObservation.taskId`（`types.ts`）；`ToolAttempt` 不带，按 `callObservationId` 回查 | `ToolAttempt` 没有 `taskId`，本设计不往它上面加字段 |
 | §6.3 分流 | `CorrectionEpisode` 的 `failureObservationIds`、`correctionObservationIds`、`successObservationId`、`loadedSkills`；§6.2 的规则 0–4 | §4.2、§4.4、§6.2 | 一致 |
-| §3.3 注入接口 | `DerivedJudge<Input, Output>` | §4.2 | 一致，已定稿；SKIL-126（#81）跟随 |
-| §3.4 重投影 | cursor 的 `judges` | §4.5 | 本设计加 5 个键（§3.4） |
+| §3.3 注入接口 | `DerivedJudge<Input, Output>` | §4.2 | 一致，已定稿；SKIL-126 的 `FollowUpClassifier` 是另一个形状（`classify(input, signal)`），本设计不依赖它 |
+| §3.4 重投影 | cursor 的 `judges` | §4.5 | 本设计加 4 个键，memo 指纹进 SKIL-126 的 `derivationKey`（§3.4） |
 | §7.1 任务文本 | `payload.taskSummary` | SKIL-128 没有定义 | 依赖缺口，见 §13 |
 
 字段名都对上了，`EmissionStep` 的映射是一对一的字段拷贝，没有改名。
@@ -583,7 +583,7 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 
 ## 12. 与已有 ADR 和相邻设计的关系
 
-- _与 ADR-0002 的字面冲突_：`emissions` memo 保存注入模型的输出，派生记录不再只靠 Observation log 就能重建，而是靠 Observation log 加 memo。SKIL-126 的 ADR-0034（#81，未合并）为 Classification memo 做了同样的解释，本设计沿用那份解释，不另起一套。没有注入 judge 时，派生记录仍只依赖 Observation log 和按内容寻址的 Skill 正文。
+- _与 ADR-0002 的字面冲突_：`emissions` memo 保存注入模型的输出，派生记录不再只靠 Observation log 就能重建，而是靠 Observation log 加 memo。SKIL-126 的 ADR-0034（已合并，`accepted`）为 Classification memo 做了同样的解释，本设计沿用那份解释，不另起一套。没有注入 judge 时，派生记录仍只依赖 Observation log 和按内容寻址的 Skill 正文。
 - CONTEXT.md 的 Derived record 定义和列表随之更新，并补 Skill window、Skill posterior、Failure attribution 和资格区间（本 PR 已改）。Failure case 仍然「定位到某个 Skill」，只是多了权重，定义补一句。
 - ADR-0014：core 只读 bundle 写的核心词汇，不读 `payload.eventType`，一致。
 - ADR-0015：后验不改 Provider rank，也不改会话行为，一致。
@@ -591,7 +591,7 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 - ADR-0022（SKIL-134，已合并）：本设计给 `FailureOrigin`（`types.ts:99`）增加 `tool-failure`，扩展的是已接受的取值集合，不改另外三个值的含义，也不改 cluster id 规则。扇出 case 的 id `failure:<subjectId>#<skillName>` 按同样的 `createdAt`、`id` 排序参与聚类，最早的 case id 仍然决定簇 id。`diagnoseFailureCluster`（`experience.ts:193`）对只含 `tool-failure` 的簇得到 `rootCause: 'uncertain'`，结论是 `observe-only`，也就是只看不提案。诊断规则不改，采用默认答案，成员可推翻。
 - ADR-0023（SKIL-128，已合并）：只读它定义的字段，不新增采集，不另外脱敏（§8）。
 - ADR-0024（SKIL-128，已合并）：Correction episode 留在 `episodes` store，不冒充 Failure case；「未覆盖」的主体同样不产生 Failure case（§5.3），一致。
-- SKIL-126（#81）：single-skill 的归因结果与它的规则一致；多 Skill 由本设计补上。
+- SKIL-126（`follow-up-intent-classification.md`，已合并）：它的归因目标规则是「按 log 顺序在它之前加载过的 Skill；恰好有一个时才归」，与 §5.1 single-skill 的结果一致；多于一个时它不归因，由本设计补上。
 - `tool-correction-create-skill.md`（SKIL-128，已合并）：§6.3 修改了它 §6.2 的规则 2。那条规则在原设计稿里写明可逆，不涉及 ADR。
 
 ## 13. 不可逆决策
@@ -601,14 +601,14 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 - **ADR-0027**：多 Skill 失败扇出成按 Skill 的 Failure case，带 `attributionWeight`，id 为 `failure:<subject>#<skill>`；提案门槛只数主导 case。
 - **ADR-0028**：发射模型的注入 interface 是按 session 的 `SkillEmissionJudge`，输出相对 none 的对数似然比；硬约束和跳过步骤由 core 计算。
 
-ADR 编号：`origin/main`（`9975647`）最大号是 0024。开着的设计 PR 的号段由 Mika 在 SKIL-132 上统一分配：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 都是 `status: proposed`，成员确认后在本 PR 里改成 `accepted`。
+ADR 编号：由 Mika 在 SKIL-132 上统一分配（本 PR 开的时候 `origin/main` 最大号是 0024）：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 都是 `status: proposed`，成员确认后在本 PR 里改成 `accepted`。
 
 ## 14. 可逆取舍（采用默认答案，成员可推翻）
 
-§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.4 门槛只数主导 case；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳；§3.4 新键写进 `judges`；§12 只含 `tool-failure` 的簇只看不提案。
+§2.3 W2 窗口与资格区间分开；§3.1 T2 以工具尝试为时间步；§3.2 ρ = 0.9、λ = 0.8、后验解码而非 Viterbi；§3.4 judge 走显式 operation 和 memo；§3.5 `rule-1` 的打分值（+2 / +1 / −0.5）；§3.7 EM 留作后续；§4.1 P1 单个深 module；§5.1 `tool-failure` 只看以失败结束的 task；§5.2 K2、K = 3、`minShare = 0.1`；§5.3 `uncoveredShare = 0.5`；§5.4 门槛只数主导 case；§6.1 M1 `metrics()` 先刷新；§7.1 抽 20 个 session；§7.3 C1 校准参数人工采纳；§3.4 `judges` 与 `derivationKey` 合成一个、新键写进 `judges`；§12 只含 `tool-failure` 的簇只看不提案。
 
 ## 15. 待定项
 
 - **ADR-0025–0028 待成员确认**（不可逆）。确认之前 S2 不定稿。
 - **§7.1 任务文本没有采集来源**：`payload.taskSummary` 今天没人写。在补上之前，`calibrateSkillPosteriors` 会把所有 session 都跳过，报告里只有跳过计数。补采集属于采集层，会把用户原话写进事实，需要另立一张票，并像 ADR-0023 那样先做隐私确认。这一项只影响可选的 §7，不影响验收 1–10。默认：本票不做，S2 把 §7 的 `CounterfactualReplay` 写成接受宿主传入的 `task`。采用默认答案，成员可推翻。
-- **cursor 版本键的落点**：main 上已有 `judges`（§4.5），SKIL-126 提议 `derivationKey`，两者谁统一谁，留给 SKIL-126 合并时决定（§3.4）。
+- **cursor 版本键的合并形状**：`judges` 和 `derivationKey` 都已合并、都未实现。本设计的默认是 §3.4 的合并形状，由先动 cursor 的实现票落地。采用默认答案，成员可推翻。
