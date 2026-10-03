@@ -29,7 +29,7 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以从 Observation log 完整重建的判断：Experience、Failure case、Failure cluster、Diagnosis。
+可以从 Observation log 完整重建的判断：Experience、Correction episode、Correction pattern、Failure case、Failure cluster、Diagnosis。
 _Avoid_: cache, 结论
 
 **Projection**:
@@ -45,6 +45,26 @@ _Avoid_: usage rate, 成功率
 **Experience**:
 从 Observation 压缩出来的局部经验片段，保留上下文和证据 Observation 的 id；它不是 Skill。
 _Avoid_: lesson, memory, 经验总结
+
+**ToolAttempt**:
+同一个工具调用及其结果组成的一次尝试，包含脱敏后的命令摘要、结果状态和对应 Observation 引用；它是投影输入，不是事实记录的新种类。
+_Avoid_: tool event, command log
+
+**Correction episode**:
+同一 session 中，同一意图连续失败达到策略门槛后又成功的一段 ToolAttempt 序列，属于 Derived record，引用失败、纠正和成功的 Observation。
+_Avoid_: retry, incident
+
+**Correction pattern**:
+具有相同纠正签名的多个 Correction episode 的跨 session 聚合，属于 Derived record；它只有在聚合门槛满足时才可成为 Proposal 来源。
+_Avoid_: correction cluster, candidate
+
+**Correction policy**:
+规定 Correction episode 的失败次数、跨 session 聚合、时间窗口和允许发布范围的版本化规则。
+_Avoid_: correction config, threshold
+
+**Derived judge**:
+对 Observation 投影输入作可注入、带版本判断的组件；其输出属于 Derived record，可因版本变化重建。
+_Avoid_: model decision, runtime hook
 
 **Attribution**:
 把一个结果归到某类原因（routing、content、tool 等）的判断；属于派生，可以修正。
@@ -79,6 +99,10 @@ _Avoid_: draft
 **Base**:
 Proposal 所针对的那一版 Skill 内容；Skill 当前内容已不是 Base 时，Proposal 过期（stale）。
 _Avoid_: parent version, original
+
+**Absent Base**:
+表示 Proposal 针对的 Skill 当前不存在；它是 Base 的一种明确状态，不能与省略 Base 混同。
+_Avoid_: empty base, missing base
 
 **Proposal root**:
 一个 Proposal 在所有状态记录之间共享的逻辑身份。
