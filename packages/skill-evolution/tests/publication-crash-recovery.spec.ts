@@ -210,6 +210,19 @@ const convergesToday = new Set<string>([
   'P1a W1 before versions/1.1.0/SKILL.md:rerun',
   'P1b W1 before live SKILL.md:rerun',
   'P1f W1 before versions/1.0.0/manifest.json (versioned base):rerun',
+  'P1a W1 before versions/1.1.0/SKILL.md:repair',
+  'P1b W1 before live SKILL.md:repair',
+  'P1c W1 before live manifest.json:rerun',
+  'P1c W1 before live manifest.json:repair',
+  'P1d W1 before current.json:rerun',
+  'P1d W1 before current.json:repair',
+  'P1e W1 invalidate before .publish.json unlink:rerun',
+  'P1e W1 invalidate before .publish.json unlink:repair',
+  'P1f W1 before versions/1.0.0/manifest.json (versioned base):repair',
+  'P2 after W1, before W2 observation:rerun',
+  'P2 after W1, before W2 observation:repair',
+  'P4 after W3, before W4 decision:rerun',
+  'double-rollback',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -310,7 +323,7 @@ describe('rollback crash points', () => {
     })
   }
 
-  pending('a second rollback to the version that is already current writes nothing', async () => {
+  it('a second rollback to the version that is already current writes nothing', async () => {
     const { root } = await rollbackScenario('double')
     await rollbackSkill(service(root), { skillName, version: '1.0.0' })
     const once = await publicationState(root)

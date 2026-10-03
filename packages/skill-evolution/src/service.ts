@@ -1,4 +1,5 @@
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
+import { readdir } from 'node:fs/promises'
 import { createContentHash, isObservationValue, redactSensitiveText } from './events.js'
 import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
@@ -18,6 +19,7 @@ import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEnt
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
+import { readPublication } from './publication.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -174,6 +176,7 @@ export class EvolutionService {
     const paths = this.layout.stores.filter(store => store.name !== 'observations').map(store => store.path)
     const jsonl: JsonlRepairResult[] = []
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath, layout: this.layout })
+    await this.repairPublications()
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
       for (const path of await archivePaths(this.observations.filePath)) {
@@ -182,6 +185,25 @@ export class EvolutionService {
     })
     await this.refreshDerived({ force: true })
     return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true }
+  }
+
+  private async repairPublications(): Promise<void> {
+    let entries: string[] = []
+    try { entries = await readdir(this.layout.publicationsDir) } catch { return }
+    for (const entry of entries.filter(item => item.endsWith('.json'))) {
+      const skillName = basename(entry, '.json')
+      try {
+        const journal = await readPublication(join(this.layout.publicationsDir, entry))
+        if (journal === undefined) continue
+        if (journal.operation === 'promote' && journal.proposalId !== undefined) {
+          const proposal = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(journal.proposalId))
+          const artifact = proposal === undefined ? undefined : (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+          if (proposal !== undefined && artifact !== undefined && proposal.status !== 'promoted') await this.promote(proposal, artifact.result, journal.scope)
+        } else if (journal.operation === 'rollback') {
+          await this.rollback(journal.skillName, journal.to.version)
+        }
+      } catch { /* leave the journal for the next repair attempt */ }
+    }
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
@@ -270,14 +292,22 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
+    const rootId = proposalRootId(proposal.id)
+    const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)
+    if (latest?.status === 'promoted') {
+      const decisionId = `decision:ledger:${latest.id}`
+      if (!(await this.decisions.readAll()).some(item => item.id === decisionId)) await this.decisions.append({ id: decisionId, proposalId: rootId, skillName: proposal.skillName, action: 'promoted', reason, evidenceIds: [...proposal.comparisonCaseIds], createdAt: latest.updatedAt, actor: this.options.operator ?? 'maintainer', fromStatus: 'accepted', toStatus: 'promoted', recordId: latest.id, baseContentHash: proposal.expectedBase.contentHash, candidateContentHash: createContentHash(proposal.candidateContent), policyVersion: defaultPolicyVersion(this.evaluationPolicy) })
+      await this.versions.finalizePublication(proposal.skillName)
+      return
+    }
     if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
     const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
     const current = await this.versions.readCurrent(proposal.skillName)
-    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
+    if (!(await this.versions.hasPendingPublication(proposal.skillName))) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
     const verifiedEvaluation = artifact.result
-    const proposalId = proposalRootId(proposal.id)
-    await this.versions.promote(proposal, { scope })
-    await this.observations.append({
+    const proposalId = rootId
+    await this.versions.promote(proposal, { scope, retainJournal: true })
+    if (!(await this.observations.readAll()).some(item => item.id === `adoption:${proposalId}`)) await this.observations.append({
       id: `adoption:${proposalId}`,
       schemaVersion: 1,
       kind: 'adoption-applied',
@@ -293,7 +323,9 @@ export class EvolutionService {
       payload: { proposalId, scope, effectiveAt: 'next-load' },
       source: 'maintenance',
     })
-    await this.ledger.transition(proposal, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
+    const latestAfterObservation = latestProposalsByRoot(await this.proposals.readAll()).get(proposalId) ?? proposal
+    if (latestAfterObservation.status !== 'promoted') await this.ledger.transition(latestAfterObservation, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
+    await this.versions.finalizePublication(proposal.skillName)
   }
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
@@ -302,12 +334,15 @@ export class EvolutionService {
 
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {
     const before = await this.versions.readCurrent(skillName)
-    const published = await this.versions.rollback(skillName, version, { scope: 'project' })
     const latestStates = latestProposalsByRoot(await this.proposals.readAll())
+    if (before?.manifest.version === version) return
+    const published = await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
     const latestPromoted = [...latestStates.values()].filter(item => item.skillName === skillName && item.status === 'promoted' && item.proposedVersion === before?.manifest.version).at(-1)
     const targetProposal = [...latestStates.values()].find(item => item.skillName === skillName && item.proposedVersion === version)
-    await this.observations.append({
-      id: `rollback:${skillName}:${version}:${Date.now()}`,
+    const occurredAt = published.manifest.updatedAt
+    const observationId = `rollback:${skillName}:${version}:${occurredAt}`
+    if (!(await this.observations.readAll()).some(item => item.id === observationId)) await this.observations.append({
+      id: observationId,
       schemaVersion: 1,
       kind: 'adoption-applied',
       occurredAt: new Date().toISOString(),
@@ -322,19 +357,22 @@ export class EvolutionService {
       payload: { operation: 'rollback', version, ...(latestPromoted === undefined ? {} : { sourceProposalId: proposalRootId(latestPromoted.id) }), ...(targetProposal === undefined ? {} : { targetProposalId: proposalRootId(targetProposal.id) }), ...(before === undefined ? {} : { fromVersion: before.manifest.version, fromContentHash: before.manifest.contentHash }), toContentHash: published.manifest.contentHash },
       source: 'maintenance',
     })
-    await this.decisions.append({
-      id: `decision:rollback:${skillName}:${version}:${Date.now()}`,
+    const decisionId = `decision:rollback:${skillName}:${version}:${occurredAt}`
+    if (!(await this.decisions.readAll()).some(item => item.id === decisionId)) await this.decisions.append({
+      id: decisionId,
       ...(latestPromoted === undefined ? {} : { proposalId: proposalRootId(latestPromoted.id) }),
       skillName,
       action: 'rollback',
       reason,
       evidenceIds: [],
-      createdAt: new Date().toISOString(),
+      createdAt: occurredAt,
       actor: this.options.operator ?? 'maintainer',
     })
     if (latestPromoted !== undefined) {
-      await this.ledger.transition(latestPromoted, 'rolled-back', { reason, action: 'rollback' })
+      const currentLatest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(latestPromoted.id)) ?? latestPromoted
+      if (currentLatest.status === 'promoted') await this.ledger.transition(currentLatest, 'rolled-back', { reason, action: 'rollback' })
     }
+    await this.versions.finalizePublication(skillName)
   }
 
   async rejectProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
