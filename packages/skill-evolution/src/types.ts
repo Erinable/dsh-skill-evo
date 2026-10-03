@@ -226,6 +226,10 @@ export interface SkillEvalResult {
   readonly passedGate: boolean
   readonly decision: 'passed' | 'needs-review' | 'rejected'
   readonly policyVersion: string
+  readonly schemaVersion?: 2
+  readonly policy?: NormalizedEvaluationPolicy
+  readonly policyHash?: string
+  readonly statisticId?: string
   readonly artifactId?: string
   readonly baseContentHash: string
   readonly candidateContentHash: string
@@ -249,6 +253,10 @@ export interface EvaluationArtifact {
   readonly createdAt: string
   readonly expiresAt: string
   readonly result: SkillEvalResult
+  readonly schemaVersion?: 2
+  readonly policy?: NormalizedEvaluationPolicy
+  readonly policyHash?: string
+  readonly statisticId?: string
 }
 
 export interface EvaluationPolicy {
@@ -348,6 +356,7 @@ export interface DecisionRecord {
   readonly baseContentHash?: string
   readonly candidateContentHash?: string
   readonly policyVersion?: string
+  readonly policyHash?: string
   readonly createdAt: string
 }
 
