@@ -132,11 +132,16 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
   const proposal = await resolveProposal(service, options.proposalRef)
   const evidenceIds = options.evidenceIds ?? []
   let reviewed: SkillProposal
-  switch (options.decision) {
-    case 'accept': reviewed = await service.acceptProposal(proposal, options.reason, evidenceIds); break
-    case 'reject': reviewed = await service.rejectProposal(proposal, options.reason, evidenceIds); break
-    case 'defer': reviewed = await service.deferProposal(proposal, options.reason, evidenceIds); break
-    default: throw new OperationError('invalid-option', `decision must be accept, reject, or defer`)
+  try {
+    switch (options.decision) {
+      case 'accept': reviewed = await service.acceptProposal(proposal, options.reason, evidenceIds); break
+      case 'reject': reviewed = await service.rejectProposal(proposal, options.reason, evidenceIds); break
+      case 'defer': reviewed = await service.deferProposal(proposal, options.reason, evidenceIds); break
+      default: throw new OperationError('invalid-option', `decision must be accept, reject, or defer`)
+    }
+  } catch (error) {
+    if (error instanceof ProposalLedgerError) throw new OperationError(error.code, error.message, error)
+    throw error
   }
   return { proposal: reviewed, recordId: reviewed.id }
 }

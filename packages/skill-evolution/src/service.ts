@@ -5,7 +5,7 @@ import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
 import { validateEvaluationPolicy } from './policy.js'
-import { latestProposalsByRoot, proposalRootId, assertProposalRoot } from './proposal.js'
+import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot } from './proposal.js'
 import { ProposalLedger } from './ledger.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
@@ -195,6 +195,7 @@ export class EvolutionService {
     runner?: EvaluationRunner,
   ): Promise<SkillEvalResult> {
     const targetStatus = proposal.status === 'proposed' ? 'evaluating' : 'evaluated'
+    assertCanTransition(proposal.status, targetStatus)
     const evaluating = targetStatus === 'evaluating'
       ? (await this.ledger.transition(proposal, 'evaluating', { reason: 'evaluation started', action: 'evaluating' })).record
       : proposal
