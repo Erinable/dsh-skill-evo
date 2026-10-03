@@ -2,7 +2,7 @@ import { buildExperiences, buildFailureCases, clusterFailureCases, diagnoseFailu
 import { resolveFollowUps } from './follow-up.js'
 import type { ClassificationMemoEntry } from './types.js'
 import { createProposal, type ProposalInput } from './proposal.js'
-import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience } from './types.js'
+import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience, CorrectionEpisode, CorrectionPattern } from './types.js'
 
 export interface DesignerInput {
   readonly diagnosis: SkillDiagnosis
@@ -19,6 +19,8 @@ export interface WorkflowSnapshot {
   readonly clusters: readonly FailureCluster[]
   readonly diagnoses: readonly SkillDiagnosis[]
   readonly followUps: readonly import('./types.js').FollowUpResolution[]
+  readonly episodes?: readonly CorrectionEpisode[]
+  readonly patterns?: readonly CorrectionPattern[]
 }
 
 /** Phase 2/3 orchestration: facts to experiences, clusters, diagnoses, and isolated proposals. */
