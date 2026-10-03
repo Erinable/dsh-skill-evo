@@ -20,6 +20,7 @@ import {
   evaluateCandidate,
   mergePortfolioEntries,
   aggregateMetrics,
+  measureSkillContext,
   portfolioDecision,
   renderFailuresMarkdown,
   renderProposalMarkdown,
@@ -29,7 +30,6 @@ import {
   transitionProposal,
   type RuntimeObservation,
 } from '../src/index.js'
-import { measureSkillContext } from '../src/evaluation-cost.js'
 
 const dirs: string[] = []
 
@@ -839,5 +839,20 @@ describe('phase workflow orchestration', () => {
       event({ id: 'follow', kind: 'user-follow-up', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
     ]
     expect(aggregateMetrics(events).skills[0]).toMatchObject({ skillName: 'api-debugging', exposed: 1, loadSucceeded: 1, followUps: 1, exposureToLoadRate: 1 })
+  })
+
+  it('adds content-derived context metrics while retaining host-reported context cost', () => {
+    const content = '---\nname: api-debugging\ndescription: Debug APIs\n---\n\nUse curl.\n'
+    const measured = aggregateMetrics([
+      event({ id: 'catalog', kind: 'catalog-visible', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'catalog-2', kind: 'catalog-visible', sessionId: 's2', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', sessionId: 's1', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { inputTokens: 7 } }),
+    ], [], [], [], [{ name: 'api-debugging', content }])
+    const skill = measured.skills[0]!
+    const expected = measureSkillContext(content)
+    expect(skill.context).toEqual({ catalogTokens: expected.catalogTokens, loadTokens: expected.loadTokens, exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens })
+    expect(measured.skillContext.estimator).toBe('utf8-bytes-div4-v1')
+    expect(measured.contextCost).toBe(7)
+    expect(measured.skillContext).toEqual({ ...expected, exposureWeightedTokens: expected.catalogTokens * 2 + expected.loadTokens })
   })
 })
