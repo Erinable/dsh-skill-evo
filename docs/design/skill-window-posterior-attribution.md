@@ -657,7 +657,7 @@ SKIL-128 已合并（`9975647`）。采集字段和脱敏以 ADR-0023 和 `tool-
 - **ADR-0027**：多 Skill 失败扇出成按 Skill 的 Failure case，带 `attributionWeight` 和 `dominant`，id 为 `failure:<subject>#<skill>`；提案门槛的数量分支和 severity 分支都只数主导 case，`occurrenceCount` 的语义不变，另加 `dominantOccurrence`。
 - **ADR-0028**：发射模型的注入 interface 是按 session 的 `SkillEmissionJudge`，输出相对 none 的对数似然比；硬约束和跳过步骤由 core 计算。
 
-ADR 编号：由 Mika 在 SKIL-132 上统一分配（本 PR 开的时候 `origin/main` 最大号是 0024）：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 都是 `status: proposed`，成员确认后在本 PR 里改成 `accepted`。
+ADR 编号：由 Mika 在 SKIL-132 上统一分配（本 PR 开的时候 `origin/main` 最大号是 0024）：本 PR 是 0025–0028，#83 是 0029–0031，#80 是 0032，#81 是 0033–0035。四条 ADR 已由 ack7 在 SKIL-132 上确认（以 `ef12c78` 的版本为准），状态为 `accepted`。
 
 ## 14. 可逆取舍（采用默认答案，成员可推翻）
 
@@ -665,6 +665,6 @@ ADR 编号：由 Mika 在 SKIL-132 上统一分配（本 PR 开的时候 `origin
 
 ## 15. 待定项
 
-- **ADR-0025–0028 待成员确认**（不可逆）。确认之前 S2 不定稿。
+- ~~ADR-0025–0028 待成员确认~~：已确认，状态为 `accepted`。S2 可以按本设计定稿。
 - **§7.1 任务文本没有采集来源**：`payload.taskSummary` 今天没人写。在补上之前，`calibrateSkillPosteriors` 会把所有 session 都跳过，报告里只有跳过计数。补采集属于采集层，会把用户原话写进事实，需要另立一张票，并像 ADR-0023 那样先做隐私确认。这一项只影响可选的 §7，不影响验收 1–10。默认：本票不做，S2 把 §7 的 `CounterfactualReplay` 写成接受宿主传入的 `task`。采用默认答案，成员可推翻。
 - **cursor 版本键的合并形状**：`judges` 和 `derivationKey` 都已合并、都未实现。本设计的默认是 §3.4 的合并形状，由先动 cursor 的实现票落地。采用默认答案，成员可推翻。
