@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir, uptime } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { JsonlRecordStore } from '../src/records.js'
+import { DuplicateRecordError, JsonlRecordStore } from '../src/records.js'
+import { LockBusyError } from '../src/locking.js'
 import { JsonlEventStore } from '../src/store.js'
 import { createObservation } from '../src/events.js'
 
@@ -58,6 +59,64 @@ async function checkParseableTailAndBadLine<T extends { id: string }>(
 }
 
 describe('store JSONL framing', () => {
+  it('computes unique ids across independent concurrent stores', async () => {
+    const path = await file()
+    const stores = [new JsonlRecordStore<{ id: string }>(path), new JsonlRecordStore<{ id: string }>(path)]
+    const records = await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      stores[index % 2]!.appendComputed(current => ({ id: `n${current.length}` }))))
+
+    const ids = records.map(record => record.id).sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)))
+    expect(ids).toEqual(Array.from({ length: 20 }, (_, index) => `n${index}`))
+    expect((await stores[0]!.readAll()).map(record => record.id).sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)))).toEqual(ids)
+  })
+
+  it('isolates a trailing residual before appending the computed record', async () => {
+    const path = await file()
+    const tail = Buffer.from('{"id":"torn","value":')
+    await writeFile(path, Buffer.concat([Buffer.from('{"id":"a"}\n'), tail]))
+    let seen = -1
+    const store = new JsonlRecordStore<{ id: string }>(path)
+
+    const appended = await store.appendComputed(records => {
+      seen = records.length
+      return { id: 'b' }
+    })
+
+    expect(seen).toBe(1)
+    expect(appended).toEqual({ id: 'b' })
+    expect(await readFile(path, 'utf8')).toBe('{"id":"a"}\n{"id":"b"}\n')
+    expect(await quarantinedTail(path)).toEqual(tail)
+  })
+
+  it('rejects an occupied computed id without changing the data file', async () => {
+    const path = await file()
+    await writeFile(path, '{"id":"existing"}\n')
+    const before = await readFile(path)
+    const store = new JsonlRecordStore<{ id: string }>(path)
+
+    const error = await store.appendComputed(() => ({ id: 'existing' })).catch(value => value)
+    expect(error).toBeInstanceOf(DuplicateRecordError)
+    expect(error.id).toBe('existing')
+    expect(await readFile(path)).toEqual(before)
+  })
+
+  it('propagates builder, data I/O, and lock errors unchanged', async () => {
+    const path = await file()
+    const store = new JsonlRecordStore<{ id: string }>(path)
+    const builderError = new Error('builder failed')
+    await expect(store.appendComputed(() => { throw builderError })).rejects.toBe(builderError)
+    expect(await readFile(path, 'utf8')).toBe('')
+
+    const directoryPath = await mkdtemp(join(tmpdir(), 'dsh-store-directory-'))
+    roots.push(directoryPath)
+    const ioStore = new JsonlRecordStore<{ id: string }>(directoryPath)
+    await expect(ioStore.appendComputed(() => ({ id: 'io' }))).rejects.toMatchObject({ code: 'EISDIR' })
+
+    const lockPath = `${path}.lock`
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'test' }))
+    await expect(store.appendComputed(() => ({ id: 'locked' }))).rejects.toBeInstanceOf(LockBusyError)
+  }, 15_000)
+
   it('keeps record-store appends readable after an incomplete tail', async () => {
     const path = await file()
     const a = { id: 'a', value: 1 }
