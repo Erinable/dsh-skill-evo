@@ -36,7 +36,7 @@ export const PROPOSAL_TRANSITIONS: Readonly<Record<ProposalStatus, readonly Prop
   reverted: [],
 }
 
-export type ProposalLedgerErrorCode = 'ambiguous' | 'not-found' | 'invalid-transition'
+export type ProposalLedgerErrorCode = 'ambiguous' | 'not-found' | 'invalid-transition' | 'conflict'
 
 export class ProposalLedgerError extends Error {
   constructor(readonly code: ProposalLedgerErrorCode, message: string) {
@@ -63,17 +63,61 @@ export const TERMINAL_STATUS_SUFFIXES: readonly LedgerRecordStatus[] = [
   ...new Set(LEDGER_RECORD_TARGETS.filter((status): status is LedgerRecordStatus => status !== 'proposed')),
 ]
 
+const VALID_OCCURRENCE = '(?:[2-9]|[1-9]\\d+)'
+const INVALID_OCCURRENCE = '(?:1|0\\d+)'
+
 export function proposalRootId(id: string): string {
   let root = id
   while (true) {
     const separator = root.lastIndexOf(':')
-    if (separator < 0 || !TERMINAL_STATUS_SUFFIXES.includes(root.slice(separator + 1) as LedgerRecordStatus)) return root
-    root = root.slice(0, separator)
+    if (separator < 0) return root
+    const suffix = root.slice(separator + 1)
+    if (TERMINAL_STATUS_SUFFIXES.includes(suffix as LedgerRecordStatus)) {
+      root = root.slice(0, separator)
+      continue
+    }
+    if (new RegExp(`^${VALID_OCCURRENCE}$`).test(suffix)) {
+      const statusSeparator = root.lastIndexOf(':', separator - 1)
+      const status = statusSeparator < 0 ? '' : root.slice(statusSeparator + 1, separator)
+      if (TERMINAL_STATUS_SUFFIXES.includes(status as LedgerRecordStatus)) {
+        root = root.slice(0, statusSeparator)
+        continue
+      }
+    }
+    return root
   }
 }
 
-export function ledgerRecordId(root: string, status: LedgerRecordStatus): string {
-  return `${proposalRootId(root)}:${status}`
+export function ledgerRecordId(root: string, status: LedgerRecordStatus, occurrence = 1): string {
+  if (!Number.isInteger(occurrence) || occurrence < 1) {
+    throw new ProposalLedgerError('invalid-transition', `invalid ledger record occurrence: ${occurrence}`)
+  }
+  const base = `${proposalRootId(root)}:${status}`
+  return occurrence === 1 ? base : `${base}:${occurrence}`
+}
+
+/** Return one exact ledger record; record ids are never resolved by prefix. */
+export function findLedgerRecord(records: readonly SkillProposal[], id: string): SkillProposal {
+  const invalidOccurrence = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')}):${INVALID_OCCURRENCE}$`)
+  if (invalidOccurrence.test(id)) {
+    throw new ProposalLedgerError('not-found', `proposal record not found: ${id}`)
+  }
+  const record = records.find(item => item.id === id)
+  if (record === undefined) throw new ProposalLedgerError('not-found', `proposal record not found: ${id}`)
+  return record
+}
+
+export function historyByRoot(proposals: readonly SkillProposal[], root: string): SkillProposal[] {
+  const normalized = proposalRootId(root)
+  return proposals.filter(proposal => proposalRootId(proposal.id) === normalized)
+}
+
+export function assertProposalRoot(root: string): string {
+  const statusSuffix = new RegExp(`:(?:${TERMINAL_STATUS_SUFFIXES.join('|')})(?::(?:${VALID_OCCURRENCE}|${INVALID_OCCURRENCE}))?$`)
+  if (proposalRootId(root) !== root || statusSuffix.test(root)) {
+    throw new ProposalLedgerError('invalid-transition', `proposal root must not end with a ledger status suffix: ${root}`)
+  }
+  return root
 }
 
 export function latestProposalsByRoot(proposals: readonly SkillProposal[]): Map<string, SkillProposal> {

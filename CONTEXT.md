@@ -29,7 +29,7 @@ _Avoid_: rotation（两者不是一回事）
 _Avoid_: raw data
 
 **Derived record**:
-可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution。没注入分类器时只依赖 Observation log；注入后，分类器来源的结论还依赖 Classification memo 和推导版本（ADR-0034）。
+可以重建的判断：Experience、Failure case、Failure cluster、Diagnosis、Follow-up resolution、Skill window、Skill posterior、Failure attribution。没注入模型时只依赖 Observation log；注入后，模型来源的结论还依赖对应的 memo（分类器的 Classification memo、发射模型的 `emissions`）和推导版本（ADR-0034、ADR-0026）。
 _Avoid_: cache, 结论
 
 **Projection**:
@@ -62,9 +62,37 @@ _Avoid_: sentiment, 情绪
 一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
 _Avoid_: label, 标注
 
+**Follow-up classifier**:
+由宿主注入、带不可变 `version` 的分类器实现；它只在显式 Maintenance operation 中读取已闭合的跟进上下文并返回意图，Projection 不直接调用它（ADR-0035）。
+_Avoid_: model judgment, 模型事实
+
+**Projection cursor**:
+记录 Observation log 与推导版本的快路径指纹；当事实、规则、策略、分类器版本或 Classification memo 改变时，Projection 必须忽略该快路径并完整重建 Derived record。
+_Avoid_: checkpoint, 检查点
+
 **Failure case**:
-一次能定位到某个 Skill 的失败，引用证据 Observation。
+一次能定位到某个 Skill 的失败，引用证据 Observation。多 Skill session 里的一次失败可以扇出成几个 Failure case，各带归因权重（ADR-0027）。
 _Avoid_: error, incident
+
+**Skill window**:
+一个 session 里从一次 Skill 加载开始，到下一次加载、用户新消息、task 结束或这次加载被遮蔽为止的那段 Observation；确定性的派生记录，带结束边界是否确定。
+_Avoid_: segment, span
+
+**资格区间**:
+一个 Skill 从加载到它的加载被上下文遮蔽为止可以作为隐状态的时间范围；可以跨越多个 Skill window，区间外它的后验恒为 0。
+_Avoid_: active range
+
+**Skill posterior**:
+一个 session 里每个工具步属于哪个已加载 Skill（或 none）的概率，以及汇总出的轨迹级分布；带序列模型和发射模型的版本。
+_Avoid_: skill score, 置信度
+
+**Failure attribution**:
+一个失败主体在各 Skill 和 none 之间的份额，以及份额的来源（显式、override、单 Skill、后验）；Failure case 的权重由它得出。
+_Avoid_: blame split
+
+**Context shadowing**:
+DSH 通过压缩、裁剪或移除让一段 session 事件不再出现在模型上下文里；bundle 把它记成 `context-shadowed` Observation（ADR-0025）。
+_Avoid_: unload
 
 **Failure cluster**:
 同一个 Skill 下签名相同的 Failure case 的集合。
@@ -97,7 +125,7 @@ _Avoid_: parent version, original
 _Avoid_: proposal id 前缀
 
 **Ledger record**:
-Proposal 在某个状态下追加的一条记录，身份由 Proposal root 和该状态组成。
+Proposal 在某个状态下追加的一条记录，身份由 Proposal root、该状态和进入该状态的次数组成；第一次进入省略次数后缀。
 _Avoid_: proposal version
 
 **Proposal ledger**:
@@ -157,6 +185,26 @@ _Avoid_: revert
 **Publication scope**:
 Promote 之后新版本在哪个范围生效：explicit-only、project、user、stable。这里的 `stable` 是 Publication scope 值，不是 Lifecycle state 定义中的阶段。
 _Avoid_: target, channel, 灰度
+
+**Publication journal**:
+一次 Promote 或 Rollback 的确定输入与发布意图；提交后用于收尾，完成后不再需要。它是临时状态，不是 Fact record。
+_Avoid_: publication event, 发布事实
+
+**Publication commit point**:
+发布意图成为持久承诺的边界；此前崩溃不改变发布状态，此后通过前滚完成发布。
+_Avoid_: live 文件已写完, 台账已转移
+
+**Publication completion**:
+根据 Publication journal 幂等完成文件发布及适用的事实记录；已完成的部分不会重复产生事实。
+_Avoid_: recovery read, 读时恢复
+
+**Unfinished publication**:
+已有 Publication journal、尚未完成收尾的 Promote 或 Rollback；可能仍在执行，也可能是崩溃遗留。
+_Avoid_: 发布失败（持锁执行中的发布不等于失败）
+
+**Quarantined publication**:
+为解除阻塞而隔离的发布意图，保留原文和原因供成员处理；隔离不撤销已经生效的正文，也不补造未发生的事实。
+_Avoid_: Rollback, 自动清理
 
 **Next load**:
 新版本只在下一次加载边界生效，已经加载进模型的正文不会被热替换。

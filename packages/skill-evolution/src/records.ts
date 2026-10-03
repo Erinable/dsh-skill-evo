@@ -3,6 +3,17 @@ import { dirname } from 'node:path'
 import { appendFrames, readFrames } from './jsonl.js'
 import { withLock } from './locking.js'
 
+/** Raised when a computed append produces an id already present in the store. */
+export class DuplicateRecordError extends Error {
+  readonly id: string
+
+  constructor(id: string) {
+    super(`duplicate record id: ${id}`)
+    this.name = 'DuplicateRecordError'
+    this.id = id
+  }
+}
+
 /** Small append-only JSONL repository for derived evolution records. */
 export class JsonlRecordStore<T extends { readonly id: string }> {
   private readonly knownIds = new Set<string>()
@@ -19,6 +30,26 @@ export class JsonlRecordStore<T extends { readonly id: string }> {
       await appendFrames(this.filePath, [JSON.stringify(record)])
       this.knownIds.add(record.id)
       return true
+    }))
+  }
+
+  async appendComputed(build: (records: readonly T[]) => T): Promise<T> {
+    return this.enqueue(() => withLock(`${this.filePath}.lock`, 'append-computed', async () => {
+      await this.ensureInitialized()
+      const { lines } = await readFrames(this.filePath)
+      const records = lines.map(line => {
+        const record = JSON.parse(line) as T
+        if (typeof record.id !== 'string') throw new Error('invalid record id')
+        return record
+      })
+      this.knownIds.clear()
+      for (const record of records) this.knownIds.add(record.id)
+
+      const candidate = build(records)
+      if (this.knownIds.has(candidate.id)) throw new DuplicateRecordError(candidate.id)
+      await appendFrames(this.filePath, [JSON.stringify(candidate)])
+      this.knownIds.add(candidate.id)
+      return candidate
     }))
   }
 

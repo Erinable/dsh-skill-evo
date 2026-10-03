@@ -1,3 +1,5 @@
+import type { EvaluationCostReport, EvaluationSample } from './evaluation-cost.js'
+
 export interface SkillRef {
   readonly name: string
   readonly provider: string
@@ -15,6 +17,7 @@ export type ObservationKind =
   | 'skill-load-failed'
   | 'agent-step'
   | 'tool-result'
+  | 'context-shadowed'
   | 'user-follow-up'
   | 'task-finished'
   | 'skill-file-observed'
@@ -109,6 +112,11 @@ export interface SkillFailureCase {
   readonly origin: FailureOrigin
   readonly sessionId?: string
   readonly feedbackKind?: FeedbackKind
+  readonly followUpId?: string
+  readonly intent?: FollowUpIntent
+  readonly intentSource?: 'explicit' | 'classifier' | 'rule'
+  readonly attribution?: Attribution
+  readonly attributionSource?: 'override' | 'tool'
   readonly attributionConfidence?: number
   readonly counterEvidence?: readonly string[]
   readonly evidenceEventIds: readonly string[]
@@ -157,6 +165,7 @@ export type ProposalSurface = 'description' | 'trigger' | 'procedure' | 'referen
 
 export interface SkillProposal {
   readonly id: string
+  readonly previousRecordId?: string
   readonly skillName: string
   readonly diagnosisId?: string
   readonly clusterId?: string
@@ -222,6 +231,8 @@ export interface SkillEvalResult {
   readonly candidateContentHash: string
   readonly caseIds: readonly string[]
   readonly createdAt: string
+  readonly cost?: EvaluationCostReport
+  readonly samples?: readonly EvaluationSample[]
 }
 
 /** Persisted evaluation evidence that promotion is allowed to consume. */
@@ -251,6 +262,62 @@ export interface EvaluationPolicy {
   readonly requireOriginalFailureImprovement: boolean
 }
 
+export interface EvaluationPolicyV2 {
+  readonly schema: 2
+  readonly version: string
+  readonly maxRegressionCount: number
+  readonly maxSecurityViolations: number
+  readonly requireNoNewSideEffects: boolean
+  readonly requirePositiveFeedback?: boolean
+  readonly sampling?: { readonly runs?: number }
+  readonly significance?: { readonly alpha?: number }
+  readonly originalFailure?: {
+    readonly requireImprovement?: boolean
+    readonly costMetric?: 'steps' | 'tokens' | 'steps-or-tokens' | 'steps-and-tokens' | null
+    readonly minCostReduction?: number
+  }
+  readonly historicalSuccess?: {
+    readonly maxPassRateDrop?: number
+    readonly maxStepIncrease?: number | null
+    readonly maxTokenIncrease?: number | null
+  }
+  readonly context?: {
+    readonly maxCatalogIncreaseTokens?: number | null
+    readonly maxLoadIncreaseTokens?: number | null
+  }
+}
+
+export type EvaluationPolicyInput = EvaluationPolicy | EvaluationPolicyV2
+
+export interface NormalizedEvaluationPolicy {
+  readonly schema: 1 | 2
+  readonly version: string
+  readonly maxRegressionCount: number
+  readonly maxSecurityViolations: number
+  readonly requireNoNewSideEffects: boolean
+  readonly requirePositiveFeedback: boolean
+  readonly sampling: { readonly runs: number }
+  readonly significance: { readonly alpha: number }
+  readonly originalFailure: {
+    readonly requireImprovement: boolean
+    readonly costMetric: 'steps' | 'tokens' | 'steps-or-tokens' | 'steps-and-tokens' | null
+    readonly minCostReduction: number
+  }
+  readonly historicalSuccess: {
+    readonly maxPassRateDrop: number
+    readonly maxStepIncrease: number | null
+    readonly maxTokenIncrease: number | null
+  }
+  readonly context: {
+    readonly maxCatalogIncreaseTokens: number | null
+    readonly maxLoadIncreaseTokens: number | null
+  }
+  readonly legacy: {
+    readonly maxTokenIncreaseRatio?: number
+    readonly maxContextIncreaseRatio?: number
+  }
+}
+
 export interface ProposalComparison {
   readonly proposalId: string
   readonly caseId: string
@@ -269,6 +336,7 @@ export type DecisionAction = 'proposed' | 'evaluating' | 'evaluated' | 'accepted
 
 export interface DecisionRecord {
   readonly id: string
+  readonly recordId?: string
   readonly proposalId?: string
   readonly skillName: string
   readonly action: DecisionAction
@@ -312,6 +380,17 @@ export type PublicationScope = typeof PUBLICATION_SCOPES[number]
 
 export const FEEDBACK_KINDS = ['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'other'] as const
 export type FeedbackKind = typeof FEEDBACK_KINDS[number]
+export const FOLLOW_UP_INTENTS = ['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'other', 'not-attributable', 'unknown'] as const
+export type FollowUpIntent = typeof FOLLOW_UP_INTENTS[number]
+export interface ObservationDigest { readonly kind: ObservationKind; readonly skillName?: string; readonly toolName?: string; readonly failed?: true }
+export interface FollowUpClassificationInput { readonly observationId: string; readonly text?: string; readonly skillName?: string; readonly before: readonly ObservationDigest[]; readonly after: readonly ObservationDigest[] }
+export interface FollowUpClassifier { readonly version: string; classify(input: FollowUpClassificationInput, signal: AbortSignal): Promise<{ readonly intent: Exclude<FollowUpIntent, 'other'>; readonly confidence: number; readonly rationale?: string }> }
+export interface ClassificationMemoEntry { readonly id: string; readonly classifierVersion: string; readonly inputHash: string; readonly observationId: string; readonly intent: Exclude<FollowUpIntent, 'other'>; readonly confidence: number; readonly rationale?: string; readonly createdAt: string }
+export interface FollowUpResolution {
+  readonly id: string; readonly observationId: string; readonly sessionId?: string; readonly skillName?: string; readonly intent: FollowUpIntent; readonly confidence: number
+  readonly source: 'explicit' | 'classifier' | 'rule'; readonly version: string; readonly ruleId?: string; readonly fallbackReason?: 'no-classifier' | 'not-classified'; readonly inputHash?: string
+  readonly attribution: Attribution; readonly attributionSource: 'override' | 'tool' | 'intent'; readonly policyVersion: string; readonly evidenceEventIds: readonly string[]
+}
 
 export class InvalidOptionError extends Error {
   readonly code = 'invalid-option'

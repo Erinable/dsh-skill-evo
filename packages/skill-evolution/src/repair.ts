@@ -4,6 +4,7 @@ import { createContentHash, isObservationValue } from './events.js'
 import { sweepLocks, withLock, type SweptLock } from './locking.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { quarantinePath, splitFrames } from './jsonl.js'
+import { isClassificationMemoEntry } from './follow-up.js'
 
 export interface JsonlRepairResult {
   readonly path: string
@@ -69,7 +70,7 @@ async function repairJsonlUnlocked(path: string, options: { readonly parse?: (va
         continue
       }
       if (id !== undefined) ids.add(id)
-      valid.push(JSON.stringify(value))
+      valid.push(line)
     } catch {
       invalid.push(line)
     }
@@ -101,7 +102,7 @@ export async function repairEvolutionRoot(root: string, options: { readonly json
   const locks = [...await sweepLocks({ directories, paths: lockPaths })]
   const jsonl = []
   for (const path of options.jsonlPaths) {
-    const parse = path === observationsPath ? isObservationValue : undefined
+    const parse = path === observationsPath ? isObservationValue : layout.stores.find(store => store.path === path)?.name === 'classifications' ? isClassificationMemoEntry : undefined
     jsonl.push(await repairJsonlFile(path, { ...(parse === undefined ? {} : { parse }) }))
   }
   const lockArtifacts = locks.filter(item => item.artifact === 'lock' && item.state !== 'skipped')

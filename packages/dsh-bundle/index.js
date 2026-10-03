@@ -38,29 +38,34 @@ export function createDefaultEventMapper() {
       source: 'runtime',
     }
 
+    if (event.type === 'compaction/summary' || event.type === 'compaction/prune') {
+      return mapContextShadowed(base, event)
+    }
+
     if (event.type === 'user/message') {
-      return mapUserMessage(base, event, sessions)
+      return markSurfaceReplacement(mapUserMessage(base, event, sessions), event)
     }
 
     if (event.type === 'tool/call') {
-      return mapToolCall(base, event, sessionId, toolCalls)
+      return markSurfaceReplacement(mapToolCall(base, event, sessionId, toolCalls, sessions), event)
     }
 
     if (event.type === 'tool/result') {
-      return mapToolResult(base, event, sessionId, toolCalls)
+      if (isSurfaceReplacement(event)) return mapReplacementToolResult(base, event)
+      return mapToolResult(base, event, sessionId, toolCalls, sessions)
     }
 
     if (event.type === 'turn/end') {
       clearToolCalls(toolCalls, sessionId)
-      return mapTurnEnd(base, event)
+      return markSurfaceReplacement(mapTurnEnd(base, event), event)
     }
 
     if (event.type === 'session/end' || event.type === 'session/close') {
       clearSession(sessions, toolCalls, sessionId)
-      return base
+      return markSurfaceReplacement(base, event)
     }
 
-    return base
+    return markSurfaceReplacement(base, event)
   }
 }
 
@@ -87,6 +92,65 @@ export function mapFileObservation(target, observation, { id } = {}) {
       observationKind: observation?.kind ?? 'unknown',
     },
     source: 'filesystem',
+  }
+}
+
+function mapContextShadowed(base, event) {
+  const data = asRecord(event.data)
+  const mechanism = event.type === 'compaction/summary' ? 'summary' : 'prune'
+  const seqs = Array.isArray(data?.shadowedSeqs) ? data.shadowedSeqs : undefined
+  const ranges = mergeSeqRanges(seqs, data?.shadowedRange)
+  return {
+    ...base,
+    kind: 'context-shadowed',
+    payload: {
+      ...base.payload,
+      shadowedSeqRanges: ranges,
+      ...(Number.isFinite(data?.shadowedTokenCount) ? { shadowedTokenCount: data.shadowedTokenCount } : {}),
+      mechanism,
+    },
+  }
+}
+
+function mergeSeqRanges(seqs, range) {
+  const values = Array.isArray(seqs) ? seqs.filter(value => Number.isInteger(value)).map(Number) : []
+  if (values.length === 0) {
+    if (Array.isArray(range) && range.length === 2 && range.every(Number.isInteger)) return [[range[0], range[1]]]
+    if (range && typeof range === 'object' && Number.isInteger(range.start) && Number.isInteger(range.end)) return [[range.start, range.end]]
+  }
+  values.sort((left, right) => left - right)
+  const result = []
+  for (const value of values) {
+    const last = result.at(-1)
+    if (last && value <= last[1] + 1) last[1] = Math.max(last[1], value)
+    else result.push([value, value])
+  }
+  return result
+}
+
+function isSurfaceReplacement(event) {
+  const data = asRecord(event.data)
+  const surfaceOp = asRecord(data?.surfaceOp) ?? asRecord(event.surfaceOp)
+  return surfaceOp?.op === 'replace'
+}
+
+function markSurfaceReplacement(mapped, event) {
+  return isSurfaceReplacement(event)
+    ? { ...mapped, payload: { ...mapped.payload, surfaceReplace: true } }
+    : mapped
+}
+
+function mapReplacementToolResult(base, event) {
+  const data = asRecord(event.data)
+  const callId = stringValue(data?.callId) ?? stringValue(asRecord(data?.message)?.source?.callId)
+  return {
+    ...base,
+    kind: 'tool-result',
+    payload: {
+      ...base.payload,
+      ...(callId === undefined ? {} : { toolCallId: callId }),
+      surfaceReplace: true,
+    },
   }
 }
 
@@ -319,7 +383,7 @@ function redactText(value) {
 }
 
 function isObservationInput(value) {
-  const kinds = new Set(['catalog-visible', 'skill-load-requested', 'skill-loaded', 'skill-load-failed', 'agent-step', 'tool-result', 'user-follow-up', 'task-finished', 'skill-file-observed', 'adoption-applied'])
+  const kinds = new Set(['catalog-visible', 'skill-load-requested', 'skill-loaded', 'skill-load-failed', 'agent-step', 'tool-result', 'context-shadowed', 'user-follow-up', 'task-finished', 'skill-file-observed', 'adoption-applied'])
   return value !== null && typeof value === 'object'
     && kinds.has(value.kind)
     && typeof value.occurredAt === 'string'
@@ -361,6 +425,7 @@ function mapUserMessage(base, event, sessions) {
   }
 
   if (source?.kind === 'skill-invocation' && typeof source.name === 'string') {
+    clearPrecedingToolState(sessions, base.sessionId)
     const text = textFromContent(data.content)
     const contentHash = skillContentHash(text)
     return {
@@ -371,6 +436,7 @@ function mapUserMessage(base, event, sessions) {
       payload: {
         ...base.payload,
         invocation: 'user',
+        shadowTracked: true,
       },
     }
   }
@@ -379,6 +445,13 @@ function mapUserMessage(base, event, sessions) {
     const state = sessions.get(base.sessionId) ?? { userMessages: 0 }
     const isFollowUp = state.userMessages > 0
     state.userMessages += 1
+    const preceding = isFollowUp
+      ? {
+          ...(state.precedingToolKind === undefined ? {} : { precedingToolKind: state.precedingToolKind }),
+          ...(state.precedingToolFailed === true ? { precedingToolFailed: true } : {}),
+        }
+      : {}
+    clearPrecedingToolState(sessions, base.sessionId)
     sessions.set(base.sessionId, state)
     if (isFollowUp) {
       const text = textFromContent(data.content)
@@ -389,6 +462,7 @@ function mapUserMessage(base, event, sessions) {
         payload: {
           ...base.payload,
           ...(text === undefined ? {} : { text: redactSensitiveText(text) }),
+          ...preceding,
         },
       }
     }
@@ -397,7 +471,7 @@ function mapUserMessage(base, event, sessions) {
   return base
 }
 
-function mapToolCall(base, event, sessionId, toolCalls) {
+function mapToolCall(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId)
   const toolName = stringValue(data?.name)
@@ -407,6 +481,7 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   if (callId !== undefined) toolCalls.set(`${sessionId}:${callId}`, call)
 
   if (toolName === 'skill' && skillName !== undefined) {
+    setPrecedingToolState(sessions, sessionId, 'skill-load-requested', false)
     return {
       ...base,
       kind: 'skill-load-requested',
@@ -428,7 +503,7 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   }
 }
 
-function mapToolResult(base, event, sessionId, toolCalls) {
+function mapToolResult(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId) ?? stringValue(asRecord(data?.message)?.source?.callId)
   const call = callId === undefined ? undefined : toolCalls.get(`${sessionId}:${callId}`)
@@ -446,15 +521,17 @@ function mapToolResult(base, event, sessionId, toolCalls) {
   if (call?.toolName === 'skill' && call.skillName !== undefined) {
     const text = textFromToolResult(data)
     const contentHash = failed ? undefined : skillContentHash(text)
+    setPrecedingToolState(sessions, sessionId, failed ? 'skill-load-failed' : 'skill-loaded', failed)
     return {
       ...base,
       kind: failed ? 'skill-load-failed' : 'skill-loaded',
       correlationIds,
       skill: skillRef(call.skillName, contentHash),
-      payload,
+      payload: failed ? payload : { ...payload, shadowTracked: true },
     }
   }
 
+  setPrecedingToolState(sessions, sessionId, 'tool-result', failed)
   return {
     ...base,
     kind: 'tool-result',
@@ -542,6 +619,22 @@ function asRecord(value) {
 
 function clearToolCalls(toolCalls, sessionId) {
   for (const key of toolCalls.keys()) if (key.startsWith(`${sessionId}:`)) toolCalls.delete(key)
+}
+
+function clearPrecedingToolState(sessions, sessionId) {
+  const state = sessions.get(sessionId)
+  if (state === undefined) return
+  delete state.precedingToolKind
+  delete state.precedingToolFailed
+}
+
+function setPrecedingToolState(sessions, sessionId, kind, failed) {
+  const state = sessions.get(sessionId) ?? { userMessages: 0, lastSeen: Date.now() }
+  state.precedingToolKind = kind
+  if (failed === true) state.precedingToolFailed = true
+  else delete state.precedingToolFailed
+  state.lastSeen = Date.now()
+  sessions.set(sessionId, state)
 }
 
 function clearSession(sessions, toolCalls, sessionId) {

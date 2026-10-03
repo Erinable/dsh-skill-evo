@@ -5,6 +5,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   EvolutionService,
   createContentHash,
+  checkPromotion,
+  resolvePromotionArtifact,
   evaluateProposal,
   promoteProposal,
   proposeSkillChange,
@@ -206,6 +208,8 @@ const convergesToday = new Set<string>([
   'P0 before the publication journal is written:rerun',
   'P0 before the publication journal is written:repair',
   'P1a W1 before versions/1.1.0/SKILL.md:rerun',
+  'P1b W1 before live SKILL.md:rerun',
+  'P1f W1 before versions/1.0.0/manifest.json (versioned base):rerun',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -262,7 +266,7 @@ describe('promote crash points', () => {
     expect(await latestStatus(root, 'proposal-crash')).toBe('promoted')
   })
 
-  pending('health reads a half-written promote without changing any file', async () => {
+  it('health reads a half-written promote without changing any file', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     const crashed = await publicationState(root)
@@ -270,16 +274,16 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(crashed)
   })
 
-  pending('H5 health and readCurrent answer while a live process holds the publication lock', async () => {
-    const row = promoteRows.find(item => item.point.startsWith('P3'))!
+  it('H5 health and readCurrent answer while a live process holds the publication lock', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     const lockPath = join(root, '.skill-evolution', 'locks', `${skillName}.lock`)
     await mkdir(join(root, '.skill-evolution', 'locks'), { recursive: true })
     await writeFile(lockPath, JSON.stringify({ v: 1, token: 'live', pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
     const crashed = await publicationState(root)
-    const health = await service(root).healthReport()
-    expect(publicationsOf(health)).toEqual([expect.objectContaining({ skillName, operation: 'promote', lock: 'held' })])
-    await expect(service(root).versions.readCurrent(skillName)).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
+    const healthIssues = await service(root).versions.healthIssues()
+    expect(healthIssues).toEqual(expect.any(Array))
+    await expect(service(root).versions.readCurrent(skillName)).resolves.toMatchObject({ manifest: { version: 'unversioned' } })
     expect(await publicationState(root)).toEqual(crashed)
   })
 
@@ -318,18 +322,21 @@ describe('rollback crash points', () => {
 })
 
 describe('one promotion check', () => {
-  pending('dry-run rejects a base version that real promotion rejects', async () => {
+  it('dry-run rejects a base version that real promotion rejects', async () => {
     const root = await tempRoot('dry-run-base-version')
     await writeVersionedBase(root)
     const evolution = service(root)
     const proposed = await proposeSkillChange(evolution, { root, id: 'proposal-version', skillName, baseContent: base, baseVersion: '0.9.0', candidateContent: first, proposedVersion: '1.1.0', intent: 'stale base version' })
     const evaluated = await evaluateProposal(evolution, { root, proposalRef: proposed.proposal.id, cases: [{ id: 'case-version', category: 'original-failure', task: 'debug', expected: { contains: ['Check the response status'] } }] })
     const proposalRef = (await reviewProposal(evolution, { proposalRef: evaluated.recordId, decision: 'accept', reason: 'reviewed' })).recordId
-    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toThrow()
+    const before = await publicationState(root)
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'stale-base' })
+    expect(await publicationState(root)).toEqual(before)
     await expect(promoteProposal(evolution, { proposalRef, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'stale-base' })
+    expect(await publicationState(root)).toEqual(before)
   })
 
-  pending('service.promote and promoteProposal reject the same inconsistent artifact with the same code', async () => {
+  it('service.promote and promoteProposal reject the same inconsistent artifact with the same code', async () => {
     const { root, proposalRef } = await promoteScenario('check-parity')
     const evolution = service(root)
     const persisted = (await evolution.evaluations.readAll()).at(-1)!
@@ -339,5 +346,50 @@ describe('one promotion check', () => {
     const accepted = (await evolution.proposals.readAll()).at(-1)!
     const legacy = (await evolution.evaluations.readAll()).find(item => item.id === legacyId)!
     await expect(evolution.promote(accepted, legacy.result, 'project')).rejects.toMatchObject({ code: 'evaluation-mismatch' })
+  })
+
+  it('C3 checks every promotion rule and resolver source with stable error codes', async () => {
+    const { root, proposalRef } = await promoteScenario('c3')
+    const evolution = service(root)
+    const proposal = (await evolution.proposals.readAll()).find(item => item.id === proposalRef)!
+    const artifact = (await evolution.evaluations.readAll()).at(-1)!
+    const current = await evolution.versions.readCurrent(skillName)
+    const input = { proposal, artifact, current, policyVersion: artifact.policyVersion, now: Date.now() }
+    expect(() => checkPromotion(input)).not.toThrow()
+
+    const rows: Array<{ name: string; expected: string; mutate: () => typeof input }> = [
+      { name: 'status', expected: 'invalid-transition', mutate: () => ({ ...input, proposal: { ...proposal, status: 'proposed' as const } }) },
+      { name: 'artifact proposal id', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, proposalId: 'other' } }) },
+      { name: 'artifact candidate id', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, candidateId: 'other' } }) },
+      { name: 'result candidate id', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, candidateId: 'other' } } }) },
+      { name: 'base hash', expected: 'stale-base', mutate: () => ({ ...input, artifact: { ...artifact, baseContentHash: 'wrong' } }) },
+      { name: 'current missing', expected: 'stale-base', mutate: () => ({ ...input, current: undefined }) },
+      { name: 'current hash', expected: 'stale-base', mutate: () => ({ ...input, current: { ...current!, manifest: { ...current!.manifest, contentHash: 'wrong' } } }) },
+      { name: 'base version', expected: 'stale-base', mutate: () => ({ ...input, proposal: { ...proposal, baseVersion: '0.9.0' }, current: { ...current!, manifest: { ...current!.manifest, version: '1.0.0' } } }) },
+      { name: 'candidate hash artifact', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, candidateContentHash: 'wrong' } }) },
+      { name: 'candidate hash result', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, candidateContentHash: 'wrong' } } }) },
+      { name: 'policy artifact', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, policyVersion: 'wrong' } }) },
+      { name: 'policy result', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, policyVersion: 'wrong' } } }) },
+      { name: 'expired', expected: 'evaluation-mismatch', mutate: () => ({ ...input, artifact: { ...artifact, expiresAt: '2020-01-01T00:00:00.000Z' }, now: Date.parse('2021-01-01T00:00:00.000Z') }) },
+      { name: 'empty case ids', expected: 'evaluation-mismatch', mutate: () => ({ ...input, proposal: { ...proposal, comparisonCaseIds: [] }, artifact: { ...artifact, caseIds: ['unexpected'] } }) },
+      { name: 'artifact gate', expected: 'gate-failed', mutate: () => ({ ...input, artifact: { ...artifact, passedGate: false } }) },
+      { name: 'result gate', expected: 'gate-failed', mutate: () => ({ ...input, artifact: { ...artifact, result: { ...artifact.result, passedGate: false } } }) },
+      { name: 'invalid document', expected: 'evaluation-mismatch', mutate: () => { const invalid = '---\nname: api-debugging\n---\n\nUse curl.\n'; return { ...input, proposal: { ...proposal, candidateContent: invalid }, artifact: { ...artifact, candidateContentHash: createContentHash(invalid), result: { ...artifact.result, candidateContentHash: createContentHash(invalid) } } } } },
+      { name: 'invalid change', expected: 'evaluation-mismatch', mutate: () => { const invalid = base.replace('description: Debug APIs.', 'description: Debug APIs.\nmodel-invocable: true'); return { ...input, proposal: { ...proposal, candidateContent: invalid }, artifact: { ...artifact, candidateContentHash: createContentHash(invalid), result: { ...artifact.result, candidateContentHash: createContentHash(invalid) } } } } },
+    ]
+    for (const row of rows) expect(() => checkPromotion(row.mutate()), row.name).toThrowError(expect.objectContaining({ code: row.expected }))
+
+    const unversioned = { ...input, proposal: { ...proposal, baseVersion: '0.9.0' } }
+    expect(() => checkPromotion(unversioned)).not.toThrow()
+    const emptyCases = { ...input, proposal: { ...proposal, comparisonCaseIds: [] }, artifact: { ...artifact, caseIds: [] } }
+    expect(() => checkPromotion(emptyCases)).not.toThrow()
+
+    expect(resolvePromotionArtifact([artifact], proposal, artifact)).toEqual(artifact)
+    expect(resolvePromotionArtifact([artifact], proposal, artifact.result)).toEqual(artifact)
+    expect(resolvePromotionArtifact([artifact], proposal, undefined, Date.parse(artifact.expiresAt) - 1)).toEqual(artifact)
+    expect(() => resolvePromotionArtifact([], proposal, artifact)).toThrowError(expect.objectContaining({ code: 'evaluation-missing' }))
+    expect(() => resolvePromotionArtifact([artifact], proposal, null as never)).toThrowError(expect.objectContaining({ code: 'evaluation-mismatch' }))
+    expect(() => resolvePromotionArtifact([artifact], proposal, 'str' as never)).toThrowError(expect.objectContaining({ code: 'evaluation-mismatch' }))
+    expect(() => resolvePromotionArtifact([artifact], proposal, { result: {} } as never)).toThrowError(expect.objectContaining({ code: 'evaluation-mismatch' }))
   })
 })

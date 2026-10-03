@@ -23,11 +23,13 @@ import {
   portfolioDecision,
   renderFailuresMarkdown,
   renderProposalMarkdown,
+  resolveFollowUps,
   splitPortfolioEntry,
   transitionPortfolio,
   transitionProposal,
   type RuntimeObservation,
 } from '../src/index.js'
+import { measureSkillContext } from '../src/evaluation-cost.js'
 
 const dirs: string[] = []
 
@@ -47,7 +49,75 @@ function event(input: Partial<RuntimeObservation> & Pick<RuntimeObservation, 'id
   }
 }
 
+function skill(): NonNullable<RuntimeObservation['skill']> {
+  return { name: 'api-debugging', provider: 'unknown', source: 'unknown' }
+}
+
 describe('phase 2 evidence workflow', () => {
+  it('resolves the fixed follow-up vocabulary and negative boundaries', () => {
+    const texts = ['不对，应该改', 'Please correct step two.', 'Please correct timeout diagnosis.', 'Please correct this.', 'still wrong', 'wrong, upload this again']
+    const events = texts.map((text, index) => event({ id: `correction-${index}`, kind: 'user-follow-up', sessionId: `s-${index}`, payload: { text } }))
+    expect(resolveFollowUps(events).map(item => item.intent)).toEqual(texts.map(() => 'incorrect'))
+    expect(resolveFollowUps([event({ id: 'unknown', kind: 'user-follow-up', payload: { text: 'upload this again' } })])[0]).toMatchObject({ intent: 'unknown', ruleId: 'no-match' })
+    expect(resolveFollowUps([event({ id: 'correct', kind: 'user-follow-up', payload: { text: "that's correct" } })])[0]!.intent).toBe('unknown')
+  })
+
+  it('does not attribute a pre-load follow-up and applies failed tool evidence only in its turn', () => {
+    const beforeLoad = [
+      event({ id: 'before', kind: 'user-follow-up', payload: { text: '不对' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+    ]
+    expect(buildFailureCases(beforeLoad)).toEqual([])
+    const events = [
+      event({ id: 'loaded-2', sessionId: 's2', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'tool', sessionId: 's2', kind: 'tool-result', payload: { failed: true } }),
+      event({ id: 'ack', sessionId: 's2', kind: 'user-follow-up', payload: { text: '好的' } }),
+      event({ id: 'wrong', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: false } }),
+    ]
+    expect(buildFailureCases(events).find(item => item.id === 'failure:wrong')).toMatchObject({ severity: 'medium' })
+    const payloadFailure = buildFailureCases([events[0]!, events[1]!, event({ id: 'wrong-payload', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: true } })])[0]
+    expect(payloadFailure).toMatchObject({ severity: 'low', attribution: 'tool', attributionSource: 'tool' })
+  })
+
+  it('covers rule policy, explicit precedence, tool corrections, and overrides', () => {
+    const sessionEvents = [
+      event({ id: 'loaded-policy', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'thanks', kind: 'user-follow-up', payload: { text: '谢谢' } }),
+      event({ id: 'okay', kind: 'user-follow-up', payload: { text: '好的' } }),
+      event({ id: 'continue', kind: 'user-follow-up', payload: { text: '继续' } }),
+      event({ id: 'constraint', kind: 'user-follow-up', payload: { text: '必须保留第二步' } }),
+      event({ id: 'topic', kind: 'user-follow-up', payload: { text: '顺便问一下部署时间' } }),
+    ]
+    const resolutions = resolveFollowUps(sessionEvents)
+    expect(resolutions.slice(0, 3).map(item => item.intent)).toEqual(['satisfied', 'satisfied', 'not-attributable'])
+    expect(buildFailureCases(sessionEvents)).toHaveLength(1)
+    expect(buildFailureCases(sessionEvents).find(item => item.id === 'failure:constraint')).toMatchObject({ severity: 'low', intent: 'constraint' })
+    const topicCases = buildFailureCases([event({ id: 'topic-only', kind: 'user-follow-up', payload: { text: '换个话题' } })])
+    expect(topicCases).toHaveLength(0)
+    expect(buildFailureCases([event({ id: 'explicit-satisfied', kind: 'user-follow-up', payload: { explicit: true, feedbackKind: 'satisfied', text: 'done' } })])).toHaveLength(0)
+    expect(buildFailureCases([event({ id: 'explicit-incorrect', kind: 'user-follow-up', skill: skill(), payload: { explicit: true, feedbackKind: 'incorrect', text: 'wrong' } })])[0]).toMatchObject({ severity: 'high' })
+
+    const loadFailedPayload = [event({ id: 'load-payload', kind: 'skill-loaded', sessionId: 'load-payload-session', skill: skill() }), event({ id: 'follow-payload', kind: 'user-follow-up', sessionId: 'load-payload-session', skill: skill(), payload: { text: '不对', precedingToolKind: 'skill-load-failed', precedingToolFailed: true } })]
+    const loadFailedOffline = [event({ id: 'load-offline', kind: 'skill-load-failed', sessionId: 'load-offline-session', skill: skill() }), event({ id: 'follow-offline', kind: 'user-follow-up', sessionId: 'load-offline-session', skill: skill(), payload: { text: '不对' } })]
+    expect(buildFailureCases(loadFailedPayload)[0]).toMatchObject({ severity: 'medium', attribution: 'composition' })
+    expect(buildFailureCases(loadFailedOffline).find(item => item.id === 'failure:follow-offline')).toMatchObject({ severity: 'medium', attribution: 'composition' })
+    const failedToolOffline = [event({ id: 'tool-loaded', kind: 'skill-loaded', sessionId: 'tool-session', skill: skill() }), event({ id: 'tool-offline', kind: 'tool-result', sessionId: 'tool-session', payload: { failed: true } }), event({ id: 'follow-tool-offline', kind: 'user-follow-up', sessionId: 'tool-session', payload: { text: '不对' } })]
+    expect(buildFailureCases(failedToolOffline)[0]).toMatchObject({ severity: 'low', attribution: 'tool' })
+    const override = buildFailureCases([event({ id: 'override', kind: 'user-follow-up', skill: skill(), payload: { text: '不对', attributionOverride: 'content' } })])[0]
+    expect(override).toMatchObject({ attribution: 'content', attributionSource: 'override' })
+    const explicitTool = buildFailureCases([event({ id: 'explicit-tool', kind: 'user-follow-up', skill: skill(), payload: { explicit: true, feedbackKind: 'incorrect', text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: true } })])[0]
+    expect(explicitTool).toMatchObject({ severity: 'high', intent: 'incorrect' })
+    expect(explicitTool?.attribution).toBeUndefined()
+  })
+
+  it('keeps diagnosis timestamps and ids stable across projections', () => {
+    const events = [event({ id: 'loaded-stable', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, occurredAt: '2026-09-25T00:00:00.000Z' }), event({ id: 'wrong-stable', kind: 'user-follow-up', payload: { text: '不对' }, occurredAt: '2026-09-25T00:00:01.000Z' })]
+    const failures = buildFailureCases(events); const clusters = clusterFailureCases(failures)
+    const first = new EvolutionWorkflow(); first.add(events)
+    const second = new EvolutionWorkflow(); second.add(events)
+    expect(second.snapshot().diagnoses).toEqual(first.snapshot().diagnoses)
+  })
+
   it('projects experience, failure cases, clusters, and conservative diagnoses', () => {
     const events = [
       event({ id: 'load', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown', contentHash: 'v1' } }),
@@ -89,7 +159,7 @@ describe('phase 2 evidence workflow', () => {
   it('records structured failure origins and diagnoses them without parsing free text', () => {
     const cases = buildFailureCases([
       event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
-      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'upload this again', explicit: false } }),
+      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong, upload this again', explicit: false } }),
       event({ id: 'explicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong command', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } }),
       event({ id: 'load', kind: 'skill-load-failed', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'download failed' } }),
     ])
@@ -121,6 +191,12 @@ describe('phase 2 evidence workflow', () => {
       skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' },
       payload: { explicit: true, feedbackKind, text: 'the wording is irrelevant' },
     })])
+    if (feedbackKind === 'goal-changed') {
+      expect(failure).toBeUndefined()
+      const synthetic = { id: 'failure:goal', skillName: 'api-debugging', task: 'debug', failure: 'topic changed', evidenceEventIds: ['goal'], severity: 'low' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'explicit-feedback' as const, feedbackKind }
+      expect(diagnoseFailureCluster({ id: 'cluster:api-debugging:failure:goal', skillName: 'api-debugging', signature: 'topic changed', caseIds: [synthetic.id], occurrenceCount: 1, createdAt: synthetic.createdAt, status: 'open' }, [synthetic]).rootCause).toBe(rootCause)
+      return
+    }
     expect(failure).toMatchObject({ origin: 'explicit-feedback', feedbackKind })
     expect(diagnoseFailureCluster({
       id: `cluster:api-debugging:${failure!.id}`, skillName: 'api-debugging', signature: 'irrelevant',
@@ -282,6 +358,61 @@ describe('phase 3 proposal and evaluation', () => {
   })
 })
 
+describe('evaluation execution cost gates', () => {
+  const policy = (extra: Record<string, unknown> = {}) => ({ schema: 2 as const, version: '2', maxRegressionCount: 0, maxSecurityViolations: 0, requireNoNewSideEffects: true, ...extra })
+  const original = { id: 'original', category: 'original-failure' as const, task: 'debug' }
+  const base = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+
+  it('collects interleaved samples and reports the exact 6-to-2 reduction', async () => {
+    const order: string[] = []
+    const result = await evaluateCandidate({ candidateId: 'cost-6-2', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, item, context) => { order.push(`${item.id}:${context!.exposure}#${context!.sample}`); return { passed: true, toolCalls: context!.exposure === 'base' ? 6 : 2 } } })
+    expect(order).toEqual(['original:base#0', 'original:candidate#0', 'original:base#1', 'original:candidate#1', 'original:base#2', 'original:candidate#2', 'original:base#3', 'original:candidate#3', 'original:base#4', 'original:candidate#4'])
+    expect(result.cost?.categories['original-failure'].steps).toMatchObject({ relativeChange: -2 / 3, pValue: 1 / 252 })
+  })
+
+  it('rejects historical step increases and context growth', async () => {
+    const historical = { id: 'history', category: 'historical-success' as const, task: 'debug' }
+    const increased = base.replace('Debug APIs.', `Debug APIs.${'x'.repeat(300)}`) + 'x'.repeat(4101)
+    const result = await evaluateCandidate({ candidateId: 'cost-growth', baseContent: base, candidateContent: increased, cases: [original, historical], policy: policy({ originalFailure: { requireImprovement: false }, historicalSuccess: { maxStepIncrease: 0.1 }, context: { maxCatalogIncreaseTokens: 64, maxLoadIncreaseTokens: 1024 } }), runner: async (_content, item, context) => ({ passed: true, toolCalls: item.id === 'history' && context!.exposure === 'candidate' ? 5 : 4 }) })
+    expect(result.gateReasons).toEqual(expect.arrayContaining(['historical-success steps increase exceeded policy', 'catalog context increase exceeded policy', 'load context increase exceeded policy']))
+    expect(result.decision).toBe('needs-review')
+    expect(result.cost?.context).toEqual({ estimator: 'utf8-bytes-div4-v1', base: measureSkillContext(base), candidate: measureSkillContext(increased), delta: { catalogTokens: measureSkillContext(increased).catalogTokens - measureSkillContext(base).catalogTokens, loadTokens: measureSkillContext(increased).loadTokens - measureSkillContext(base).loadTokens } })
+  })
+
+  it('reports unstable candidate sample rates and exact no-data reasons', async () => {
+    const unstable = await evaluateCandidate({ candidateId: 'unstable', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 3 }) })
+    expect(unstable.cost?.unstable).toContainEqual({ caseId: 'original', exposure: 'candidate', passRate: 0.6 })
+    const unstable40 = await evaluateCandidate({ candidateId: 'unstable-40', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 2 }) })
+    expect(unstable40.cost?.unstable).toContainEqual({ caseId: 'original', exposure: 'candidate', passRate: 0.4 })
+    const noData = await evaluateCandidate({ candidateId: 'no-data', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async () => ({ passed: true }) })
+    expect(noData.gateReasons).toContain('original-failure steps: no data')
+  })
+
+  it('reports every original-failure regression and guards the cost path', async () => {
+    const improved = { id: 'improved', category: 'original-failure' as const, task: 'debug' }
+    const regressed = { id: 'regressed', category: 'original-failure' as const, task: 'debug' }
+    const result = await evaluateCandidate({ candidateId: 'regressed', baseContent: base, candidateContent: base, cases: [regressed, improved], policy: policy(), runner: async (_content, item, context) => ({ passed: item.id === 'improved' ? context!.exposure === 'candidate' : context!.exposure === 'base', toolCalls: 1 }) })
+    expect(result.gateReasons).toContain('original-failure case regressed: regressed')
+    expect(result.gateReasons).not.toContain('original-failure case regressed: improved')
+    const costPath = await evaluateCandidate({ candidateId: 'cost-path', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: context!.exposure === 'base' || context!.sample < 3, toolCalls: context!.exposure === 'base' ? 5 : 3 }) })
+    expect(costPath.cost?.checks.find(check => check.id === 'original-failure-improvement')?.detail).toContain('k_b = 5, k_c = 3')
+    expect(costPath.passedGate).toBe(false)
+    expect(costPath.gateReasons).toContain('original-failure did not improve')
+    const control = await evaluateCandidate({ candidateId: 'cost-control', baseContent: base, candidateContent: base, cases: [original], policy: policy(), runner: async (_content, _case, context) => ({ passed: true, toolCalls: context!.exposure === 'base' ? 6 : 2 }) })
+    expect(control.passedGate).toBe(true)
+    expect(control.cost?.checks.find(check => check.id === 'original-failure-improvement')).toMatchObject({ status: 'passed' })
+    expect(control.cost?.categories['original-failure'].steps.pValue).toBe(1 / 252)
+  })
+
+  it('retains schema 1 boundary and missing-token gates', async () => {
+    const boundary = { id: 'boundary', category: 'boundary' as const, severity: 'high' as const, task: 'boundary' }
+    let calls = 0
+    const result = await evaluateCandidate({ candidateId: 'schema1', baseContent: base, candidateContent: base, cases: [original, boundary], policy: { version: '1', maxRegressionCount: 1, maxSecurityViolations: 0, requireNoNewSideEffects: true, requireOriginalFailureImprovement: false, maxTokenIncreaseRatio: 0.1 }, runner: async (_content, item, context) => { calls += 1; return { passed: item.id === 'original' || context!.exposure === 'base' } } })
+    expect(result.gateReasons).toEqual(expect.arrayContaining(['new high-severity boundary failure', 'token cost: no data']))
+    expect(calls).toBe(4)
+  })
+})
+
 describe('phase 4 publication and phase 5 portfolio maintenance', () => {
   it('does not leave publication artifacts when a historical version precheck fails', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-lifecycle-precheck-'))
@@ -316,8 +447,8 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     await writeFile(join(root, '.publish.json'), `${JSON.stringify({ proposalId: next.id, version: next.proposedVersion, contentHash: createContentHash(next.candidateContent) })}\n`)
 
     await expect(store.readCurrent('api-debugging')).resolves.toMatchObject({ manifest: { version: '1.0.0' } })
-    await expect(readdir(join(root, 'versions', next.proposedVersion))).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(readFile(join(root, '.publish.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(join(root, 'versions', next.proposedVersion))).resolves.toEqual([])
+    await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('contentHash')
     await expect(store.promote(next, { scope: 'project' })).resolves.toMatchObject({ manifest: { version: '1.1.0' } })
   })
 
@@ -425,6 +556,7 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     const deadPid = spawnSync(process.execPath, ['-e', '']).pid
     if (!deadPid) throw new Error('child pid unavailable')
     await writeFile(join(dir, '.skill-evolution', 'locks', 'api-debugging.lock'), JSON.stringify({ v: 1, token: 'dead', pid: deadPid, hostname: hostname(), createdAt: new Date().toISOString(), uptimeMs: Math.round(uptime() * 1000), operation: 'promote' }))
+    await store.promote(proposal, { scope: 'project' })
     expect((await store.readCurrent('api-debugging'))?.content).toContain('Recovered.')
     await expect(readFile(join(root, '.publish.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(JSON.parse(await readFile(join(root, 'current.json'), 'utf8')).version).toBe('1.0.0')
@@ -445,11 +577,14 @@ describe('phase 4 publication and phase 5 portfolio maintenance', () => {
     const root = join(dir, 'api-debugging')
     const lockPath = join(dir, '.skill-evolution', 'locks', 'api-debugging.lock')
     expect(JSON.parse(await readFile(lockPath, 'utf8')).operation).toBe('promote')
-    await expect(readFile(join(root, '.publish.json'), 'utf8')).resolves.toContain('1.0.0')
+    await expect(readFile(join(dir, '.skill-evolution', 'publications', 'api-debugging.json'), 'utf8')).resolves.toContain('1.0.0')
     child.kill('SIGKILL')
     await once(child, 'exit')
+    const recoveryBase = `---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n`
+    const recoveryProposal = createProposal({ id: 'sigkill', skillName: 'api-debugging', baseVersion: '0.0.0', baseContent: recoveryBase, proposedVersion: '1.0.0', candidateContent: recoveryBase.replace('Base.', 'Recovered.'), intent: 'Recover' })
+    await new SkillVersionStore(dir).promote(recoveryProposal, { scope: 'project' })
     expect((await new SkillVersionStore(dir).readCurrent('api-debugging'))?.content).toContain('Recovered.')
-    await expect(readFile(join(root, '.publish.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(dir, '.skill-evolution', 'publications', 'api-debugging.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(JSON.parse(await readFile(join(root, 'current.json'), 'utf8')).version).toBe('1.0.0')
     await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -676,8 +811,8 @@ describe('phase workflow orchestration', () => {
     const evaluation = await service.evaluate(proposal, [{ id: 'trigger', category: 'original-failure', task: 'debug', expected: { contains: ['Improved.'] } }])
     const evaluated = (await service.proposals.readAll()).find(item => item.id === 'artifact-proposal:evaluated')!
     const accepted = await service.acceptProposal(evaluated, 'reviewed')
-    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toThrow('persisted evaluation artifact')
-    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toThrow('supplied evaluation')
+    await expect(service.promote(accepted, { ...evaluation, artifactId: undefined }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('persisted evaluation artifact'), code: 'evaluation-missing' })
+    await expect(service.promote(accepted, { ...evaluation, candidateContentHash: createContentHash('tampered') }, 'project')).rejects.toMatchObject({ message: expect.stringContaining('supplied evaluation'), code: 'evaluation-mismatch' })
   })
 
   it('turns explicit maintainer feedback into durable evidence and Markdown review output', async () => {
