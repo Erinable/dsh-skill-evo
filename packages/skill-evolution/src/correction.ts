@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createContentHash } from './events.js'
-import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, RuntimeObservation, ToolAttempt } from './types.js'
+import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, Experience, RuntimeObservation, ToolAttempt } from './types.js'
 
 export const CORRECTION_RULES_VERSION = 'rule-1'
 export const CORRECTION_POLICY_VERSION = 'correction-policy-v1'
@@ -30,7 +30,7 @@ export function correlateToolAttempts(events: readonly RuntimeObservation[]): To
 function intent(command: string): string {
   const part = command.split(/&&|\|\||[;|]/).at(-1)!.trim()
   const tokens = part.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
-  while (tokens.length && /^(?:[A-Za-z_][\w]*=.*|sudo|env|command|time)$/.test(tokens[0]!)) tokens.shift()
+  while (tokens.length && /^(?:[A-Za-z_][\w]*=.*|export|sudo|env|command|time)$/.test(tokens[0]!)) tokens.shift()
   if (!tokens.length) return ''
   const program = tokens.shift()!.replace(/^.*[\\/]/, '')
   const skip = new Set(['-C', '-c', '--prefix', '--context'])
@@ -50,7 +50,8 @@ function actions(failure: ToolAttempt, success: ToolAttempt, between: readonly T
   const result = new Set<string>(); const f = failure.command ?? ''; const s = success.command ?? ''
   for (const token of s.split(/\s+/)) if (/^[A-Za-z_][\w]*=/.test(token) && !f.includes(token.split('=')[0]! + '=')) result.add(`set-env:${token.split('=')[0]!.toLowerCase()}`)
   for (const token of s.split(/\s+/)) if (token.startsWith('--') && !f.includes(token)) result.add(`flag:${token.split('=')[0]}`)
-  for (const attempt of between) if (attempt.command) result.add(`run:${intent(attempt.command)}`)
+  const key = intent(failure.command ?? '')
+  for (const attempt of between) if (attempt.command && !(attempt.outcome === 'failure' && intent(attempt.command) === key)) result.add(`run:${intent(attempt.command)}`)
   return [...result].sort()
 }
 
@@ -61,24 +62,37 @@ export function recognizeCorrections(sessionId: string, attempts: readonly ToolA
     const first = commandAttempts[i]!; if (first.outcome !== 'failure') continue
     const key = intent(first.command!); if (!key) continue
     const failures = [first]; let j = i + 1
-    while (j < commandAttempts.length && failures.length < policy.minFailures) { const a = commandAttempts[j]!; if (intent(a.command!) === key && a.outcome === 'failure') failures.push(a); j++ }
+    while (j < commandAttempts.length) { const a = commandAttempts[j]!; if (intent(a.command!) === key && a.outcome === 'failure') failures.push(a); if (intent(a.command!) === key && a.outcome === 'success') break; j++ }
     if (failures.length < policy.minFailures) continue
     let successIndex = -1
-    for (let k = j; k < Math.min(commandAttempts.length, j + policy.maxAttemptsToSuccess); k++) if (intent(commandAttempts[k]!.command!) === key && commandAttempts[k]!.outcome === 'success') { successIndex = k; break }
+    for (let k = j; k < Math.min(commandAttempts.length, i + policy.maxAttemptsToSuccess + 1); k++) if (intent(commandAttempts[k]!.command!) === key && commandAttempts[k]!.outcome === 'success') { successIndex = k; break }
     if (successIndex < 0) continue
-    const success = commandAttempts[successIndex]!; const correction = actions(failures.at(-1)!, success, commandAttempts.slice(j, successIndex))
+    const success = commandAttempts[successIndex]!; const correction = actions(failures.at(-1)!, success, commandAttempts.slice(i + 1, successIndex))
     result.push({ intent: key, errorSignature: normalizeError(failures.at(-1)!), correction, failureObservationIds: failures.map(a => a.resultObservationId ?? a.callObservationId), correctionObservationIds: commandAttempts.slice(j, successIndex).map(a => a.resultObservationId ?? a.callObservationId), successObservationId: success.resultObservationId ?? success.callObservationId })
     i = successIndex
   }
   return result
 }
 
+export function validateEpisodeDraft(draft: EpisodeDraft, attempts: readonly ToolAttempt[], policy: CorrectionPolicy = DEFAULT_CORRECTION_POLICY): boolean {
+  if (!draft || typeof draft.intent !== 'string' || draft.intent.length === 0 || draft.intent.length > 160 || typeof draft.errorSignature !== 'string' || draft.errorSignature.length > 160 || !Array.isArray(draft.correction) || draft.correction.some(action => typeof action !== 'string' || action.length > 120) || !Array.isArray(draft.failureObservationIds) || draft.failureObservationIds.length < policy.minFailures || !Array.isArray(draft.correctionObservationIds) || typeof draft.successObservationId !== 'string') return false
+  const byId = new Map(attempts.map(attempt => [(attempt.resultObservationId ?? attempt.callObservationId), attempt]))
+  const failures = draft.failureObservationIds.map(id => byId.get(id)); const success = byId.get(draft.successObservationId)
+  if (failures.some(attempt => attempt === undefined || attempt.outcome !== 'failure') || success?.outcome !== 'success') return false
+  return failures.every(attempt => intent(attempt!.command ?? '') === draft.intent) && intent(success.command ?? '') === draft.intent && draft.correctionObservationIds.every(id => byId.has(id))
+}
+
+export function experienceForEpisode(episode: CorrectionEpisode): Experience {
+  return { id: `experience:correction:${episode.id}`, taskCluster: episode.intent, contextSummary: `tool correction in session ${episode.sessionId}`, relevantSkillVersions: episode.loadedSkills, observedPattern: `self-correction: ${episode.intent} | ${episode.errorSignature} → ${episode.correction.join(', ') || 'retry'}`, evidenceEventIds: [...episode.failureObservationIds, ...episode.correctionObservationIds, episode.successObservationId], outcome: 'helpful', attribution: 'tool', confidence: 0.8, createdAt: episode.occurredAt }
+}
+
 export function inputHash(attempts: readonly ToolAttempt[]): string { return createHash('sha256').update(JSON.stringify(attempts)).digest('hex') }
 export function episodeFromDraft(sessionId: string, draft: EpisodeDraft, attempts: readonly ToolAttempt[], events: readonly RuntimeObservation[], recognizerVersion = CORRECTION_RULES_VERSION, fallbackReason?: 'not-classified'): CorrectionEpisode {
-  const first = draft.failureObservationIds[0]!; const referenced = new Set([...draft.failureObservationIds, ...draft.correctionObservationIds, draft.successObservationId]); const success = attempts.find(a => (a.resultObservationId ?? a.callObservationId) === draft.successObservationId)
+  const first = draft.failureObservationIds[0]!; const success = attempts.find(a => (a.resultObservationId ?? a.callObservationId) === draft.successObservationId)
   const loadedSkills = [...new Set(events.filter(e => e.sessionId === sessionId && e.kind === 'skill-loaded' && e.skill?.name).map(e => e.skill!.name))]
   const environmental = draft.correction.some(a => a.startsWith('set-env:') || /proxy/.test(a))
-  return { ...draft, id: `episode:${sessionId}:${first}`, sessionId, ...(events.find(e => e.sessionId === sessionId && e.taskId)?.taskId ? { taskId: events.find(e => e.sessionId === sessionId)!.taskId } : {}), signatureKey: createContentHash(JSON.stringify([draft.intent, draft.errorSignature, draft.correction])), environmental, retryOnly: draft.correction.length === 0 || draft.correction.every(a => a === 'retry'), loadedSkills, occurredAt: success?.occurredAt ?? events.find(e => e.id === draft.successObservationId)?.occurredAt ?? new Date(0).toISOString(), recognizerVersion, ...(fallbackReason ? { fallbackReason } : {}), inputHash: inputHash(attempts), createdAt: events.find(e => e.id === first)?.occurredAt ?? new Date(0).toISOString(), ...(referenced.size === 0 ? {} : {}) }
+  const taskEvent = events.find(e => e.sessionId === sessionId && e.taskId !== undefined)
+  return { ...draft, id: `episode:${sessionId}:${first}`, sessionId, ...(taskEvent?.taskId ? { taskId: taskEvent.taskId } : {}), signatureKey: createContentHash(JSON.stringify([draft.intent, draft.errorSignature, draft.correction])), environmental, retryOnly: draft.correction.length === 0 || draft.correction.every(a => a === 'retry'), loadedSkills, occurredAt: success?.occurredAt ?? events.find(e => e.id === draft.successObservationId)?.occurredAt ?? new Date(0).toISOString(), recognizerVersion, ...(fallbackReason ? { fallbackReason } : {}), inputHash: inputHash(attempts), createdAt: events.find(e => e.id === first)?.occurredAt ?? new Date(0).toISOString() }
 }
 
 export function groupPatterns(episodes: readonly CorrectionEpisode[], policy = DEFAULT_CORRECTION_POLICY): CorrectionPattern[] {

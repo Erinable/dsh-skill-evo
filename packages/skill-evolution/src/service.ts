@@ -18,7 +18,7 @@ import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEnt
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier, CorrectionClassificationMemoEntry, CorrectionEpisode, CorrectionPattern, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
-import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, groupPatterns, recognizeCorrections } from './correction.js'
+import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft } from './correction.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -398,12 +398,12 @@ export class EvolutionService {
     for (const [sessionId, sessionEvents] of sessions) {
       const attempts = correlateToolAttempts(sessionEvents); const hash = createContentHash(JSON.stringify(attempts)); const version = this.correctionClassifier?.version ?? CORRECTION_RULES_VERSION
       const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
-      const drafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
-      for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : (this.correctionClassifier ? 'not-classified' : undefined)))
+      const drafts = (memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)).filter(draft => validateEpisodeDraft(draft, attempts))
+      for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
     }
     const patterns = groupPatterns(episodes)
     await this.skillWindows.replaceAll(buildSkillWindows(observations))
-    await this.experiences.replaceAll(snapshot.experiences)
+    await this.experiences.replaceAll([...snapshot.experiences, ...episodes.map(experienceForEpisode)])
     await this.followUps.replaceAll(snapshot.followUps)
     await this.failures.replaceAll(snapshot.failures)
     await this.clusters.replaceAll(snapshot.clusters)
@@ -411,7 +411,7 @@ export class EvolutionService {
     await this.episodes.replaceAll(episodes)
     await this.patterns.replaceAll(patterns)
     await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey })
-    return { ...snapshot, episodes, patterns }
+    return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
 }
 
