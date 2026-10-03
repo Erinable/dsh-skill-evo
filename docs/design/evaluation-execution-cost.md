@@ -1,7 +1,7 @@
-> 状态：SKIL-130 设计提案（父 issue SKIL-129 的 S1）。不可逆决策见 ADR-0022、0023、0024，三份都是 `proposed`，等成员确认。
+> 状态：SKIL-130 设计提案（父 issue SKIL-129 的 S1）。不可逆决策见 ADR-0029、0030、0031，三份都是 `proposed`，等成员确认。
 > 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。
 
-本文回答 SKIL-129 的七个问题：步数口径、token 口径、多次采样与统计、上下文成本算法、分类别门槛、兼容、验收用例。基线是 `origin/main` @ `2a442af`（起草后合入的 `6accc8b` 只新增台账 record id 的设计稿和 ADR，没有改代码，已复核）。本文只出设计，不写实现代码。
+本文回答 SKIL-129 的七个问题：步数口径、token 口径、多次采样与统计、上下文成本算法、分类别门槛、兼容、验收用例。基线是 `origin/main` @ `2a442af`（起草后合入的 `6accc8b` 只新增台账 record id 的设计稿和 ADR，没有改代码；`63d2007`（SKIL-134）只改了 `experience.ts`、`types.ts`、README 和测试，`evaluator.ts` 和 adapter 没动，`types.ts` 的行号已按 `63d2007` 更新。两次都已复核）。本文只出设计，不写实现代码。
 
 优化目标（来自 SKIL-129）：
 
@@ -33,9 +33,9 @@ s.t.   P(V(τ)=pass | x, S) ≥ P(V(τ)=pass | x, S_base)，且不新增安全�
 | `evaluator.ts:104-105` | `maxTokenIncreaseRatio`、`maxContextIncreaseRatio` 比较全体总和；Base 总和为 0 时直接跳过 | 不分类别；缺数据时静默通过 |
 | `evaluator.ts:111-113` | original-failure 只认「通过数增加」 | 已能通过、只是更省的 Candidate 过不了 |
 | `evaluator.ts:119,228-241` | `boundaryHighFailures` 对 high boundary 用例把 Base 再跑一遍 | 多余的 runner 调用；采样后会放大 R 倍 |
-| `types.ts:194-216` `SkillEvalResult` | 没有任何成本字段，累加出来的 token 总和不写进结果 | 报告和 artifact 看不到成本 |
-| `types.ts:234-243` `EvaluationPolicy` | 只有两个全局比例 | 没有分类别门槛，没有采样配置 |
-| `types.ts:245-257` core 的 `ProposalComparison` | 已经有 `toolCalls: number` | core 里「工具调用次数」这个词已经存在 |
+| `types.ts:203-225` `SkillEvalResult` | 没有任何成本字段，累加出来的 token 总和不写进结果 | 报告和 artifact 看不到成本 |
+| `types.ts:243-252` `EvaluationPolicy` | 只有两个全局比例 | 没有分类别门槛，没有采样配置 |
+| `types.ts:254-266` core 的 `ProposalComparison` | 已经有 `toolCalls: number` | core 里「工具调用次数」这个词已经存在 |
 | adapter `evaluator.ts:38-50` | `DshEvaluationRunResult` 有 `toolCalls?` | — |
 | adapter `evaluator.ts:66-79` | `createDshEvaluationRunner` 不传 `toolCalls`；用 `content === baseContent` 猜 Base 还是 Candidate | 步数被丢掉；Base 与 Candidate 正文相同、或 Base 为空（SKIL-128）时会猜错 |
 | adapter `evaluator.ts:162-167` | executor 抛错或超时时写 `toolCalls: 0` | 「没数据」被记成「0 步」 |
@@ -89,7 +89,7 @@ export function analyzeEvaluationCost(input: {
 - 硬约束（schema、调用策略、安全、副作用、回归、high boundary）仍在 `evaluator.ts`，改动只是把单次结果换成 Sample 的多数判定（§4.3）。
 - 依赖方向不变：`evaluation-cost.ts` 只 import `types.ts` 和 `events.ts`（`createContentHash`），不 import DSH，也不 import `service.ts`（ADR-0014）。
 
-## 3. 步数与 token 口径（不可逆，ADR-0022）
+## 3. 步数与 token 口径（不可逆，ADR-0029）
 
 ### 3.1 步数计什么
 
@@ -120,7 +120,7 @@ export function analyzeEvaluationCost(input: {
 
 ### 3.3 只比较通过的 Sample
 
-失败的运行可能很早就放弃，步数少不代表好。所以步数和 token 的均值、方差、显著性只在**通过的 Sample** 上算；某个用例只有一边有通过的 Sample 时，这个用例不参与成本比较。这对应目标式里的约束优先：先保证通过，再比成本。`unknown`（超时、出错）的 Sample 不参与成本。
+失败的运行可能很早就放弃，步数少不代表好。所以步数和 token 的均值、方差、显著性只在**通过的 Sample** 上算，而且只在**可比用例**上算：Base 和 Candidate 在用例级都通过（§4.3 的多数判定）的用例。其余用例不参与成本比较。这对应目标式里的约束优先：先保证通过，再比成本。`unknown`（超时、出错）的 Sample 不参与成本。
 
 ### 3.4 runner 契约
 
@@ -130,7 +130,7 @@ export interface CaseRunResult {
   readonly toolCalls?: number   // 新增，步数
   readonly modelTurns?: number  // 新增，只报告
   readonly tokenCost?: number   // 口径按 §3.2
-  readonly contextCost?: number // 保留；schema 2 下只报告，不进门槛（ADR-0024）
+  readonly contextCost?: number // 保留；schema 2 下只报告，不进门槛（ADR-0031）
 }
 
 export interface EvaluationRunContext {
@@ -155,7 +155,7 @@ export type EvaluationRunner = (
 - `createFakeDshExecutor` 加一个 `script?: (input) => Partial<DshEvaluationRunResult>` 选项，按 `caseId`、`exposure`、`sample` 返回步数、token 和结果。验收用例都靠它构造（§8）。默认行为不变。
 - 步数和 token 的来源（DSH 事件流里怎么数）仍然由部署方的 executor 或 `judge` 负责，core 不认识 DSH 事件名（ADR-0014）。
 
-## 4. 多次采样与统计（不可逆部分见 ADR-0023）
+## 4. 多次采样与统计（不可逆部分见 ADR-0030）
 
 ### 4.1 R 的默认值和配置位置
 
@@ -175,11 +175,16 @@ export type EvaluationRunner = (
 
 推荐 A，方法 id 记为 `stratified-permutation-v1`，写进 artifact。细则：
 
-- 层 = 一个用例；层内只用双方**通过的** Sample（§3.3）。一边没有通过 Sample 的用例不进检验。
-- 统计量 `T = Σ_i (mean_base,i − mean_candidate,i)`，检验「Candidate 更低」的单侧假设。
-- 全部排列数 `Π_i C(n_b,i + n_c,i, n_b,i)` 不超过 10 000 时精确枚举，`p = #{T_perm ≥ T_obs} / 总数`；超过时抽 10 000 次，`p = (1 + #{T_perm ≥ T_obs}) / 10 001`，PRNG 种子取 `sha256(candidateContentHash + category + metric)` 的前 8 位十六进制。浮点比较留 1e-9 容差。
+- 层 = 一个可比用例（§3.3：双方用例级都通过）；层内只用双方**通过的** Sample。层按输入 `cases` 的顺序排列，记为 `i = 0..m−1`。
+- 统计量 `T = Σ_i (mean_base,i − mean_candidate,i)`，按 `i` 递增的顺序累加，检验「Candidate 更低」的单侧假设。
+- 全部排列数 `Π_i C(n_b,i + n_c,i, n_b,i)` 不超过 10 000 时精确枚举，`p = #{T_perm ≥ T_obs − 1e-9} / 总数`。精确枚举不用随机数，结果与枚举顺序无关。
+- 超过 10 000 时抽 10 000 次，`p = (1 + #{T_perm ≥ T_obs − 1e-9}) / 10 001`。抽样的随机源完全由下面几条确定，`stratified-permutation-v1` 这个 id 指的就是这整套算法，改其中任何一步都要换 id：
+  - **种子**：`seed = sha256(utf8(candidateContentHash + '\n' + category + '\n' + metric))` 的 32 字节摘要，`metric` 取 `steps` 或 `tokens`。每次检验各有一个种子，互不共享流。
+  - **字节流**：第 `j` 块（`j = 0, 1, 2, …`）是 `sha256(seed ‖ uint32be(j))` 的 32 字节，依次拼接；每次取 4 字节按大端读成 `u ∈ [0, 2^32)`。用 core 已有的 `node:crypto`（`events.ts:1` 的 `createHash`），不引依赖。
+  - **区间整数**：要 `[0, n)` 里的整数时，令 `limit = 2^32 − (2^32 mod n)`，`u ≥ limit` 就丢掉再取，否则返回 `u mod n`（拒绝采样，没有取模偏差）。
+  - **一次抽样**：按 `i` 递增遍历每一层；把层内 Sample 值排成 `[base 的通过 Sample（按 sample 序号）, candidate 的通过 Sample（按 sample 序号）]`，长度 `L`，做 Fisher–Yates：`for k = L−1 down to 1: j = 区间整数(k + 1); swap(a[k], a[j])`；前 `n_b,i` 个记为 Base，其余为 Candidate，算出该层均值差。所有层算完累加成一个 `T_perm`。10 000 次抽样连续消费同一条字节流，不重置。
 - 不给置信区间：置换检验反推区间要对每个候选偏移量重复检验，代价和解释成本都不划算。报告给相对变化的点估计加 p 值，已经能回答「是否显著下降」。票面允许二选一。
-- `costMetric: 'steps-or-tokens'` 同时做两次检验，每次用 α/2（Bonferroni），避免两次机会放大误判率。
+- 两个指标的组合：`costMetric: 'steps-or-tokens'` 是「任一显著下降即可」，做两次检验，每次用 α/2（Bonferroni），免得两次机会放大误判率。`'steps-and-tokens'` 是「两项都显著下降」，两次检验各用 α，不做校正：两项都要过才成立，这是交并检验（intersection-union），总的误判率不超过 α。
 
 ### 4.3 每用例的判定和「不稳定」
 
@@ -215,11 +220,12 @@ interface MetricComparison {
 ```
 
 - `variance` 用 n − 1 做分母，n < 2 时不写。类别均值是各可比用例均值的算术平均，每个用例权重相同，免得 R 次都通过的用例压过只通过一次的用例。
+- `comparableCases` 是 §3.3 定义的可比用例数（双方用例级都通过）。
 - `no-data`：类别里有双方都通过的用例，但其中任何一个通过的 Sample 缺这个指标。只要缺一处就整类 `no-data`，不在剩下的用例上算，避免挑着算。
 - `not-applicable`：类别里没有双方都通过的用例（包括类别为空）。
 - 原始 Sample 存进 artifact，是为了以后换统计方法时能直接重算，不必重跑 2RN 次模型调用。
 
-## 5. 上下文成本算法（不可逆，ADR-0024）
+## 5. 上下文成本算法（不可逆，ADR-0031）
 
 ### 5.1 算什么
 
@@ -260,7 +266,7 @@ interface SkillContextCost {
 - 顶层 `contextCost`（累加 `payload.inputTokens`）保持原义，不改名。它是宿主自报的运行时输入 token，DSH bundle 今天不写这个字段，所以恒为 0；README 写明这一点。改它的语义会破坏已有的 `metrics` 输出消费者，采用默认答案，成员可推翻。
 - 评测和 `metrics` 都调 `measureSkillContext`，同一份正文在两处给出同一个数，这就是「打通」。
 
-## 6. 分类别门槛与 policy 形状（不可逆，ADR-0023）
+## 6. 分类别门槛与 policy 形状（不可逆，ADR-0030）
 
 ### 6.1 policy schema 2
 
@@ -307,7 +313,7 @@ interface EvaluationPolicyV2 {
 | 全部 | schema、Candidate 边界、调用策略、安全违规、新增副作用、回归（non-original-failure 用例 Base 过 Candidate 不过）、新增 high boundary 失败 | 不变（`evaluator.ts:98-123`） |
 | original-failure | 没有这类用例 | `no original-failure cases`，不变 |
 | original-failure | Base 过、Candidate 不过的用例 | `original-failure case regressed: <id>`。今天这种情况被 `evaluator.ts:83` 排除在回归之外，只要别的用例多过一个就能掩盖；「通过率不下降」要求补上。只进 schema 2 |
-| original-failure | 改进要求（`requireImprovement`）：**(a)** Candidate 的通过用例数多于 Base，或 **(b)** 在双方都通过的用例上，`costMetric` 指定的指标 `relativeChange ≤ −minCostReduction` 且 `pValue ≤ α`（`steps-or-tokens` 各用 α/2） | 两条都不满足：`original-failure did not improve`；(a) 不满足且 (b) 为 `no-data`：`original-failure <metric>: no data`。schema 1 只有 (a)，与今天一致 |
+| original-failure | 改进要求（`requireImprovement`）：**(a)** Candidate 的通过用例数多于 Base，或 **(b)** 同时满足：**(b1)** 每个可比用例上 Candidate 的 Sample 级通过次数不少于 Base（`k_c,i ≥ k_b,i`）；**(b2)** 在可比用例上，`costMetric` 指定的指标 `relativeChange ≤ −minCostReduction` 且 `pValue ≤ α`（`steps-or-tokens` 各用 α/2，`steps-and-tokens` 各用 α，§4.2） | 两条都不满足：`original-failure did not improve`；(b1) 不满足时 detail 写出违反的用例 id 和双方的 `k`；(a) 不满足且 (b2) 为 `no-data`：`original-failure <metric>: no data`。schema 1 只有 (a)，与今天一致 |
 | historical-success | 用例级通过率下降超过 `maxPassRateDrop` | schema 1 保留原字符串 `historical-success pass rate regressed by more than five points` |
 | historical-success | 双方都通过的用例上，步数均值 `relativeChange > maxStepIncrease` | `historical-success steps increase exceeded policy` |
 | historical-success | 同上，token | `historical-success tokens increase exceeded policy` |
@@ -315,6 +321,8 @@ interface EvaluationPolicyV2 {
 | 上下文 | `delta.catalogTokens > maxCatalogIncreaseTokens`；`delta.loadTokens > maxLoadIncreaseTokens` | `catalog context increase exceeded policy`；`load context increase exceeded policy` |
 | boundary | 不设成本门槛，只报告 | — |
 
+- 为什么要 (b1)：用例级按多数判定，Base 5/5 通过、每次 6 步，Candidate 3/5 通过、每次 2 步时，双方用例级都算通过，不是回归；只看 (b2) 的话降幅 66.7%、p = 1/C(8,3) = 1/56 ≈ 0.018，门槛会放过。但目标式的约束是 `P(pass | S) ≥ P(pass | S_base)`，这里通过概率从 1.0 掉到 0.6，票面第 5 条也写明「通过率不下降前提下」才比成本。(b1) 只在用成本证明改进时才要求；(a) 走的是通过数增加，本身就是通过率上升，不加这条。另一个修法是「Candidate 不稳定的用例不进 (b)」，被否：Base 2/5、Candidate 3/5 时 Candidate 不稳定，但通过率没降，不该被挡；而 Base 和 Candidate 都是 4/5 时它又挡不住任何东西，判据和目标式对不上。
+- historical-success 的 `maxPassRateDrop` 有意保持用例级（通过用例数之比），不改成 Sample 级：R = 1 时它必须和 schema 1 的含义一致；单个 historical-success 用例从 Base 过变成 Candidate 不过，已经被上面的「回归」检查拦下；Sample 级的掉落（例如 5/5 → 4/5）在 R = 5 时只差一次运行，按 Sample 级拦截误拒太多，它会出现在 `unstable` 和 `cost.categories[...].passRate` 里供人看。采用默认答案，成员可推翻。
 - historical-success 的上升比较用点估计，不要求显著：这是守护约束，举证责任在 Candidate。R 较小时噪声可能误拒，缺省留了 10% 的余量。采用默认答案，成员可推翻。
 - Base 均值为 0（`relativeChange` 无定义）时：Candidate 均值也为 0 算通过；否则按上升无穷大处理，historical-success 不通过，original-failure 的 (b) 不成立。
 - `not-applicable`（类别里没有双方都通过的用例）的成本检查不产生理由：original-failure 退回只看 (a)；historical-success 已由通过率检查覆盖。
@@ -324,7 +332,11 @@ interface EvaluationPolicyV2 {
 ### 6.3 artifact 与台账
 
 - `EvaluationArtifact` 新增 `schemaVersion: 2`、`policy: NormalizedEvaluationPolicy`（快照）、`policyHash`（快照的规范 JSON 的 sha256）。`SkillEvalResult` 新增 `cost`（§4.4、§5.3）和 `policyHash`。
-- promote 的校验（`operations.ts:260`、`service.ts:297`）：artifact 带 `policyHash` 时，要求它等于当前 policy 归一化后的 hash；不带时只比 `policyVersion`，与今天一致。policy 的 `version` 是人手写的字符串，改了阈值忘了改版本号，今天会被当成同一个 policy；hash 把这个漏洞堵上。
+- promote 的校验（`operations.ts:260`、`service.ts:297`）按**当前** policy 归一化后的 schema 分两种：
+  - 当前 policy 是 schema 2：artifact 必须带 `policyHash`，且等于当前 policy 的 hash。不带（老 artifact，或 schema 1 下评出的 artifact）或不相等，都报 `evaluation-mismatch`。
+  - 当前 policy 是 schema 1：artifact 带 `policyHash` 时要求相等；不带时只比 `policyVersion`，与今天一致。
+  
+  policy 的 `version` 是人手写的字符串，改了阈值或换了 schema 却忘了改版本号，今天会被当成同一个 policy；hash 把这个漏洞堵上。schema 2 不留「只比版本号」的退路，是因为 schema 2 门槛要的证据（R 次 Sample、成本统计）老 artifact 里根本没有，版本号相等也不能说明证据对得上。
 - `sameArtifactEvidence`、`sameResultEvidence`（`operations.ts:225-250`）在双方都有 `policyHash` 时多比这一项。
 - `DecisionRecord` 新增可选 `policyHash`，`evaluated` 和 `promoted` 两条记录写入。`policyVersion` 照旧写。
 
@@ -340,7 +352,7 @@ interface EvaluationPolicyV2 {
 ### 7.2 老 Evaluation artifact
 
 - 没有 `schemaVersion` 的 artifact 按 1 读，没有 `cost`、`policy`、`policyHash`。`normalizeArtifact`（`operations.ts:203-210`）不变。
-- promote 时老 artifact 只比 `policyVersion`，和今天一样；当前 policy 若是 schema 2，它的 `version` 字符串必然与老 artifact 不同（写 policy 的人必须换版本号，`validateEvaluationPolicy` 不强制，README 写明），于是按今天的规则拒绝，要求重评。
+- 当前 policy 是 schema 1 时，promote 对老 artifact 只比 `policyVersion`，和今天一样。当前 policy 是 schema 2 时，老 artifact 没有 `policyHash`，一律报 `evaluation-mismatch`、要求重评（§6.3），不依赖写 policy 的人记得换版本号：`validateEvaluationPolicy` 不检查版本号是否变过，也检查不了。README 仍建议换 schema 时换版本号，那只是为了台账可读。
 - `renderProposalMarkdown` 遇到没有 `cost` 的结果写 `- Execution cost: not recorded`。
 - `evaluations.jsonl` 是 Fact record（ADR-0016），新字段都是加法，不改写老记录。
 
@@ -362,10 +374,12 @@ interface EvaluationPolicyV2 {
 7. **老 policy 兼容**：`evolution.spec.ts:149-159` 的 policy（schema 1）得到与今天相同的 `gateReasons`；runner 调用次数为 `2N`。设了 `maxTokenIncreaseRatio`、runner 不报 token 时出现 `token cost: no data`。
 8. **老 artifact 兼容**：没有 `schemaVersion`、`cost`、`policyHash` 的 artifact 仍能被 `normalizeArtifact` 读，schema 1 policy 下能 promote。
 9. **policy 快照**：用 schema 2 policy 评测后，只改 `historicalSuccess.maxStepIncrease`、不改 `version`，promote 报 `evaluation-mismatch`。
-10. **统计确定性**：同一组 Sample 调两次 `analyzeEvaluationCost`，输出逐字节相同；排列数超过 10 000 时走抽样，结果仍相同；`steps-or-tokens` 的每次检验用 α/2。
+10. **统计确定性**：同一组 Sample 调两次 `analyzeEvaluationCost`，输出逐字节相同；排列数超过 10 000 时走抽样，结果仍相同，且 p 值等于按 §4.2 字节流、拒绝采样和 Fisher–Yates 独立算出的值（S2 用一组固定输入，把参考值写进 spec）；`steps-or-tokens` 的每次检验用 α/2，`steps-and-tokens` 的每次检验用 α。
 11. **adapter 透传**：`createDshEvaluationRunner` 把 `toolCalls`、`modelTurns` 放进 `CaseRunResult`；传了 `context` 时按 `context.exposure` 标 exposure，Base 与 Candidate 正文相同也不会标错。
 12. **CLI `evaluate`**：`--policy` 给 schema 2 policy，默认的 content-check runner。stdout 的 JSON 里有 `cost.categories`（含 `passRate`）、`cost.context`、`cost.checks`（步数和 token 为 `no-data`）；`--report` 的 Markdown 里有成本表。步数、方差、p 值的具体数值在 `evaluateProposal` 层用第 1 条的 fake runner 断言，两层的 JSON 形状相同。
 13. **CLI `metrics`**：有 current 版本的 Skill，stdout 的 `skills[].context` 有 `catalogTokens`、`loadTokens`、`exposureWeightedTokens`，顶层有 `skillContext`；数值与第 3 条的 `measureSkillContext` 一致。
+14. **通过率下降不能靠成本路径过关**：1 个 original-failure 用例，Base 5/5 通过、每次 6 步；Candidate 3/5 通过、每次 2 步（通过的 Sample），token 相同。双方用例级都通过，不算回归，(a) 不成立。(b2) 单独看是成立的：`steps.relativeChange ≈ −0.667`、`pValue = 1/56 ≈ 0.018`。期望 `passedGate: false`，`gateReasons` 含 `original-failure did not improve`，`cost.checks` 的改进项为 `failed`、detail 写出该用例 `k_b = 5`、`k_c = 3`。对照组把 Candidate 改成 5/5、每次 2 步，期望通过、`pValue = 1/252`。
+15. **换成 schema 2 后老证据不能 promote**：用 schema 1 policy（`version: '1'`）评测得到不带 `policyHash` 的 artifact；把 policy 换成 schema 2，`version` 仍写 `'1'`，promote 报 `evaluation-mismatch`。同样不改 `version`，手工去掉 schema 2 artifact 的 `policyHash`，promote 也报 `evaluation-mismatch`。
 
 CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `--cases`），所以第 12 条用默认 runner 证明字段可见，数值在 operation 层断言。给 CLI 加 `--runner <module>` 会让 CLI 加载任意代码，不在本票。采用默认答案，成员可推翻。
 
@@ -378,9 +392,9 @@ CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `
 ## 10. 实现拆分建议（供 S2）
 
 - **T1 core 类型与 policy**：`types.ts` 的新字段，`EvaluationPolicyV2`，`normalizeEvaluationPolicy`、`validateEvaluationPolicy`、`policyHash`。其余 task 都依赖它。
-- **T2 `evaluation-cost.ts`**：`measureSkillContext`、`analyzeEvaluationCost`（汇总、置换检验、成本检查）。纯函数测试覆盖验收第 1–5、10 条的分析部分。依赖 T1。
+- **T2 `evaluation-cost.ts`**：`measureSkillContext`、`analyzeEvaluationCost`（汇总、置换检验、成本检查）。纯函数测试覆盖验收第 1–5、10、14 条的分析部分。依赖 T1。
 - **T3 `evaluator.ts`**：R 次交错采样、Sample 收集、多数判定、不稳定、boundary 复用、拼接成本检查、schema 1 的 no-data。依赖 T1、T2。
-- **T4 artifact、promote、报告、CLI**：`service.ts`、`operations.ts` 的 policy 快照与 hash 校验，`report.ts` 成本表，验收第 8、9、12 条。依赖 T3。
+- **T4 artifact、promote、报告、CLI**：`service.ts`、`operations.ts` 的 policy 快照与 hash 校验，`report.ts` 成本表，验收第 8、9、12、15 条。依赖 T3。
 - **T5 `metrics`**：`aggregateMetrics` 的 `currentSkills`、`service.metrics()`，验收第 13 条。依赖 T2，可与 T3、T4 并行。
 - **T6 dsh-adapter**：runner 透传、`exposure`、出错不写 0、fake executor 的 `script`，验收第 6、11 条。只依赖 T1 的 `CaseRunResult` / `EvaluationRunContext` 形状，可以和 T2 并行。
 
@@ -393,6 +407,7 @@ CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `
 - 不稳定只报告，不单独拦（§4.3）。
 - 不给置信区间，只给点估计加 p 值（§4.2）。
 - historical-success 的成本上升看点估计，不要求显著（§6.2）。
+- historical-success 的 `maxPassRateDrop` 保持用例级（§6.2）。
 - 上下文门槛缺省 64 / 1024 token（§5.3）。
 - `DEFAULT_EVALUATION_POLICY` 保持 schema 1（§6.1）。
 - schema 1 配了比例但缺数据时，改为「无数据」不通过（§7.1）。
@@ -401,11 +416,11 @@ CLI 今天不能注入 executor（`bin/dsh-skill-evolution.mjs:124-135` 只接 `
 
 ## 12. 不可逆决策
 
-- ADR-0022：步数 = 工具调用次数（失败、重试都算，缺数据写 `undefined`）；`tokenCost` = 输入 + 输出、含缓存命中；成本只在通过的 Sample 上比较。
-- ADR-0023：`EvaluationPolicy` schema 2 的形状与缺省值；Evaluation artifact 写入 policy 快照和 `policyHash`、原始 Sample 和统计方法 id `stratified-permutation-v1`。
-- ADR-0024：上下文成本 = 目录描述 token + 加载正文 token，估算器 `utf8-bytes-div4-v1`，评测和 `metrics` 共用；门槛比绝对增量。
+- ADR-0029：步数 = 工具调用次数（失败、重试都算，缺数据写 `undefined`）；`tokenCost` = 输入 + 输出、含缓存命中；成本只在通过的 Sample 上比较。
+- ADR-0030：`EvaluationPolicy` schema 2 的形状、缺省值和成本路径的通过率前提；Evaluation artifact 写入 policy 快照和 `policyHash`、原始 Sample 和统计方法 id `stratified-permutation-v1`（含抽样算法）；schema 2 下 promote 必须 `policyHash` 相等。
+- ADR-0031：上下文成本 = 目录描述 token + 加载正文 token，估算器 `utf8-bytes-div4-v1`，评测和 `metrics` 共用；门槛比绝对增量。
 
-**ADR 编号**：`origin/main` @ `6accc8b` 上最大是 0021。开着的 PR #80、#81、#82 也各自占用了 0022–0024 里的号，按评审契约第 4 条，后合并的 PR 改号。
+**ADR 编号**：`origin/main` @ `63d2007` 上最大是 0022（SKIL-134）。开着的 PR 占用了 0022–0028：#80 用 0022，#81 用 0022–0024，#82 用 0023–0024，#84 用 0025–0028。本稿取没人占用的 0029–0031。按评审契约第 4 条，号仍以合并顺序为准，后合并的 PR 改号。
 
 **ADR 冲突**：没有与已有 ADR 冲突。ADR-0014：步数和 token 由 adapter / executor 提供，core 只定义字段和口径，不认识 DSH 事件。ADR-0015：不碰 Provider rank，也不做运行时按成本选 Skill。ADR-0016：Sample 和统计结果写进 Evaluation artifact，是加法；不回写 Observation。ADR-0004：不涉及 Proposal status。
 
