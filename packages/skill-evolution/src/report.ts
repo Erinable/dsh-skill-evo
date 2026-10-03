@@ -43,15 +43,50 @@ export function renderProposalMarkdown(input: ProposalReportInput): string {
   if (evaluation !== undefined) {
     lines.push('', '## Evaluation', '', `- Helpful/pass count: ${evaluation.passed}/${evaluation.total}`, `- Failed cases: ${evaluation.failed}`, `- Unknown cases: ${evaluation.unknown}`, `- Regressions: ${evaluation.regressions.length}`, `- Schema valid: ${evaluation.schemaValid}`, `- Invocation policy unchanged: ${evaluation.invocationPolicyUnchanged}`, `- Gate: **${evaluation.passedGate ? 'passed' : 'rejected'}**`)
     if (evaluation.gateReasons.length > 0) lines.push('', 'Gate reasons:', ...evaluation.gateReasons.map(reason => `- ${reason}`))
+    if (evaluation.cost !== undefined) {
+      const cost = evaluation.cost
+      lines.push('', '## Execution cost', '', `- Estimator: \`${cost.context.estimator}\``, `- Catalog context: ${cost.context.base.catalogTokens} -> ${cost.context.candidate.catalogTokens} (delta ${cost.context.delta.catalogTokens})`, `- Load context: ${cost.context.base.loadTokens} -> ${cost.context.candidate.loadTokens} (delta ${cost.context.delta.loadTokens})`, '', '| Category | Base pass rate | Candidate pass rate | Steps | Tokens |', '| --- | ---: | ---: | --- | --- |')
+      for (const category of ['original-failure', 'historical-success', 'boundary'] as const) {
+        const item = cost.categories[category]
+        lines.push(`| ${category} | ${item.passRate.base} | ${item.passRate.candidate} | ${formatMetric(item.steps)} | ${formatMetric(item.tokens)} |`)
+      }
+      lines.push('', '### Cost checks', '')
+      for (const check of cost.checks) lines.push(`- \`${check.id}\` **${check.status}**: ${check.detail}`)
+      if (cost.unstable.length > 0) lines.push('', 'Unstable samples:', ...cost.unstable.map(item => `- \`${item.caseId}\` ${item.exposure}: pass rate ${item.passRate}`))
+    } else lines.push('', 'Execution cost: not recorded')
   } else {
     lines.push('', '## Evaluation', '', '- Not evaluated yet.')
   }
   return `${lines.join('\n')}\n`
 }
 
+function formatMetric(metric: { readonly status: string; readonly relativeChange?: number; readonly pValue?: number }): string {
+  if (metric.status === 'no-data') return 'no data'
+  if (metric.status === 'not-applicable') return 'not applicable'
+  return `change ${metric.relativeChange ?? 0}; p=${metric.pValue ?? 'n/a'}`
+}
+
 export function renderFailuresMarkdown(failures: readonly SkillFailureCase[]): string {
   const lines = ['# Skill Evolution Failures', '', `Total: ${failures.length}`, '']
   if (failures.length === 0) lines.push('No failure cases recorded.')
   else for (const failure of failures) lines.push(`- \`${failure.id}\` **${failure.skillName}** [${failure.severity}${failure.intentSource ? ` · ${failure.intentSource}` : ''}] ${failure.failure}`)
+  return `${lines.join('\n')}\n`
+}
+
+/** Render an evaluation without requiring a proposal record (useful for CLI output). */
+export function renderEvaluationMarkdown(evaluation: SkillEvalResult): string {
+  const lines = ['## Evaluation', '', `- Candidate: \`${evaluation.candidateId}\``, `- Gate: **${evaluation.passedGate ? 'passed' : 'rejected'}**`, `- Pass rate: ${evaluation.passed}/${evaluation.total}`, '']
+  if (evaluation.cost === undefined) {
+    lines.push('Execution cost: not recorded')
+    return `${lines.join('\n')}\n`
+  }
+  const cost = evaluation.cost
+  lines.push('## Execution cost', '', `- Context: catalog ${cost.context.base.catalogTokens} -> ${cost.context.candidate.catalogTokens}; load ${cost.context.base.loadTokens} -> ${cost.context.candidate.loadTokens}`, '', '| Category | Base pass rate | Candidate pass rate | Steps | Tokens |', '| --- | ---: | ---: | --- | --- |')
+  for (const category of ['original-failure', 'historical-success', 'boundary'] as const) {
+    const item = cost.categories[category]
+    lines.push(`| ${category} | ${item.passRate.base} | ${item.passRate.candidate} | ${formatMetric(item.steps)} | ${formatMetric(item.tokens)} |`)
+  }
+  lines.push('', '### Cost checks', '')
+  for (const check of cost.checks) lines.push(`- \`${check.id}\` **${check.status}**: ${check.detail}`)
   return `${lines.join('\n')}\n`
 }
