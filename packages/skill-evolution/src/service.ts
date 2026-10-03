@@ -4,6 +4,7 @@ import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor }
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
+import { validateEvaluationPolicy } from './policy.js'
 import { assertCanTransition, latestProposalsByRoot, ledgerRecordId, proposalRootId, transitionProposal } from './proposal.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
@@ -24,7 +25,7 @@ import type {
   SkillDiagnosis,
   SkillFailureCase,
   SkillProposal,
-  EvaluationPolicy,
+  EvaluationPolicyInput,
   Attribution,
   EvaluationArtifact,
   PublicationScope,
@@ -34,7 +35,7 @@ export interface EvolutionServiceOptions {
   readonly root: string
   readonly store?: string
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
-  readonly evaluationPolicy?: EvaluationPolicy
+  readonly evaluationPolicy?: EvaluationPolicyInput
   readonly operator?: string
   readonly evaluationTtlMs?: number
 }
@@ -51,7 +52,7 @@ export class EvolutionService {
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
-  readonly evaluationPolicy: EvaluationPolicy | undefined
+  readonly evaluationPolicy: EvaluationPolicyInput | undefined
   private readonly projectionCursorPath: string
   readonly layout: ReturnType<typeof resolveLayout>
 
@@ -200,7 +201,7 @@ export class EvolutionService {
     const current = await this.versions.readCurrent(proposal.skillName)
     if (current === undefined) throw new Error(`cannot evaluate without a current Skill: ${proposal.skillName}`)
     if (current.manifest.contentHash !== proposal.expectedBase.contentHash) throw new Error(`proposal ${proposal.id} base no longer matches the current Skill`)
-    validateEvaluationPolicy(this.options.evaluationPolicy)
+    if (this.options.evaluationPolicy !== undefined) validateEvaluationPolicy(this.options.evaluationPolicy)
     const input: EvaluateCandidateInput = {
       candidateId: proposalId,
       baseContent: current.content,
@@ -422,10 +423,4 @@ function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
     if (item.category !== 'original-failure' && item.category !== 'historical-success' && item.category !== 'boundary') throw new Error(`invalid evaluation category for ${item.id}`)
     if (item.severity !== undefined && item.severity !== 'low' && item.severity !== 'medium' && item.severity !== 'high') throw new Error(`invalid evaluation severity for ${item.id}`)
   }
-}
-
-function validateEvaluationPolicy(policy: EvaluationPolicy | undefined): void {
-  if (policy === undefined) return
-  if (!policy.version || !Number.isFinite(policy.maxRegressionCount) || policy.maxRegressionCount < 0 || !Number.isFinite(policy.maxSecurityViolations) || policy.maxSecurityViolations < 0) throw new Error('invalid evaluation policy thresholds')
-  for (const value of [policy.maxTokenIncreaseRatio, policy.maxContextIncreaseRatio]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error('evaluation cost ratios must be non-negative numbers')
 }
