@@ -158,6 +158,26 @@ _Avoid_: revert
 Promote 之后新版本在哪个范围生效：explicit-only、project、user、stable。这里的 `stable` 是 Publication scope 值，不是 Lifecycle state 定义中的阶段。
 _Avoid_: target, channel, 灰度
 
+**Publication journal**:
+一次 Promote 或 Rollback 的确定输入与发布意图；提交后用于收尾，完成后不再需要。它是临时状态，不是 Fact record。
+_Avoid_: publication event, 发布事实
+
+**Publication commit point**:
+发布意图成为持久承诺的边界；此前崩溃不改变发布状态，此后通过前滚完成发布。
+_Avoid_: live 文件已写完, 台账已转移
+
+**Publication completion**:
+根据 Publication journal 幂等完成文件发布及适用的事实记录；已完成的部分不会重复产生事实。
+_Avoid_: recovery read, 读时恢复
+
+**Unfinished publication**:
+已有 Publication journal、尚未完成收尾的 Promote 或 Rollback；可能仍在执行，也可能是崩溃遗留。
+_Avoid_: 发布失败（持锁执行中的发布不等于失败）
+
+**Quarantined publication**:
+为解除阻塞而隔离的发布意图，保留原文和原因供成员处理；隔离不撤销已经生效的正文，也不补造未发生的事实。
+_Avoid_: Rollback, 自动清理
+
 **Next load**:
 新版本只在下一次加载边界生效，已经加载进模型的正文不会被热替换。
 _Avoid_: hot reload
