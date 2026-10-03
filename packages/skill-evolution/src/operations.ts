@@ -6,7 +6,6 @@ import { assertCanTransition, findProposalById, ledgerRecordId, proposalRootId, 
 import { renderProposalMarkdown } from './report.js'
 import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type EvaluationPolicy, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
-import { classificationInputFor } from './follow-up.js'
 
 export type OperationErrorCode =
   | 'not-found'
@@ -17,7 +16,6 @@ export type OperationErrorCode =
   | 'evaluation-missing'
   | 'evaluation-mismatch'
   | 'gate-failed'
-  | 'classifier-unavailable'
 
 export class OperationError extends Error {
   constructor(readonly code: OperationErrorCode, message: string, readonly cause?: unknown) {
@@ -99,29 +97,6 @@ export interface RollbackSkillResult {
   readonly skillName: string
   readonly version: string
 }
-
-export async function classifyFollowUps(service: EvolutionService, options: { readonly signal?: AbortSignal; readonly limit?: number } = {}): Promise<{ readonly classifierVersion: string; readonly classified: number; readonly cached: number; readonly skipped: { readonly explicit: number; readonly pending: number }; readonly failed: readonly { readonly observationId: string; readonly reason: 'timeout' | 'error' | 'invalid-output'; readonly message: string }[] }> {
-  const classifier = (service as unknown as { options: import('./service.js').EvolutionServiceOptions }).options.followUpClassifier
-  if (classifier === undefined) throw new OperationError('classifier-unavailable', 'follow-up classifier is not configured')
-  const events = await service.observations.readAll(); const followUps = events.filter(event => event.kind === 'user-follow-up').slice(0, options.limit ?? Infinity)
-  let classified = 0; let cached = 0; let explicit = 0; let pending = 0
-  const failed: Array<{ observationId: string; reason: 'timeout' | 'error' | 'invalid-output'; message: string }> = []
-  for (const event of followUps) {
-    if (event.payload.explicit === true) { explicit++; continue }
-    const computed = classificationInputFor(events, event.id)
-    if (computed.pending) { pending++; continue }
-    const id = `classification:${classifier.version}:${computed.inputHash}`
-    if ((await service.classifications.readAll()).some(row => row.id === id)) { cached++; continue }
-    if (options.signal?.aborted) break
-    try {
-      const output = await classifier.classify(computed.input, options.signal ?? new AbortController().signal)
-      if (!output || !['incorrect', 'constraint', 'retry', 'dissatisfied', 'satisfied', 'goal-changed', 'not-attributable', 'unknown'].includes(output.intent) || !Number.isFinite(output.confidence) || output.confidence < 0 || output.confidence > 1) throw new Error('invalid classifier output')
-      await service.classifications.append({ id, classifierVersion: classifier.version, inputHash: computed.inputHash, observationId: event.id, intent: output.intent, confidence: output.confidence, ...(output.rationale ? { rationale: redact(output.rationale) } : {}), createdAt: event.occurredAt }); classified++
-    } catch (error) { failed.push({ observationId: event.id, reason: (error instanceof Error && error.message === 'invalid classifier output') ? 'invalid-output' : options.signal?.aborted ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) }) }
-  }
-  return { classifierVersion: classifier.version, classified, cached, skipped: { explicit, pending }, failed }
-}
-function redact(value: string): string { return value.replace(/\s+/g, ' ').slice(0, 500) }
 
 export async function proposeSkillChange(service: EvolutionService, options: ProposeSkillChangeOptions): Promise<ProposeSkillChangeResult> {
   const current = await service.versions.readCurrent(options.skillName)

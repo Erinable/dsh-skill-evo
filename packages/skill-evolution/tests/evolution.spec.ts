@@ -23,6 +23,7 @@ import {
   portfolioDecision,
   renderFailuresMarkdown,
   renderProposalMarkdown,
+  resolveFollowUps,
   splitPortfolioEntry,
   transitionPortfolio,
   transitionProposal,
@@ -48,6 +49,38 @@ function event(input: Partial<RuntimeObservation> & Pick<RuntimeObservation, 'id
 }
 
 describe('phase 2 evidence workflow', () => {
+  it('resolves the fixed follow-up vocabulary and negative boundaries', () => {
+    const texts = ['不对，应该改', 'Please correct step two.', 'Please correct timeout diagnosis.', 'Please correct this.', 'still wrong', 'wrong, upload this again']
+    const events = texts.map((text, index) => event({ id: `correction-${index}`, kind: 'user-follow-up', sessionId: `s-${index}`, payload: { text } }))
+    expect(resolveFollowUps(events).map(item => item.intent)).toEqual(texts.map(() => 'incorrect'))
+    expect(resolveFollowUps([event({ id: 'unknown', kind: 'user-follow-up', payload: { text: 'upload this again' } })])[0]).toMatchObject({ intent: 'unknown', ruleId: 'no-match' })
+    expect(resolveFollowUps([event({ id: 'correct', kind: 'user-follow-up', payload: { text: "that's correct" } })])[0]!.intent).toBe('unknown')
+  })
+
+  it('does not attribute a pre-load follow-up and applies failed tool evidence only in its turn', () => {
+    const beforeLoad = [
+      event({ id: 'before', kind: 'user-follow-up', payload: { text: '不对' } }),
+      event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+    ]
+    expect(buildFailureCases(beforeLoad)).toEqual([])
+    const events = [
+      event({ id: 'loaded-2', sessionId: 's2', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
+      event({ id: 'tool', sessionId: 's2', kind: 'tool-result', payload: { failed: true } }),
+      event({ id: 'ack', sessionId: 's2', kind: 'user-follow-up', payload: { text: '好的' } }),
+      event({ id: 'wrong', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: false } }),
+    ]
+    expect(buildFailureCases(events).find(item => item.id === 'failure:wrong')).toMatchObject({ severity: 'medium' })
+    const payloadFailure = buildFailureCases([events[0]!, events[1]!, event({ id: 'wrong-payload', sessionId: 's2', kind: 'user-follow-up', payload: { text: '不对', precedingToolKind: 'tool-result', precedingToolFailed: true } })])[0]
+    expect(payloadFailure).toMatchObject({ severity: 'low', attribution: 'tool', attributionSource: 'tool' })
+  })
+
+  it('keeps diagnosis timestamps and ids stable across projections', () => {
+    const events = [event({ id: 'loaded-stable', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, occurredAt: '2026-09-25T00:00:00.000Z' }), event({ id: 'wrong-stable', kind: 'user-follow-up', payload: { text: '不对' }, occurredAt: '2026-09-25T00:00:01.000Z' })]
+    const failures = buildFailureCases(events); const clusters = clusterFailureCases(failures)
+    const first = diagnoseFailureCluster(clusters[0]!, failures); const second = diagnoseFailureCluster(clusters[0]!, failures)
+    expect(second).toEqual(first)
+  })
+
   it('projects experience, failure cases, clusters, and conservative diagnoses', () => {
     const events = [
       event({ id: 'load', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown', contentHash: 'v1' } }),
@@ -89,7 +122,7 @@ describe('phase 2 evidence workflow', () => {
   it('records structured failure origins and diagnoses them without parsing free text', () => {
     const cases = buildFailureCases([
       event({ id: 'loaded', kind: 'skill-loaded', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' } }),
-      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'upload this again', explicit: false } }),
+      event({ id: 'implicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong, upload this again', explicit: false } }),
       event({ id: 'explicit', kind: 'user-follow-up', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'wrong command', explicit: true, feedbackKind: 'incorrect', attributionConfidence: 0.9 } }),
       event({ id: 'load', kind: 'skill-load-failed', skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' }, payload: { text: 'download failed' } }),
     ])
@@ -121,6 +154,12 @@ describe('phase 2 evidence workflow', () => {
       skill: { name: 'api-debugging', provider: 'unknown', source: 'unknown' },
       payload: { explicit: true, feedbackKind, text: 'the wording is irrelevant' },
     })])
+    if (feedbackKind === 'goal-changed') {
+      expect(failure).toBeUndefined()
+      const synthetic = { id: 'failure:goal', skillName: 'api-debugging', task: 'debug', failure: 'topic changed', evidenceEventIds: ['goal'], severity: 'low' as const, createdAt: '2026-09-25T00:00:00.000Z', status: 'open' as const, origin: 'explicit-feedback' as const, feedbackKind }
+      expect(diagnoseFailureCluster({ id: 'cluster:api-debugging:failure:goal', skillName: 'api-debugging', signature: 'topic changed', caseIds: [synthetic.id], occurrenceCount: 1, createdAt: synthetic.createdAt, status: 'open' }, [synthetic]).rootCause).toBe(rootCause)
+      return
+    }
     expect(failure).toMatchObject({ origin: 'explicit-feedback', feedbackKind })
     expect(diagnoseFailureCluster({
       id: `cluster:api-debugging:${failure!.id}`, skillName: 'api-debugging', signature: 'irrelevant',

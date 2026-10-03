@@ -12,7 +12,6 @@ import { inspectJsonlHealth, type JsonlHealth } from './health.js'
 import { withLock } from './locking.js'
 import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
-import { resolveFollowUps } from './follow-up.js'
 import type {
   DecisionRecord,
   FeedbackKind,
@@ -29,9 +28,6 @@ import type {
   Attribution,
   EvaluationArtifact,
   PublicationScope,
-  FollowUpClassifier,
-  ClassificationMemoEntry,
-  FollowUpResolution,
 } from './types.js'
 
 export interface EvolutionServiceOptions {
@@ -41,8 +37,6 @@ export interface EvolutionServiceOptions {
   readonly evaluationPolicy?: EvaluationPolicy
   readonly operator?: string
   readonly evaluationTtlMs?: number
-  readonly followUpClassifier?: FollowUpClassifier
-  readonly classifierTimeoutMs?: number
 }
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
@@ -54,8 +48,6 @@ export class EvolutionService {
   readonly failures: JsonlRecordStore<SkillFailureCase>
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
-  readonly followUps: JsonlRecordStore<FollowUpResolution>
-  readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
   readonly versions: SkillVersionStore
@@ -75,8 +67,6 @@ export class EvolutionService {
     this.failures = new JsonlRecordStore(path('failures'))
     this.clusters = new JsonlRecordStore(path('clusters'))
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
-    this.followUps = new JsonlRecordStore(path('follow-ups'))
-    this.classifications = new JsonlRecordStore(path('classifications'))
     this.feedback = new JsonlRecordStore(path('feedback'))
     this.evaluations = new JsonlRecordStore(path('evaluations'))
     this.versions = new SkillVersionStore(options.root, { invalidate: options.invalidate, layout: this.layout })
@@ -141,8 +131,7 @@ export class EvolutionService {
   }
 
   async metrics(): Promise<EvolutionMetrics> {
-    const snapshot = await this.refreshDerived()
-    return aggregateMetrics(await this.observations.readAll(), await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps)
+    return aggregateMetrics(await this.observations.readAll(), await this.proposals.readAll(), await this.decisions.readAll())
   }
 
   async health(): Promise<readonly JsonlHealth[]> {
@@ -410,19 +399,15 @@ export class EvolutionService {
         failures: await this.failures.readAll(),
         clusters: await this.clusters.readAll(),
         diagnoses: await this.diagnoses.readAll(),
-        followUps: await this.followUps.readAll(),
       }
     }
-    const memoRows = await this.classifications.readAll()
-    const memo = new Map(memoRows.map(item => [item.id, item]))
-    const workflow = new EvolutionWorkflow({ memo, classifierVersion: this.options.followUpClassifier?.version })
+    const workflow = new EvolutionWorkflow()
     workflow.add(observations)
     const snapshot = workflow.snapshot()
     await this.experiences.replaceAll(snapshot.experiences)
     await this.failures.replaceAll(snapshot.failures)
     await this.clusters.replaceAll(snapshot.clusters)
     await this.diagnoses.replaceAll(snapshot.diagnoses)
-    await this.followUps.replaceAll(snapshot.followUps)
     await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint })
     return snapshot
   }

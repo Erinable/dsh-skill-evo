@@ -23,11 +23,19 @@ export function buildExperiences(
   events: readonly RuntimeObservation[],
   options: ExperienceProjectionOptions = {},
 ): Experience[] {
+  const resolutions = new Map(resolveFollowUps(events).map(item => [item.observationId, item]))
   const loadedBySession = loadedSkillsBySession(events)
   const groups = new Map<string, RuntimeObservation[]>()
   for (const originalEvent of events) {
     if (originalEvent.sessionId === undefined || !isExperienceEvent(originalEvent)) continue
-    const event = withAttribution(originalEvent, loadedBySession)
+    const event = originalEvent.kind === 'user-follow-up' && originalEvent.skill === undefined
+      ? (() => {
+          const index = events.indexOf(originalEvent)
+          const loadedBefore = events.slice(0, index).filter(candidate => candidate.sessionId === originalEvent.sessionId && candidate.kind === 'skill-loaded' && candidate.skill !== undefined)
+          const unique = [...new Set(loadedBefore.map(candidate => candidate.skill!.name))]
+          return unique.length === 1 ? { ...originalEvent, skill: loadedBefore.find(candidate => candidate.skill?.name === unique[0])!.skill } : originalEvent
+        })()
+      : withAttribution(originalEvent, loadedBySession)
     const loaded = loadedBySession.get(originalEvent.sessionId) ?? []
     const attributable = event.skill?.name
     if (attributable === undefined && !(event.kind === 'user-follow-up' || event.kind === 'task-finished') ) continue
@@ -68,8 +76,8 @@ export function buildExperiences(
       observedPattern: describePattern(group),
       evidenceEventIds,
       outcome,
-      attribution: attributionFor(group),
-      confidence: confidenceFor(group),
+      attribution: attributionFor(group, resolutions),
+      confidence: confidenceFor(group, resolutions),
       createdAt: options.now ?? first.occurredAt,
     }
   })
@@ -79,15 +87,6 @@ export function buildExperiences(
 export function buildFailureCases(events: readonly RuntimeObservation[], suppliedResolutions?: readonly FollowUpResolution[]): SkillFailureCase[] {
   const resolutions = suppliedResolutions ?? resolveFollowUps(events)
   const byId = new Map(resolutions.map(item => [item.observationId, item]))
-  const loadedBySession = new Map<string, Set<string>>()
-  for (const event of events) {
-    if (event.kind === 'skill-loaded' && event.sessionId !== undefined && event.skill !== undefined) {
-      const skills = loadedBySession.get(event.sessionId) ?? new Set<string>()
-      skills.add(event.skill.name)
-      loadedBySession.set(event.sessionId, skills)
-    }
-  }
-
   const cases: SkillFailureCase[] = []
   for (const event of events) {
     if (event.kind === 'user-follow-up' && event.payload.explicit === true) {
@@ -138,7 +137,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[], supplie
 
     if (event.kind === 'user-follow-up' && event.sessionId !== undefined) {
       const resolution = byId.get(event.id)
-      const skills = resolution?.skillName ? [resolution.skillName] : [...loadedBySession.get(event.sessionId) ?? []]
+      const skills = resolution?.skillName ? [resolution.skillName] : []
       if (skills.length !== 1 || resolution === undefined || !['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent)) continue
       const counterEvidence = counterEvidenceFields(event)
       cases.push({
@@ -154,7 +153,7 @@ export function buildFailureCases(events: readonly RuntimeObservation[], supplie
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
         ...counterEvidence,
-        severity: resolution.intent === 'constraint' ? 'low' : 'medium',
+        severity: resolution.attributionSource === 'tool' ? 'low' : resolution.intent === 'constraint' ? 'low' : 'medium',
         createdAt: event.occurredAt,
         status: 'open',
       })
@@ -286,13 +285,17 @@ function outcomeFor(events: readonly RuntimeObservation[]): ExperienceOutcome {
   return 'unknown'
 }
 
-function attributionFor(events: readonly RuntimeObservation[]): Attribution {
+function attributionFor(events: readonly RuntimeObservation[], resolutions?: ReadonlyMap<string, FollowUpResolution>): Attribution {
   const override = events.find(event => isAttribution(event.payload.attributionOverride))?.payload.attributionOverride
   if (isAttribution(override)) return override
   if (events.some(event => event.kind === 'skill-load-failed')) return 'composition'
   if (events.some(event => event.kind === 'user-follow-up')
     && new Set(events.flatMap(event => event.skill?.name === undefined ? [] : [event.skill.name])).size > 1) return 'not-attributable'
   if (events.every(event => event.skill === undefined)) return 'not-attributable'
+  const followUpResolutions = events.filter(event => event.kind === 'user-follow-up').map(event => resolutions?.get(event.id)).filter((value): value is FollowUpResolution => value !== undefined)
+  const firstFailure = followUpResolutions.find(item => ['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(item.intent))
+  if (firstFailure !== undefined) return firstFailure.attribution
+  if (followUpResolutions.some(item => item.intent === 'goal-changed')) return 'task-change'
   if (events.some(event => event.kind === 'user-follow-up')) return 'unknown'
   return 'unknown'
 }
@@ -302,12 +305,17 @@ function isAttribution(value: unknown): value is Attribution {
     || value === 'tool' || value === 'task-change' || value === 'not-attributable' || value === 'unknown'
 }
 
-function confidenceFor(events: readonly RuntimeObservation[]): number {
+function confidenceFor(events: readonly RuntimeObservation[], resolutions?: ReadonlyMap<string, FollowUpResolution>): number {
   const explicitConfidence = events
     .map(event => event.payload.attributionConfidence)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
     .map(value => Math.max(0, Math.min(1, value)))
   if (explicitConfidence.length > 0) return Math.max(...explicitConfidence)
+  const inferred = events
+    .filter(event => event.kind === 'user-follow-up')
+    .map(event => resolutions?.get(event.id))
+    .find((resolution): resolution is FollowUpResolution => resolution !== undefined && ['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent))
+  if (inferred !== undefined) return inferred.confidence
   const observationStrength = Math.min(0.6, Math.log2(events.length + 1) / 5)
   const sessionStrength = new Set(events.map(event => event.sessionId).filter((id): id is string => id !== undefined)).size > 0 ? 0.04 : 0
   const feedbackStrength = events.some(event => event.payload.explicit === true) ? 0.15 : 0

@@ -37,14 +37,20 @@ function digest(event: RuntimeObservation): ObservationDigest {
   return { kind: event.kind, ...(event.skill?.name === undefined ? {} : { skillName: event.skill.name }), ...(typeof event.payload.toolName === 'string' ? { toolName: event.payload.toolName } : {}), ...(failed ? { failed: true as const } : {}) }
 }
 export function classificationInputFor(events: readonly RuntimeObservation[], observationId: string): { input: FollowUpClassificationInput; pending: boolean; inputHash: string } {
-  const index = events.findIndex(event => event.id === observationId); const event = events[index]
+  const index = events.findIndex(event => event.id === observationId)
+  const event = events[index]
   if (event === undefined || event.kind !== 'user-follow-up') throw new Error(`unknown follow-up ${observationId}`)
   const session = events.filter(candidate => candidate.sessionId === event.sessionId)
   const position = session.findIndex(candidate => candidate.id === event.id)
   const before = session.slice(Math.max(0, position - 20), position).filter(candidate => candidate.kind !== 'user-follow-up').slice(-20).map(digest)
   const tail: RuntimeObservation[] = []
   let pending = true
-  for (const candidate of session.slice(position + 1)) { if (candidate.kind === 'user-follow-up') { pending = false; break }; if (candidate.kind === 'task-finished') { tail.push(candidate); pending = false; break }; tail.push(candidate); if (tail.length >= 20) { pending = false; break } }
+  for (const candidate of session.slice(position + 1)) {
+    if (candidate.kind === 'user-follow-up') { pending = false; break }
+    if (candidate.kind === 'task-finished') { tail.push(candidate); pending = false; break }
+    tail.push(candidate)
+    if (tail.length >= 20) { pending = false; break }
+  }
   if (session.length === position + 1) pending = true
   const loaded = session.slice(0, position).filter(candidate => candidate.kind === 'skill-loaded' && candidate.skill?.name !== undefined).map(candidate => candidate.skill!.name)
   const unique = [...new Set(loaded)]
@@ -54,20 +60,39 @@ export function classificationInputFor(events: readonly RuntimeObservation[], ob
 }
 
 export function resolveFollowUps(events: readonly RuntimeObservation[], options: { readonly memo?: ReadonlyMap<string, ClassificationMemoEntry>; readonly classifierVersion?: string } = {}): FollowUpResolution[] {
-  const result: FollowUpResolution[] = []; const loaded = new Map<string, string[]>()
-  for (const event of events) if (event.kind === 'skill-loaded' && event.sessionId && event.skill) loaded.set(event.sessionId, [...new Set([...(loaded.get(event.sessionId) ?? []), event.skill.name])])
+  const result: FollowUpResolution[] = []
   for (const event of events) {
     if (event.kind !== 'user-follow-up') continue
     const explicit = event.payload.explicit === true
-    const target = event.skill?.name ?? (event.sessionId && loaded.get(event.sessionId)?.length === 1 ? loaded.get(event.sessionId)![0] : undefined)
+    const eventIndex = events.indexOf(event)
+    const loadedBefore = event.sessionId === undefined ? [] : events.slice(0, eventIndex)
+      .filter(candidate => candidate.sessionId === event.sessionId && candidate.kind === 'skill-loaded' && candidate.skill !== undefined)
+      .map(candidate => candidate.skill!.name)
+    const uniqueLoadedBefore = [...new Set(loadedBefore)]
+    const target = event.skill?.name ?? (uniqueLoadedBefore.length === 1 ? uniqueLoadedBefore[0] : undefined)
     const override = attribution(event.payload.attributionOverride) ? event.payload.attributionOverride : undefined
     let intent: FollowUpIntent; let confidence: number; let source: FollowUpResolution['source']; let version: string; let ruleId: string | undefined; let fallbackReason: FollowUpResolution['fallbackReason']; let inputHash: string | undefined
     if (explicit) { intent = (FEEDBACK_KINDS as readonly string[]).includes(String(event.payload.feedbackKind)) ? event.payload.feedbackKind as FollowUpIntent : 'other'; confidence = 1; source = 'explicit'; version = 'explicit' }
-    else { const classified = classificationInputFor(events, event.id); inputHash = classified.inputHash; const memo = options.memo?.get(`classification:${options.classifierVersion}:${inputHash}`); if (memo && !classified.pending) { intent = memo.intent; confidence = memo.confidence; source = 'classifier'; version = memo.classifierVersion } else { const rule = ruleFor(event.payload.text); intent = rule.intent; confidence = rule.confidence; source = 'rule'; version = FOLLOW_UP_RULES_VERSION; ruleId = rule.id; fallbackReason = options.classifierVersion ? 'not-classified' : 'no-classifier' } }
-    const prior = event.sessionId ? events.slice(0, events.indexOf(event)).reverse().find(candidate => candidate.sessionId === event.sessionId && ['skill-load-requested', 'skill-loaded', 'skill-load-failed', 'tool-result'].includes(candidate.kind)) : undefined
-    const toolKind = typeof event.payload.precedingToolKind === 'string' ? event.payload.precedingToolKind : prior?.kind
-    const toolFailed = event.payload.precedingToolFailed === true || prior?.kind === 'skill-load-failed' || (prior?.kind === 'tool-result' && prior.payload.failed === true)
-    let resolvedAttribution: Attribution = override ?? (intent === 'goal-changed' ? 'task-change' : intent === 'not-attributable' ? 'not-attributable' : 'unknown')
+    else {
+      const classified = classificationInputFor(events, event.id)
+      inputHash = classified.inputHash
+      const memo = options.memo?.get(`classification:${options.classifierVersion}:${inputHash}`)
+      if (memo && !classified.pending) { intent = memo.intent; confidence = memo.confidence; source = 'classifier'; version = memo.classifierVersion }
+      else { const rule = ruleFor(event.payload.text); intent = rule.intent; confidence = rule.confidence; source = 'rule'; version = FOLLOW_UP_RULES_VERSION; ruleId = rule.id; fallbackReason = options.classifierVersion ? 'not-classified' : 'no-classifier' }
+    }
+    const hasPayloadToolKind = Object.prototype.hasOwnProperty.call(event.payload, 'precedingToolKind')
+    const hasPayloadToolFailed = Object.prototype.hasOwnProperty.call(event.payload, 'precedingToolFailed')
+    let prior: RuntimeObservation | undefined
+    if (event.sessionId !== undefined && !hasPayloadToolKind && !hasPayloadToolFailed) {
+      for (const candidate of events.slice(0, eventIndex).reverse()) {
+        if (candidate.sessionId !== event.sessionId) continue
+        if (candidate.kind === 'user-follow-up' && candidate.payload.explicit !== true) break
+        if (['skill-load-requested', 'skill-loaded', 'skill-load-failed', 'tool-result'].includes(candidate.kind)) { prior = candidate; break }
+      }
+    }
+    const toolKind = hasPayloadToolKind ? event.payload.precedingToolKind : prior?.kind
+    const toolFailed = hasPayloadToolFailed ? event.payload.precedingToolFailed === true : prior?.kind === 'skill-load-failed' || (prior?.kind === 'tool-result' && prior.payload.failed === true)
+    let resolvedAttribution: Attribution = override ?? (intent === 'incorrect' || intent === 'constraint' ? 'content' : intent === 'goal-changed' ? 'task-change' : intent === 'not-attributable' ? 'not-attributable' : 'unknown')
     let attributionSource: FollowUpResolution['attributionSource'] = override ? 'override' : 'intent'
     const evidence = [event.id]
     if (!override && toolFailed && toolKind === 'skill-load-failed') { resolvedAttribution = 'composition'; attributionSource = 'tool'; evidence.push(prior?.id ?? '') }

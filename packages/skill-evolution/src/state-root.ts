@@ -8,8 +8,8 @@ import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
-export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'experiences' | 'failures' | 'clusters' | 'diagnoses' | 'follow-ups' | 'classifications'
+export type StoreRole = 'fact' | 'derived'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'experiences' | 'failures' | 'clusters' | 'diagnoses'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -58,8 +58,6 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['failures', 'derived', false, join(stateDir, 'failures.jsonl')],
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
-    ['follow-ups', 'derived', false, join(stateDir, 'follow-ups.jsonl')],
-    ['classifications', 'memo', false, join(stateDir, 'classifications.jsonl')],
   ]
   const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
   return {

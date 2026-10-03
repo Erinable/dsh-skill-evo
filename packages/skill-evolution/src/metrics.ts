@@ -1,4 +1,4 @@
-import type { DecisionRecord, RuntimeObservation, SkillProposal, FollowUpResolution } from './types.js'
+import type { DecisionRecord, RuntimeObservation, SkillProposal } from './types.js'
 import { latestProposalsByRoot, proposalRootId } from './proposal.js'
 
 export interface SkillUsageMetric {
@@ -11,7 +11,6 @@ export interface SkillUsageMetric {
   readonly exposureToLoadRate: number
   readonly loadFailureRate: number
   readonly followUpRate: number
-  readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
 }
 
 export interface EvolutionMetrics {
@@ -27,16 +26,15 @@ export function aggregateMetrics(
   events: readonly RuntimeObservation[],
   proposals: readonly SkillProposal[] = [],
   decisions: readonly DecisionRecord[] = [],
-  resolutions: readonly FollowUpResolution[] = [],
 ): EvolutionMetrics {
-  const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string>; intents: Record<string, { total: number; failures: number; byIntent: Record<string, number> }> }>()
+  const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string> }>()
   const sessions = new Set<string>()
   let contextCost = 0
   for (const event of events) {
     if (event.sessionId !== undefined) sessions.add(event.sessionId)
     const name = event.skill?.name
     if (name === undefined) continue
-    const metric = bySkill.get(name) ?? { exposed: new Set(), requested: new Set(), succeeded: new Set(), failed: new Set(), followUps: new Set(), intents: {} }
+    const metric = bySkill.get(name) ?? { exposed: new Set(), requested: new Set(), succeeded: new Set(), failed: new Set(), followUps: new Set() }
     if (event.sessionId !== undefined) {
       if (event.kind === 'catalog-visible') metric.exposed.add(event.sessionId)
       if (event.kind === 'skill-load-requested') metric.requested.add(event.sessionId)
@@ -48,7 +46,6 @@ export function aggregateMetrics(
     if (typeof tokens === 'number' && Number.isFinite(tokens)) contextCost += tokens
     bySkill.set(name, metric)
   }
-  for (const resolution of resolutions) if (resolution.skillName) { const metric = bySkill.get(resolution.skillName) ?? { exposed: new Set<string>(), requested: new Set<string>(), succeeded: new Set<string>(), failed: new Set<string>(), followUps: new Set<string>(), intents: {} }; const item = metric.intents[resolution.source] ?? { total: 0, failures: 0, byIntent: {} }; item.total++; item.byIntent[resolution.intent] = (item.byIntent[resolution.intent] ?? 0) + 1; if (['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent)) item.failures++; metric.intents[resolution.source] = item; bySkill.set(resolution.skillName, metric) }
   const skills = [...bySkill.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([skillName, metric]) => ({
     skillName,
     exposed: metric.exposed.size,
@@ -59,7 +56,6 @@ export function aggregateMetrics(
     exposureToLoadRate: rate(metric.requested.size, metric.exposed.size),
     loadFailureRate: rate(metric.failed.size, metric.requested.size),
     followUpRate: rate(metric.followUps.size, metric.succeeded.size),
-    followUpIntents: { explicit: metric.intents.explicit ?? { total: 0, failures: 0, byIntent: {} }, classifier: metric.intents.classifier ?? { total: 0, failures: 0, byIntent: {} }, rule: metric.intents.rule ?? { total: 0, failures: 0, byIntent: {} } },
   }))
   const latestProposals = latestProposalsByRoot(proposals)
   const promoted = decisionKeys(decisions, 'promoted', 'promoted')
