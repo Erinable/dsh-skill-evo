@@ -4,7 +4,7 @@ import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor }
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
-import { validateEvaluationPolicy } from './policy.js'
+import { normalizeEvaluationPolicy, validateEvaluationPolicy } from './policy.js'
 import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot } from './proposal.js'
 import { ProposalLedger } from './ledger.js'
 import { SkillVersionStore } from './lifecycle.js'
@@ -235,6 +235,7 @@ export class EvolutionService {
     const artifactId = `evaluation:${proposalId}:${result.candidateContentHash}:${Date.now()}`
     const expiresAt = new Date(Date.now() + (this.options.evaluationTtlMs ?? 7 * 86_400_000)).toISOString()
     const persistedResult: SkillEvalResult = { ...result, artifactId }
+    const policy = this.options.evaluationPolicy === undefined ? undefined : normalizeEvaluationPolicy(this.options.evaluationPolicy)
     await this.evaluations.append({
       id: artifactId,
       proposalId,
@@ -248,11 +249,13 @@ export class EvolutionService {
       createdAt: result.createdAt,
       expiresAt,
       result: persistedResult,
+      ...(result.schemaVersion === 2 && policy !== undefined ? { schemaVersion: 2 as const, policy, policyHash: result.policyHash, statisticId: result.statisticId } : {}),
     })
     await this.ledger.transition(evaluating, 'evaluated', {
       reason: 'evaluation completed',
       action: 'evaluated',
       policyVersion: result.policyVersion,
+      ...(result.policyHash === undefined ? {} : { policyHash: result.policyHash }),
       comparisonCaseIds: result.caseIds,
       evidenceIds: result.caseResults.map(item => item.caseId),
     })
@@ -273,7 +276,7 @@ export class EvolutionService {
     if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
     const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
     const current = await this.versions.readCurrent(proposal.skillName)
-    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
+    checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = proposalRootId(proposal.id)
     await this.versions.promote(proposal, { scope })
@@ -293,7 +296,7 @@ export class EvolutionService {
       payload: { proposalId, scope, effectiveAt: 'next-load' },
       source: 'maintenance',
     })
-    await this.ledger.transition(proposal, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
+    await this.ledger.transition(proposal, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, ...(verifiedEvaluation.policyHash === undefined ? {} : { policyHash: verifiedEvaluation.policyHash }), evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
   }
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {

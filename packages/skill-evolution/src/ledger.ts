@@ -14,6 +14,7 @@ export interface TransitionInput {
   readonly reason: string
   readonly evidenceIds?: readonly string[]
   readonly policyVersion?: string
+  readonly policyHash?: string
   readonly comparisonCaseIds?: readonly string[]
 }
 
@@ -81,6 +82,7 @@ export class ProposalLedger {
       baseContentHash: record.expectedBase.contentHash,
       candidateContentHash: createContentHash(record.candidateContent),
       ...(input.policyVersion === undefined ? {} : { policyVersion: input.policyVersion }),
+      ...(input.policyHash === undefined ? {} : { policyHash: input.policyHash }),
       createdAt: new Date().toISOString(),
     })
     return { record, decisionId, replayed }
