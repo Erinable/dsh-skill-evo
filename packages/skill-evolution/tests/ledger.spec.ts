@@ -83,6 +83,23 @@ describe('ProposalLedger', () => {
     expect((await f.decisions.readAll()).filter(item => item.recordId === repaired.record.id)).toHaveLength(1)
   })
 
+  it('replays stage after a decision failure and distinguishes draft targets', async () => {
+    const f = await fixture()
+    const originalAppend = f.decisions.append.bind(f.decisions)
+    f.decisions.append = (async () => { throw new Error('stage decision failed') }) as typeof f.decisions.append
+    await expect(f.ledger.transition(f.draft, 'proposed', { reason: 'stage' })).rejects.toThrow('stage decision failed')
+    f.decisions.append = originalAppend
+    const stagedRetry = await f.ledger.transition(f.draft, 'proposed', { reason: 'retry stage' })
+    expect(stagedRetry.replayed).toBe(true)
+    expect((await f.proposals.readAll()).filter(item => item.status === 'proposed')).toHaveLength(1)
+    expect((await f.decisions.readAll()).filter(item => item.id === 'decision:ledger:proposal:test')).toHaveLength(1)
+    await expect(f.ledger.transition(f.draft, 'rejected', { reason: 'stale draft' })).rejects.toMatchObject({ code: 'conflict' })
+    const sameTarget = await f.ledger.transition(f.draft, 'proposed', { reason: 'same stage' })
+    expect(sameTarget.replayed).toBe(true)
+    expect((await f.proposals.readAll())).toHaveLength(1)
+    expect((await f.decisions.readAll())).toHaveLength(1)
+  })
+
   it('rejects stale sources with old ids and same-id stale content', async () => {
     const f = await transitionPath()
     const rejected = await f.ledger.transition(f.evaluated, 'rejected', { reason: 'reject' })

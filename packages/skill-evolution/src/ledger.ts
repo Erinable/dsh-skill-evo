@@ -43,12 +43,12 @@ export class ProposalLedger {
         const root = proposalRootId(from.id)
         const rootRecords = records.filter(item => proposalRootId(item.id) === root && isConsistentRecord(item, root))
         const latest = rootRecords.at(-1)
+        const replay = records.find(item => item.previousRecordId === from.id && item.status === to)
+        if (replay !== undefined) throw new ReplayTransition(replay)
         const source = records.find(item => item.id === from.id)
         if (source !== undefined && JSON.stringify(source) !== JSON.stringify(from)) {
           throw new ProposalLedgerError('conflict', `proposal ${from.id} does not match the stored record`)
         }
-        const replay = records.find(item => item.previousRecordId === from.id && item.status === to)
-        if (replay !== undefined) throw new ReplayTransition(replay)
         assertCanTransition(from.status, to)
         if (latest !== undefined && latest.id !== from.id) {
           throw new ProposalLedgerError('conflict', `proposal ${root} is stale: expected ${latest.id}, got ${from.id}`)
@@ -96,7 +96,7 @@ export class ProposalLedger {
       if (prefixMatches.length > 1) throw new ProposalLedgerError('ambiguous', `ambiguous proposal reference: ${reference}`)
       throw new ProposalLedgerError('not-found', `proposal not found: ${reference}`)
     }
-    const matches = records.filter(item => proposalRootId(item.id) === root)
+    const matches = records.filter(item => proposalRootId(item.id) === root && isConsistentRecord(item, root))
     return matches[matches.length - 1]!
   }
 
