@@ -48,7 +48,7 @@ Route stage, evaluating, evaluated, accept, promote, rollback, reject, and defer
 
 ### Compatibility risks and boundaries
 
-During a rolling deployment, an old process that does not understand `:<n>` can treat `root:evaluated:2` as a different root and can still silently drop repeated entries. The CLI, bundle, adapter, and core must be upgraded as one compatible batch; T4 carries this deployment risk. A custom root ending in `<status>` or `<status>:<n>` is rejected during staging after T1; T1 carries this naming risk.
+During a rolling deployment, an old process that does not understand `:<n>` can treat `root:evaluated:2` as a different root and can still silently drop repeated entries. The CLI, bundle, adapter, and core must be upgraded as one compatible batch; T4 carries this deployment risk. T1 defines the naming guard for a custom root ending in `<status>` or `<status>:<n>` and carries this naming risk; staging rejects such roots once T4 integrates that guard.
 
 Old unsuffixed records and old decision ids remain readable. No migration or backfill is attempted for historical records that were previously dropped because an id collided. Candidate directories and state-root layout remain unchanged. Promote/Rollback recovery, health, and repair belong to SKIL-122.
 
@@ -72,8 +72,8 @@ The operation does not add an `fsync`; `appendFrames` return remains the persist
 The focused core suite must cover the design cases:
 
 - **V1 replay path:** stage a root, evaluate, reject, observe, evaluate again; assert two `evaluated` records, both decision `recordId` values, latest-by-root, and exact-id lookup.
-- **V2 repeated rejection:** after V1 reject again and assert `<root>:rejected:2` plus its linked decision. Also pre-seed an occupied `<root>:evaluated:2` without a corresponding second entry, then assert the next evaluated transition selects `<root>:evaluated:3`.
-- **V2 staging guard:** attempt to stage roots ending in `<status>` and `<status>:<n>`, assert a domain error and unchanged Ledger contents.
+- **V2 repeated rejection:** after V1 reject again and assert `<root>:rejected:2` plus its linked decision. In a separate next-free fixture, pre-seed an occupied `<root>:evaluated:2` record whose status is not `evaluated` (for example, `proposed`), so it does not count as a prior evaluated entry. Assert that the second evaluated transition starts at occurrence 2, skips the occupied id, selects `<root>:evaluated:3`, appends `decision:ledger:<root>:evaluated:3`, and adds exactly one Ledger record.
+- **V2b staging guard:** attempt to stage roots ending in `<status>` and `<status>:<n>`, assert a domain error and unchanged Ledger contents.
 - **V3 idempotent replay:** call the same transition twice and assert `replayed: true` on the second call with unchanged record and decision counts.
 - **V4 conflict:** reuse an old record, and separately reuse a same-id stale `draft`, asserting `conflict` and unchanged counts.
 - **V5 write failures:** force Proposal append failure and occupied-id failure; assert the original error and unchanged decision count.

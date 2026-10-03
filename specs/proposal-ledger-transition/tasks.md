@@ -10,14 +10,14 @@ Tasks are ordered by dependency. T1 and T2 may be implemented in parallel; T3 de
 
 **Files:** `packages/skill-evolution/src/proposal.ts`, `packages/skill-evolution/src/index.ts`, focused proposal tests.
 
-**Work:** Add occurrence-aware `ledgerRecordId`, status-plus-occurrence parsing in `proposalRootId`, exact `findLedgerRecord`, and root/latest/history helpers. Preserve historical suffixes, skip occupied occurrence ids while allocating the next free id, and reject invalid `:1` and zero-padded occurrences. Add the staging guard `proposalRootId(root) === root`; keep existing callers compatible with the first-entry id form.
+**Work:** Add occurrence-aware `ledgerRecordId`, status-plus-occurrence parsing in `proposalRootId`, exact `findLedgerRecord`, root/latest/history helpers, and a pure exported `assertProposalRoot(root)` guard that requires `proposalRootId(root) === root` or throws a domain error. Preserve historical suffixes and reject invalid `:1` and zero-padded occurrences; leave next-free allocation to `ProposalLedger` in T3. T4 wires the guard into `stageProposal`. Keep existing callers compatible with the first-entry id form.
 
-**Compatibility risk:** After T1, a custom root ending in `<status>` or `<status>:<n>` is rejected during staging; this is an intentional ADR-0021 naming constraint.
+**Compatibility risk:** T1 defines the intentional ADR-0021 naming constraint: a custom root ending in `<status>` or `<status>:<n>` fails the pure guard. Staging rejects such roots once T4 integrates the guard.
 
 **Acceptance:**
 
 - A focused tracer test builds records for draft → proposed → evaluating → evaluated, adds a second evaluated entry, groups by root, resolves the latest by root and exact `<root>:evaluated`, and resolves the second entry by exact `<root>:evaluated:2`.
-- Tests prove `proposal:abc:2` remains a custom root, `<root>:evaluated:1` and `:02` are not valid record ids, a missing reference is `not-found`, and a bare prefix matching multiple roots is `ambiguous`. A pre-seeded `<root>:evaluated:2` is skipped so the next allocated id is `<root>:evaluated:3`; staging roots ending in `<root>:evaluated` and `<root>:evaluated:2` fails before the Ledger changes.
+- Tests prove `proposal:abc:2` remains a custom root, `<root>:evaluated:1` and `:02` are not valid record ids, a missing reference is `not-found`, and a bare prefix matching multiple roots is `ambiguous`. The pure `assertProposalRoot` accepts a root and rejects roots ending in `<status>` or `<status>:<n>`; this task does not claim to wire the guard into service staging.
 - No lookup path uses `startsWith`; `npm --prefix packages/skill-evolution run build` and the focused tests pass.
 
 ### T2. Add lock-aware computed JSONL append
@@ -45,12 +45,13 @@ Tasks are ordered by dependency. T1 and T2 may be implemented in parallel; T3 de
 
 **Files:** new `packages/skill-evolution/src/ledger.ts`, `packages/skill-evolution/src/types.ts`, `packages/skill-evolution/src/index.ts`, ledger tests.
 
-**Work:** Implement `ProposalLedger.transition`, `latest`, `record`, and `history`; add `previousRecordId`, `DecisionRecord.recordId`, and typed `conflict`. Use the five-step algorithm, deterministic decision ids, replay detection, latest-record conflict checks, and post-record decision append.
+**Work:** Implement `ProposalLedger.transition`, `latest`, `record`, and `history`; add `previousRecordId`, `DecisionRecord.recordId`, and typed `conflict`. Use the six-step algorithm in design.md, including next-free allocation under the Proposal store lock, deterministic decision ids, replay detection, latest-record conflict checks, and post-record decision append.
 
 **Acceptance:**
 
 - V1 rejected → observed → evaluated creates two evaluated records and two linked decisions; root/latest and exact-id queries return the expected entries.
 - V2 repeated rejection creates `<root>:rejected:2` and `decision:ledger:<root>:rejected:2`.
+- V2 next-free allocation pre-seeds an occupied `<root>:evaluated:2` record whose status is not `evaluated` (for example, `proposed`), so it does not count as a prior evaluated entry. The second evaluated transition starts at occurrence 2, skips the occupied id, creates `<root>:evaluated:3` with decision `decision:ledger:<root>:evaluated:3`, and adds exactly one Ledger record.
 - V3 repeating one transition returns `replayed: true` and does not change Ledger or decision counts.
 - V4 old-record and same-id stale-draft sources raise `conflict` with unchanged counts.
 - V5 Proposal write failure or a candidate collision that remains after next-free allocation raises the original store error with no decision; V6 a decision write failure is repaired by retry with one record and one decision.
@@ -58,13 +59,13 @@ Tasks are ordered by dependency. T1 and T2 may be implemented in parallel; T3 de
 
 ### T4. Route all eight service call sites through the ledger seam
 
-**Requirements:** R2, R6, R7, R8, R9, R10, R11, R12, R13
+**Requirements:** R2, R6, R7, R8, R9, R10, R11, R12, R13, R14
 
 **Depends on:** T3
 
-**Files:** `packages/skill-evolution/src/service.ts`, `packages/skill-evolution/src/operations.ts`, `packages/skill-evolution/src/index.ts`, `packages/skill-evolution/tests/evolution.spec.ts`, `packages/dsh-adapter/tests/adapter.spec.ts`, `packages/dsh-bundle/tests/bundle.spec.mjs`, service/operations/regression tests, and `docs/governance/documentation.md`. `CONTEXT.md` was updated by this spec PR and T4 only verifies consistency.
+**Files:** `packages/skill-evolution/src/service.ts`, `packages/skill-evolution/src/operations.ts`, `packages/skill-evolution/src/index.ts`, `packages/skill-evolution/tests/evolution.spec.ts`, `packages/dsh-adapter/tests/adapter.spec.ts`, `packages/dsh-bundle/tests/bundle.spec.mjs`, and service/operations/regression tests. `CONTEXT.md` and `docs/governance/documentation.md` were updated by this spec PR; T4 only verifies consistency.
 
-**Work:** Replace all eight `proposals.append` sites with `this.ledger.transition`, remove the old transition decision helper and operation-level id reconstruction, preserve stage's identical-record early return, pass the first evaluating record into the evaluated transition, return persisted records, and map `conflict` without swallowing write errors. Synchronize `evolution.spec.ts:548-555` for the `decision:ledger:` prefix, `evolution.spec.ts:414-428` for the persisted return id, and the dependent `adapter.spec.ts:183-184` assertion. Update the governance Ledger record glossary to cite ADR-0021; `CONTEXT.md` was already updated in this spec PR.
+**Work:** Replace all eight `proposals.append` sites with `this.ledger.transition`, call `assertProposalRoot(root)` before `stageProposal` writes, remove the old transition decision helper and operation-level id reconstruction, preserve stage's identical-record early return, pass the first evaluating record into the evaluated transition, return persisted records, and map `conflict` without swallowing write errors. Synchronize `evolution.spec.ts:548-555` for the `decision:ledger:` prefix, `evolution.spec.ts:414-428` for the persisted return id, and the dependent `adapter.spec.ts:183-184` assertion. Verify the governance Ledger record glossary and `CONTEXT.md` remain consistent with ADR-0021; both were already updated in this spec PR. Upgrade core, CLI, bundle, and adapter together during deployment so old processes do not misread suffixed ids.
 
 **Compatibility risk:** The changed persisted return ids and new suffixed records require the core, bundle, and adapter packages to be upgraded and tested as one batch; an old process can misread `:<n>` as another root or silently drop repeated entries.
 
@@ -72,5 +73,6 @@ Tasks are ordered by dependency. T1 and T2 may be implemented in parallel; T3 de
 
 - `rg` finds no Proposal-store append call in `packages/skill-evolution/src` outside `ledger.ts`; all eight transitions are routed through the same method.
 - Service tests cover rejected → observed → evaluated with two evaluated records, root and exact-id lookup, same-id stale-draft conflict, and write failures reaching callers while decision counts remain unchanged.
+- V2b service staging of `<root>:evaluated` or `<root>:evaluated:2` raises a domain error before any append; Ledger contents and decision counts remain unchanged.
 - Legacy fixtures are readable; metrics preserve old counts; V8 seam guard passes.
 - `npm --prefix packages/skill-evolution test`, `npm --prefix packages/dsh-adapter run build`, `npm --prefix packages/dsh-adapter test`, and `npm --prefix packages/dsh-bundle test` all pass; the task branch contains no out-of-scope changes.
