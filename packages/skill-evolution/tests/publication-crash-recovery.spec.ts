@@ -223,6 +223,7 @@ const convergesToday = new Set<string>([
   'P2 after W1, before W2 observation:rerun',
   'P2 after W1, before W2 observation:repair',
   'P4 after W3, before W4 decision:rerun',
+  'P4 after W3, before W4 decision:repair',
   'R1a R1 before live manifest.json:rerun',
   'R1b R1 before current.json:rerun',
   'R1c R1 invalidate after current.json:rerun',
@@ -284,7 +285,7 @@ describe('promote crash points', () => {
     })
   }
 
-  pending('health reports the unfinished promote and repair reports completing it', async () => {
+  it('health reports the unfinished promote and repair reports completing it', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P3'))!
     const { root } = await crashPromote(row)
     const health = await service(root).healthReport()
