@@ -49,9 +49,13 @@ function normalizeError(attempt: ToolAttempt): string {
 function actions(failure: ToolAttempt, success: ToolAttempt, between: readonly ToolAttempt[]): string[] {
   const result = new Set<string>(); const f = failure.command ?? ''; const s = success.command ?? ''
   for (const token of s.split(/\s+/)) if (/^[A-Za-z_][\w]*=/.test(token) && !f.includes(token.split('=')[0]! + '=')) result.add(`set-env:${token.split('=')[0]!.toLowerCase()}`)
+  for (const attempt of between) {
+    const match = attempt.command?.match(/^\s*export\s+([A-Za-z_][\w]*)=/)
+    if (match) result.add(`set-env:${match[1]!.toLowerCase()}`)
+  }
   for (const token of s.split(/\s+/)) if (token.startsWith('--') && !f.includes(token)) result.add(`flag:${token.split('=')[0]}`)
   const key = intent(failure.command ?? '')
-  for (const attempt of between) if (attempt.command && !(attempt.outcome === 'failure' && intent(attempt.command) === key)) result.add(`run:${intent(attempt.command)}`)
+  for (const attempt of between) if (attempt.command && !(attempt.outcome === 'failure' && intent(attempt.command) === key)) { const value = intent(attempt.command); if (value) result.add(`run:${value}`) }
   return [...result].sort()
 }
 
@@ -67,8 +71,10 @@ export function recognizeCorrections(sessionId: string, attempts: readonly ToolA
     let successIndex = -1
     for (let k = j; k < Math.min(commandAttempts.length, i + policy.maxAttemptsToSuccess + 1); k++) if (intent(commandAttempts[k]!.command!) === key && commandAttempts[k]!.outcome === 'success') { successIndex = k; break }
     if (successIndex < 0) continue
-    const success = commandAttempts[successIndex]!; const correction = actions(failures.at(-1)!, success, commandAttempts.slice(i + 1, successIndex))
-    result.push({ intent: key, errorSignature: normalizeError(failures.at(-1)!), correction, failureObservationIds: failures.map(a => a.resultObservationId ?? a.callObservationId), correctionObservationIds: commandAttempts.slice(j, successIndex).map(a => a.resultObservationId ?? a.callObservationId), successObservationId: success.resultObservationId ?? success.callObservationId })
+    const success = commandAttempts[successIndex]!; const lastFailureIndex = commandAttempts.lastIndexOf(failures.at(-1)!)
+    const correctionAttempts = commandAttempts.slice(lastFailureIndex + 1, successIndex)
+    const correction = actions(failures.at(-1)!, success, correctionAttempts)
+    result.push({ intent: key, errorSignature: normalizeError(failures.at(-1)!), correction, failureObservationIds: failures.map(a => a.resultObservationId ?? a.callObservationId), correctionObservationIds: correctionAttempts.map(a => a.resultObservationId ?? a.callObservationId), successObservationId: success.resultObservationId ?? success.callObservationId })
     i = successIndex
   }
   return result

@@ -74,6 +74,8 @@ export class EvolutionService {
   readonly followUpClassifier: FollowUpClassifier | undefined
   readonly classifierTimeoutMs: number
   readonly correctionClassifier: CorrectionClassifier | undefined
+  private correctionClassifierFailures = 0
+  private correctionRejectedDrafts = 0
 
   constructor(private readonly options: EvolutionServiceOptions) {
     this.evaluationPolicy = options.evaluationPolicy
@@ -170,8 +172,12 @@ export class EvolutionService {
       const current = await this.versions.readCurrent(name)
       return current === undefined ? undefined : { name, content: current.content }
     }))).filter((skill): skill is { name: string; content: string } => skill !== undefined)
-    return aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
+    const metrics = aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
+    return { ...metrics, corrections: { classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts } }
   }
+
+  recordCorrectionClassifierFailure(): void { this.correctionClassifierFailures += 1 }
+  recordCorrectionRejectedDrafts(count: number): void { this.correctionRejectedDrafts += count }
 
   async health(): Promise<readonly JsonlHealth[]> {
     const reports = await Promise.all(this.layout.stores.map(store => inspectJsonlHealth(
@@ -398,7 +404,9 @@ export class EvolutionService {
     for (const [sessionId, sessionEvents] of sessions) {
       const attempts = correlateToolAttempts(sessionEvents); const hash = createContentHash(JSON.stringify(attempts)); const version = this.correctionClassifier?.version ?? CORRECTION_RULES_VERSION
       const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
-      const drafts = (memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)).filter(draft => validateEpisodeDraft(draft, attempts))
+      const rawDrafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
+      const drafts = rawDrafts.filter(draft => validateEpisodeDraft(draft, attempts))
+      this.correctionRejectedDrafts += rawDrafts.length - drafts.length
       for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
     }
     const patterns = groupPatterns(episodes)
