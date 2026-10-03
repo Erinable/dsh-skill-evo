@@ -1,7 +1,7 @@
 # 从工具调用的自我纠正片段提炼 Skill
 
-> 状态：SKIL-128 设计提案（父 issue SKIL-127，S1）。不可逆决策见 ADR-0022、ADR-0023（都是 `proposed`，待成员确认）。
-> 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。基线 `origin/main` @ `2a442af`（代码）；第 2 轮修订时已合并到 `6accc8b`，这之间 main 只合入了 PR #78 的文档（ADR-0021 与 `proposal-ledger-transition.md`），代码没有变化。本文只出设计，不写实现代码。
+> 状态：SKIL-128 设计提案（父 issue SKIL-127，S1）。不可逆决策见 ADR-0023、ADR-0024（成员 2026-10-03 确认，`accepted`）。
+> 本文合并后冻结，不随代码更新；与现状不一致时以代码、ADR 和 spec 为准。基线 `origin/main` @ `2a442af`（代码）；第 2 轮修订时已合并到 `6accc8b`，这之间 main 只合入了 PR #78 的文档（ADR-0021 与 `proposal-ledger-transition.md`），代码没有变化；交付前又合并到 `63d2007`，新增的 SKIL-134 只改 failure case 的来源字段和 cluster id，与本设计没有交集。本文只出设计，不写实现代码。
 
 要解决的问题：模型 `git push` 连续报 443，自己想到设置代理后成功。这段上下文今天在采集、投影、提案三层都留不下来，几天后模型还会先犯同样的错，再自己纠正一遍。
 
@@ -67,11 +67,11 @@ tool/result┘                                   │ Projection
 
 - **Correction episode**：同一 session 里，同一意图的工具调用连续失败 ≥ N 次后成功的一段；引用失败、纠正、成功三类 Observation id。属于 Derived record。
 - **Correction pattern**：签名相同的 Correction episode 跨 session 的集合；达到门槛才能成为提案来源。属于 Derived record。
-- `CONTEXT.md` 里 **Proposal**「针对一个 Skill」和 **Base**「Proposal 所针对的那一版 Skill 内容」要补一句：Base 可以是「不存在」（ADR-0023）。
+- `CONTEXT.md` 里 **Proposal**「针对一个 Skill」和 **Base**「Proposal 所针对的那一版 Skill 内容」要补一句：Base 可以是「不存在」（ADR-0024）。
 
-## 3. 采集字段与脱敏（待成员确认）
+## 3. 采集字段与脱敏（成员已确认）
 
-> 这一节改 Observation 格式、放宽采集面，是隐私决策，按票面要求走 `Ask a person and wait`，不按默认答案跳过。决策本身见 ADR-0022。
+> 这一节改 Observation 格式、放宽采集面，是隐私决策，按票面要求走 `Ask a person and wait`，不按默认答案跳过。决策本身见 ADR-0023。
 
 ### 3.1 字段清单
 
@@ -390,11 +390,11 @@ corrections: {
 
 ### 6.1 Base = absent 怎么表示
 
-决策本身见 ADR-0023。
+决策本身见 ADR-0024。
 
 | 选项 | 做法 | 复杂度 | 可测性 | 可逆性 | 迁移成本 |
 |---|---|---|---|---|---|
-| A. 哨兵值（推荐） | `SkillProposal` 加可选 `operation`；`create-skill` 时 `baseVersion: 'absent'`，`expectedBase.contentHash: 'absent'`。`AdoptionBase` 类型不变 | 低：每处 Base 检查加一个分支 | 每处分支都能单测 | 写进台账后不可改（ADR-0023） | 老记录没有 `operation`，按「改已有 Skill」读，不迁移 |
+| A. 哨兵值（推荐） | `SkillProposal` 加可选 `operation`；`create-skill` 时 `baseVersion: 'absent'`，`expectedBase.contentHash: 'absent'`。`AdoptionBase` 类型不变 | 低：每处 Base 检查加一个分支 | 每处分支都能单测 | 写进台账后不可改（ADR-0024） | 老记录没有 `operation`，按「改已有 Skill」读，不迁移 |
 | B. `AdoptionBase` 改成判别联合 `{ name, absent: true } \| { name, contentHash }` | 类型更准确 | 中：所有读 `contentHash` 的地方都要先收窄类型 | 编译器帮忙找遗漏 | 同上 | 老记录要在读取时补 `absent: false` |
 | C. `expectedBase` 可选，缺省即不存在 | 改动最少 | 低 | 差：`options.expectedBase ?? proposal.expectedBase`（`lifecycle.ts:97`）里「没传」和「不存在」混在一起 | 同上 | 无 |
 
@@ -583,10 +583,10 @@ Designer 拿到的全部是已脱敏的派生字段，没有完整输出，因�
 
 ## 11. 不可逆决策
 
-- ADR-0022：tool-call / tool-result 的 Observation 增加脱敏后的命令摘要和报错签名字段，`schemaVersion` 不变。
-- ADR-0023：`create-skill` 提案用哨兵值 `'absent'` 表示空 Base，自我纠正片段作为不绑定 Skill 的 Derived record 单独存放。
+- ADR-0023：tool-call / tool-result 的 Observation 增加脱敏后的命令摘要和报错签名字段，`schemaVersion` 不变。
+- ADR-0024：`create-skill` 提案用哨兵值 `'absent'` 表示空 Base，自我纠正片段作为不绑定 Skill 的 Derived record 单独存放。
 
-编号：`origin/main`（`6accc8b`）当前最大是 0021，所以本 PR 用 0022、0023。两条都依赖 ADR-0021（`accepted`）的 record id 规则，但不与它冲突。与现有 ADR 没有冲突：ADR-0014（依赖方向不变）、ADR-0016（episode 是派生的，引用 observation id，不回写）、ADR-0004（转移表不加状态）。
+编号：`origin/main`（`63d2007`）当前最大是 0022（SKIL-134 的 failure case 来源与 cluster id），所以本 PR 用 0023、0024。两条都依赖 ADR-0021（`accepted`）的 record id 规则，但不与它冲突。与现有 ADR 没有冲突：ADR-0014（依赖方向不变）、ADR-0016（episode 是派生的，引用 observation id，不回写）、ADR-0004（转移表不加状态）。
 
 ## 12. 给 S2 / S3 的拆分建议
 
@@ -600,7 +600,7 @@ ADR-0021 已经 `accepted`，S2 spec 可以直接定稿，不用再等。S3 可�
 
 ## 13. 待定项
 
-- **待成员确认（阻塞交付）**：§3 的采集字段清单和脱敏规则 R1–R7（ADR-0022）；空 Base 的表示和新增派生 store（ADR-0023）。
+- **成员已确认（2026-10-03）**：§3 的采集字段清单和脱敏规则 R1–R7（ADR-0023）；空 Base 的表示和新增派生 store（ADR-0024）。两条 ADR 都已改为 `accepted`。
 - **业务判断（采用默认答案，成员可推翻）**：§8 的 Skill / memory / workflow 边界；§5.2 的 K = 3、N = 2、D = 30；§6.1 不支持回滚到不存在；§6.2 的目标判断规则（含规则 0：发布过的 pattern 改为补丁这个 Skill）；§6.3 进行中的提案（包括 `deferred`）挡住新提案，promote 后重新计数；§7.3 accept 查门槛只对 pattern 来源生效；§4.2 `DerivedJudge` 的形状和 SKIL-126 谁先合并谁定。
 - **没核实**：DSH 的 session `tool/result` 事件上会不会带 bash 的结构化结果（§3.3 第 1 步）；没有它也能用标记解析，所以不影响设计。
 - **范围外、建议另立票**：scope 真正改变写入路径（§6.5 的已知缺口）。

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # create-skill 提案用哨兵值 `absent` 表示空 Base；自我纠正片段单独存为不绑定 Skill 的派生记录

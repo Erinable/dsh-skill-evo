@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 工具调用 Observation 记录脱敏后的命令摘要和报错签名，不记完整输出
@@ -23,7 +23,7 @@ status: proposed
   - 位置参数和普通 flag 的值；
   - 报错首行里的 host 和路径。
 
-  这些值不能进入候选 Skill 正文，由 create-skill 的环境值检查挡住（见 ADR-0023 与设计稿 §6.4）。
+  这些值不能进入候选 Skill 正文，由 create-skill 的环境值检查挡住（见 ADR-0024 与设计稿 §6.4）。
 - 已知漏网：`-pPASS` 这类短参数紧贴值、位置参数里的密码、编码过的凭据。只保留前 16 个 token 限制了这些情况的暴露面。
 
 来源：`docs/design/tool-correction-create-skill.md` §3（SKIL-128）
