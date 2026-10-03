@@ -208,7 +208,7 @@ export async function promoteProposal(service: EvolutionService, options: Promot
     ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)
     : resolvePromotionArtifact(await service.evaluations.readAll(), proposal, await readEvaluationFile(options.evaluationPath))
   const pendingPublication = await service.versions.hasPendingPublication(proposal.skillName)
-  if (!pendingPublication) checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(service.evaluationPolicy), now: Date.now() })
+  if (!pendingPublication) checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(service.evaluationPolicy), policy: service.evaluationPolicy, now: Date.now() })
   if (options.dryRun === true) return { dryRun: true, proposal, evaluation: artifact }
   await service.promote(proposal, artifact.result, scope, options.reason)
   return { promoted: true, skillName: proposal.skillName, version: proposal.proposedVersion, scope }

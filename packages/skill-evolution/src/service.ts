@@ -155,7 +155,10 @@ export class EvolutionService {
 
   async metrics(): Promise<EvolutionMetrics> {
     const snapshot = await this.refreshDerived()
-    return aggregateMetrics(await this.observations.readAll(), await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps)
+    const events = await this.observations.readAll()
+    const names = [...new Set(events.map(item => item.skill?.name).filter((name): name is string => name !== undefined))]
+    const currentSkills = (await Promise.all(names.map(async name => { const current = await this.versions.readCurrent(name); return current === undefined ? undefined : { name, content: current.content } }))).filter((item): item is { name: string; content: string } => item !== undefined)
+    return aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
   }
 
   async health(): Promise<readonly JsonlHealth[]> {
@@ -268,6 +271,8 @@ export class EvolutionService {
       candidateContentHash: result.candidateContentHash,
       caseIds: [...result.caseIds],
       policyVersion: result.policyVersion,
+      ...(result.schemaVersion === 2 ? { schemaVersion: 2 as const, policy: result.policy, policyHash: result.policyHash, statisticId: result.statisticId } : {}),
+      ...(result.policyHash === undefined ? {} : { policyHash: result.policyHash }),
       passedGate: result.passedGate,
       createdAt: result.createdAt,
       expiresAt,
@@ -277,6 +282,7 @@ export class EvolutionService {
       reason: 'evaluation completed',
       action: 'evaluated',
       policyVersion: result.policyVersion,
+      ...(result.policyHash === undefined ? {} : { policyHash: result.policyHash }),
       comparisonCaseIds: result.caseIds,
       evidenceIds: result.caseResults.map(item => item.caseId),
     })
@@ -305,7 +311,7 @@ export class EvolutionService {
     if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
     const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
     const current = await this.versions.readCurrent(proposal.skillName)
-    if (!(await this.versions.hasPendingPublication(proposal.skillName))) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), now: Date.now() })
+    if (!(await this.versions.hasPendingPublication(proposal.skillName))) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = rootId
     await this.versions.promote(proposal, { scope, retainJournal: true })
@@ -326,7 +332,7 @@ export class EvolutionService {
       source: 'maintenance',
     })
     const latestAfterObservation = latestProposalsByRoot(await this.proposals.readAll()).get(proposalId) ?? proposal
-    if (latestAfterObservation.status !== 'promoted') await this.ledger.transition(latestAfterObservation, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
+    if (latestAfterObservation.status !== 'promoted') await this.ledger.transition(latestAfterObservation, 'promoted', { reason, action: 'promoted', policyVersion: verifiedEvaluation.policyVersion, ...(verifiedEvaluation.policyHash === undefined ? {} : { policyHash: verifiedEvaluation.policyHash }), evidenceIds: verifiedEvaluation.caseResults.map(result => result.caseId) })
     await this.versions.finalizePublication(proposal.skillName)
   }
 
