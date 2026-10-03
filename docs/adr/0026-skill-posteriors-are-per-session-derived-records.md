@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Skill window、Skill posterior、Failure attribution 是按 session 的派生记录，Projection 不调模型

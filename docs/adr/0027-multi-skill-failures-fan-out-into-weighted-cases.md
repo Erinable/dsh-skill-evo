@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 多 Skill 失败扇出成按 Skill 的加权 Failure case，提案门槛只数主导 case

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 发射模型的注入 interface 按 session 批量返回相对 none 的对数似然比，硬约束和跳过步骤由 core 计算

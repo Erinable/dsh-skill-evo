@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # bundle 把 DSH 的上下文遮蔽记为 `context-shadowed` Observation
