@@ -24,7 +24,7 @@
 - **事实**（append-only，权威）：`observations`、`proposals`、`decisions`、`feedback`、`evaluations`。
 - **派生**（可重投影，`replaceAll` 覆盖）：`experiences`、`failures`、`clusters`、`diagnoses`。
 
-关键事实：**投影的唯一输入是 `observations`**。`refreshDerivedUnlocked`（`service.ts:417`）只 `observations.readAll()`，`workflow.add(observations)` 后 `snapshot()` 产出四个派生集合再 `replaceAll`。cluster id 是 `cluster:${skillName}:${signature}`（`experience.ts:161`）、diagnosis id 是 `diagnosis:${cluster.id}`（`:187`），都由事实确定性推出——只要 observations 完整，派生 id 在重投影后稳定，proposal 里引用的 cluster id 不会漂。**这条“派生可由事实完整重建”的不变量，正是三个问题的共同根因所在。**
+关键事实：**投影的唯一输入是 `observations`**。`refreshDerivedUnlocked`（`service.ts:417`）只 `observations.readAll()`，`workflow.add(observations)` 后 `snapshot()` 产出四个派生集合再 `replaceAll`。cluster id 是 `cluster:${skillName}:${earliestCaseId}`（`experience.ts`）、diagnosis id 是 `diagnosis:${cluster.id}`，都由事实确定性推出——只要 observations 完整，派生 id 在重投影后稳定，proposal 里引用的 cluster id 不会漂。历史版本按签名生成的 cluster id 只在旧派生记录中有效；重投影会一次性换成按最早 case id 的新 id。**这条“派生可由事实完整重建”的不变量，正是三个问题的共同根因所在。**
 
 ### 1.3 三个问题（复现）
 
