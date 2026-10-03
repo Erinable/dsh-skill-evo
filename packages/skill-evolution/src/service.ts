@@ -201,6 +201,8 @@ export class EvolutionService {
           if (proposal !== undefined && artifact !== undefined && proposal.status !== 'promoted') await this.promote(proposal, artifact.result, journal.scope)
         } else if (journal.operation === 'rollback') {
           await this.rollback(journal.skillName, journal.to.version)
+          const source = [...latestProposalsByRoot(await this.proposals.readAll()).values()].find(item => item.skillName === journal.skillName && item.status === 'rolled-back' && item.proposedVersion === journal.from.version)
+          if (source !== undefined && !(await this.decisions.readAll()).some(item => item.id === `decision:ledger:${source.id}`)) await this.decisions.append({ id: `decision:ledger:${source.id}`, proposalId: proposalRootId(source.id), skillName: source.skillName, action: 'rollback', reason: 'manual rollback', evidenceIds: [], createdAt: source.updatedAt, actor: this.options.operator ?? 'maintainer', fromStatus: 'promoted', toStatus: 'rolled-back', recordId: source.id, baseContentHash: source.expectedBase.contentHash, candidateContentHash: createContentHash(source.candidateContent) })
         }
       } catch { /* leave the journal for the next repair attempt */ }
     }
@@ -334,12 +336,21 @@ export class EvolutionService {
 
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {
     const before = await this.versions.readCurrent(skillName)
+    const pending = await this.versions.pendingPublication(skillName)
     const latestStates = latestProposalsByRoot(await this.proposals.readAll())
-    if (before?.manifest.version === version) return
-    const published = await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
-    const latestPromoted = [...latestStates.values()].filter(item => item.skillName === skillName && item.status === 'promoted' && item.proposedVersion === before?.manifest.version).at(-1)
+    if (pending?.operation === 'rollback') {
+      await this.versions.recoverPublication(skillName, true)
+    } else if (before?.manifest.version !== version) {
+      await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
+    } else {
+      return
+    }
+    const published = await this.versions.readCurrent(skillName)
+    if (published === undefined) throw new Error(`rollback did not produce a current Skill: ${skillName}`)
+    const sourceVersion = pending?.from.version ?? before?.manifest.version
+    const latestPromoted = [...latestStates.values()].filter(item => item.skillName === skillName && item.status === 'promoted' && item.proposedVersion === sourceVersion).at(-1)
     const targetProposal = [...latestStates.values()].find(item => item.skillName === skillName && item.proposedVersion === version)
-    const occurredAt = published.manifest.updatedAt
+    const occurredAt = pending?.startedAt ?? published.manifest.updatedAt
     const observationId = `rollback:${skillName}:${version}:${occurredAt}`
     if (!(await this.observations.readAll()).some(item => item.id === observationId)) await this.observations.append({
       id: observationId,
@@ -354,7 +365,7 @@ export class EvolutionService {
         contentHash: published.manifest.contentHash,
         version: published.manifest.version,
       },
-      payload: { operation: 'rollback', version, ...(latestPromoted === undefined ? {} : { sourceProposalId: proposalRootId(latestPromoted.id) }), ...(targetProposal === undefined ? {} : { targetProposalId: proposalRootId(targetProposal.id) }), ...(before === undefined ? {} : { fromVersion: before.manifest.version, fromContentHash: before.manifest.contentHash }), toContentHash: published.manifest.contentHash },
+      payload: { operation: 'rollback', version, ...(latestPromoted === undefined ? {} : { sourceProposalId: proposalRootId(latestPromoted.id) }), ...(targetProposal === undefined ? {} : { targetProposalId: proposalRootId(targetProposal.id) }), ...(pending === undefined ? (before === undefined ? {} : { fromVersion: before.manifest.version, fromContentHash: before.manifest.contentHash }) : { fromVersion: pending.from.version, fromContentHash: pending.from.contentHash }), toContentHash: published.manifest.contentHash },
       source: 'maintenance',
     })
     const decisionId = `decision:rollback:${skillName}:${version}:${occurredAt}`
@@ -371,11 +382,26 @@ export class EvolutionService {
     if (latestPromoted !== undefined) {
       const currentLatest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(latestPromoted.id)) ?? latestPromoted
       if (currentLatest.status === 'promoted') await this.ledger.transition(currentLatest, 'rolled-back', { reason, action: 'rollback' })
+      else if (currentLatest.status === 'rolled-back') {
+        const ledgerDecisionId = `decision:ledger:${currentLatest.id}`
+        if (!(await this.decisions.readAll()).some(item => item.id === ledgerDecisionId)) await this.decisions.append({ id: ledgerDecisionId, proposalId: proposalRootId(currentLatest.id), skillName, action: 'rollback', reason, evidenceIds: [], createdAt: currentLatest.updatedAt, actor: this.options.operator ?? 'maintainer', fromStatus: 'promoted', toStatus: 'rolled-back', recordId: currentLatest.id, baseContentHash: currentLatest.expectedBase.contentHash, candidateContentHash: createContentHash(currentLatest.candidateContent) })
+      }
     }
     await this.versions.finalizePublication(skillName)
   }
 
   async rejectProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
+    if (proposal.status === 'promoted' || proposal.status === 'rolled-back') throw new OperationError('invalid-transition', `proposal ${proposal.id} cannot be rejected from ${proposal.status}`)
+    if (proposal.status === 'accepted' && await this.versions.hasPendingPublication(proposal.skillName)) {
+      await this.versions.recoverPublication(proposal.skillName, true)
+      const latest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(proposal.id))
+      if (latest?.status === 'promoted') throw new OperationError('invalid-transition', `proposal ${proposal.id} was promoted before rejection`)
+      const artifact = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (artifact !== undefined) {
+        await this.promote(proposal, artifact.result, 'project')
+        throw new OperationError('invalid-transition', `proposal ${proposal.id} was promoted before rejection`)
+      }
+    }
     return (await this.ledger.transition(proposal, 'rejected', { reason, action: 'rejected', evidenceIds })).record
   }
 

@@ -113,16 +113,17 @@ function arm(crash: Crash, root: string, evolution: EvolutionService): void {
   if (crash.kind === 'file') fault.paths = [join(root, crash.file)]
   else if (crash.kind === 'journal') fault.paths = [join(root, skillName, '.publish.json'), join(root, '.skill-evolution', 'publications', `${skillName}.json`)]
   else if (crash.kind === 'invalidate') fault.invalidate = true
-  else crashOnCall(evolution[crash.store], crash.call ?? 1)
+  else crashOnCall(evolution[crash.store], crash.call ?? 1, crash.store === 'proposals')
 }
 
-function crashOnCall(store: { append(record: never): Promise<boolean> }, call: number): void {
-  const original = store.append.bind(store) as (record: unknown) => Promise<boolean>
+function crashOnCall(store: { append(record: never): Promise<boolean>; appendComputed?: (...args: never[]) => Promise<unknown> }, call: number, computed = false): void {
+  const method = computed && store.appendComputed !== undefined ? 'appendComputed' : 'append'
+  const original = store[method]!.bind(store) as (...args: unknown[]) => Promise<unknown>
   let count = 0
-  vi.spyOn(store, 'append').mockImplementation(async (record: never) => {
+  vi.spyOn(store, method as 'append').mockImplementation(async (...args: never[]) => {
     count += 1
     if (count === call) throw new Error('injected crash in append')
-    return original(record)
+    return original(...args)
   })
 }
 
@@ -222,7 +223,21 @@ const convergesToday = new Set<string>([
   'P2 after W1, before W2 observation:rerun',
   'P2 after W1, before W2 observation:repair',
   'P4 after W3, before W4 decision:rerun',
-  'double-rollback',
+  'R1a R1 before live manifest.json:rerun',
+  'R1b R1 before current.json:rerun',
+  'R1c R1 invalidate after current.json:rerun',
+  'R2 after R1, before R2 observation:rerun',
+  'R3 after R2, before R3 rollback decision:rerun',
+  'R4 after R3, before R4 ledger record:rerun',
+  'P3 after W2, before W3 ledger record:rerun',
+  'P3 after W2, before W3 ledger record:repair',
+  'R1a R1 before live manifest.json:repair',
+  'R1b R1 before current.json:repair',
+  'R1c R1 invalidate after current.json:repair',
+  'R2 after R1, before R2 observation:repair',
+  'R3 after R2, before R3 rollback decision:repair',
+  'R4 after R3, before R4 ledger record:repair',
+  'R5 after R4, before R5 transition decision:repair',
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
@@ -300,7 +315,7 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(crashed)
   })
 
-  pending('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
+  it('G1 rejecting the proposal after the commit point finishes the promote first, then refuses', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root, proposalRef, reference } = await crashPromote(row)
     await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toMatchObject({ code: expect.stringMatching(/^(invalid-transition|conflict)$/) })

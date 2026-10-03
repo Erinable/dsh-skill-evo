@@ -6,7 +6,7 @@ import { LockBusyError, withLock } from './locking.js'
 import { proposalRootId } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
-import { completePublication as completePublicationFile, recoverPendingPublication as recoverPendingPublicationFile, removePublication, type PublicationJournal, writePublication } from './publication.js'
+import { completePublication as completePublicationFile, readPublication, recoverPendingPublication as recoverPendingPublicationFile, removePublication, type PublicationJournal, writePublication } from './publication.js'
 
 export interface SkillVersionStoreOptions {
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
@@ -39,6 +39,14 @@ export class SkillVersionStore {
 
   async hasPendingPublication(skillName: string): Promise<boolean> {
     return (await readTextIfPresent(this.layout().publicationJournalPath(skillName))) !== undefined
+  }
+
+  async pendingPublication(skillName: string): Promise<PublicationJournal | undefined> {
+    return readPublication(this.layout().publicationJournalPath(skillName))
+  }
+
+  async recoverPublication(skillName: string, retainJournal = true): Promise<void> {
+    await this.recoverPendingPublication(skillName, retainJournal)
   }
 
   private async readCurrentUnlocked(skillName: string): Promise<CurrentSkill | undefined> {
