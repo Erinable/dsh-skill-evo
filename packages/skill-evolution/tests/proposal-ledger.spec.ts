@@ -6,7 +6,10 @@ import {
   assertCanTransition,
   canTransition,
   createProposal,
+  assertProposalRoot,
+  findLedgerRecord,
   findProposalById,
+  historyByRoot,
   latestProposalsByRoot,
   ledgerRecordId,
   proposalRootId,
@@ -111,5 +114,43 @@ describe('proposal ledger', () => {
     expect(() => findProposalById([records[0]], 'proposal')).toThrowError(
       expect.objectContaining({ code: 'not-found' }),
     )
+  })
+
+  it('traces repeated evaluated records by exact id while keeping one root', () => {
+    const root = 'proposal:trace'
+    const initial = draft(root)
+    const proposed = transitionProposal(initial, 'proposed')
+    const evaluating = { ...transitionProposal(proposed, 'evaluating'), id: ledgerRecordId(root, 'evaluating') }
+    const evaluated = { ...transitionProposal(evaluating, 'evaluated'), id: ledgerRecordId(root, 'evaluated') }
+    const secondEvaluated = { ...transitionProposal({ ...evaluated, status: 'observed' }, 'evaluated'), id: ledgerRecordId(root, 'evaluated', 2) }
+    const records = [initial, proposed, evaluating, evaluated, secondEvaluated]
+
+    expect(historyByRoot(records, root)).toEqual(records)
+    expect(latestProposalsByRoot(records).get(root)).toEqual(secondEvaluated)
+    expect(findProposalById(records, `${root}:evaluated`)).toEqual(secondEvaluated)
+    expect(findLedgerRecord(records, `${root}:evaluated`)).toEqual(evaluated)
+    expect(findLedgerRecord(records, `${root}:evaluated:2`)).toEqual(secondEvaluated)
+  })
+
+  it('round-trips large occurrences and preserves custom numeric roots', () => {
+    for (const occurrence of [9, 10, 11, 100]) {
+      const id = ledgerRecordId('proposal:abc', 'evaluated', occurrence)
+      expect(proposalRootId(id)).toBe('proposal:abc')
+    }
+    expect(proposalRootId('proposal:abc:2')).toBe('proposal:abc:2')
+    const invalidIds = ['proposal:abc:evaluated:1', 'proposal:abc:evaluated:02']
+    const records = invalidIds.map(id => ({ ...draft('proposal:abc'), id }))
+    for (const id of invalidIds) {
+      expect(proposalRootId(id)).toBe(id)
+      expect(() => findLedgerRecord(records, id)).toThrowError(
+        expect.objectContaining({ code: 'not-found' }),
+      )
+    }
+  })
+
+  it('accepts plain roots and rejects status-suffixed roots', () => {
+    expect(assertProposalRoot('proposal:plain')).toBe('proposal:plain')
+    expect(() => assertProposalRoot('proposal:plain:evaluated')).toThrowError(ProposalLedgerError)
+    expect(() => assertProposalRoot('proposal:plain:evaluated:2')).toThrowError(ProposalLedgerError)
   })
 })

@@ -11,6 +11,7 @@ export interface ProposalComparison {
   readonly evidence: readonly string[]
   readonly confidence: 'low' | 'medium' | 'high'
   readonly toolCalls?: number
+  readonly modelTurns?: number
   readonly tokenCost?: number
   readonly contextCost?: number
   readonly sideEffects?: readonly string[]
@@ -33,6 +34,8 @@ export interface DshEvaluationRunInput {
   readonly task: string
   readonly cwd: string
   readonly signal: AbortSignal
+  readonly exposure: 'base' | 'candidate'
+  readonly sample: number
 }
 
 export interface DshEvaluationRunResult {
@@ -41,6 +44,7 @@ export interface DshEvaluationRunResult {
   readonly evidence?: readonly string[]
   readonly toolCalls?: number
   readonly tokenCost?: number
+  readonly modelTurns?: number
   readonly contextCost?: number
   readonly sideEffects?: readonly string[]
   readonly securityViolations?: readonly string[]
@@ -63,14 +67,16 @@ export function createDshEvaluationRunner(
   executor: DshEvaluationExecutor,
   options: DshComparisonOptions = {},
 ) {
-  return async (content: string, evaluationCase: DshEvaluationCase) => {
-    const result = await runDshCase(proposal, content === baseContent ? 'base' : 'candidate', content, evaluationCase, executor, options)
+  return async (content: string, evaluationCase: DshEvaluationCase, context?: { readonly exposure: 'base' | 'candidate'; readonly sample: number }) => {
+    const result = await runDshCase(proposal, context?.exposure ?? (content === baseContent ? 'base' : 'candidate'), content, evaluationCase, executor, options, context?.sample ?? 0)
     return {
       passed: result.status === 'passed',
       status: result.status,
       reason: result.evidence.join('; ') || result.status,
       evidence: result.evidence,
       tokenCost: result.tokenCost,
+      toolCalls: result.toolCalls,
+      modelTurns: result.modelTurns,
       contextCost: result.contextCost,
       sideEffects: result.sideEffects,
       securityViolations: result.securityViolations,
@@ -120,6 +126,7 @@ async function runDshCase(
   evaluationCase: DshEvaluationCase,
   executor: DshEvaluationExecutor,
   options: DshComparisonOptions,
+  sample = 0,
 ): Promise<ProposalComparison> {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(proposal.skillName)) throw new Error('invalid Skill name')
   const timeoutMs = options.timeoutMs ?? 120_000
@@ -138,7 +145,7 @@ async function runDshCase(
     settled = false
     execution = Promise.resolve().then(() => executor({
       proposalId: proposal.id, caseId: evaluationCase.id, skillName: proposal.skillName,
-      skillContent, task: evaluationCase.task, cwd: workspace, signal: controller.signal,
+      skillContent, task: evaluationCase.task, cwd: workspace, signal: controller.signal, exposure, sample,
     })).finally(() => { settled = true })
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -153,7 +160,7 @@ async function runDshCase(
     return {
       ...identity, status, observedOutcome: run.outcome,
       evidence: [...run.evidence ?? []], confidence: run.confidence ?? 'low',
-      toolCalls: run.toolCalls, tokenCost: run.tokenCost, contextCost: run.contextCost,
+      toolCalls: run.toolCalls, modelTurns: run.modelTurns, tokenCost: run.tokenCost, contextCost: run.contextCost,
       // Unknown external effects remain unknown; filesystem scanning is only supplemental.
       sideEffects: run.sideEffects === undefined ? undefined : [...new Set([...run.sideEffects, ...effects])],
       securityViolations: run.securityViolations,
@@ -163,7 +170,7 @@ async function runDshCase(
     return {
       ...identity, observedOutcome: 'unknown', status: 'unknown',
       evidence: [controller.signal.aborted ? 'evaluation timed out' : error instanceof Error ? error.message : String(error)],
-      confidence: 'low', toolCalls: 0, sideEffects: [], securityViolations: [], userFeedback: [], timedOut: controller.signal.aborted,
+      confidence: 'low', sideEffects: [], securityViolations: [], userFeedback: [], timedOut: controller.signal.aborted,
     }
   } finally {
     if (timer !== undefined) clearTimeout(timer)

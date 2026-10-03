@@ -139,6 +139,20 @@ describe('DshEvolutionAdapter', () => {
     await expect(runner('base', { id: 'case-1', task: 'require:candidate' })).resolves.toMatchObject({ passed: false, status: 'failed' })
   })
 
+  it('forwards scripted measurements and explicit exposure/sample context', async () => {
+    const seen: { exposure: 'base' | 'candidate'; sample: number }[] = []
+    const runner = createDshEvaluationRunner({ id: 'scripted', skillName: 'api-debugging' }, 'same', createFakeDshExecutor({ script: input => { seen.push(input); return { outcome: 'improved', toolCalls: 7, modelTurns: 3 } } }), { timeoutMs: 1000 })
+    await expect(runner('same', { id: 'case-1', task: 'debug' }, { exposure: 'candidate', sample: 1 })).resolves.toMatchObject({ toolCalls: 7, modelTurns: 3, status: 'passed' })
+    expect(seen).toMatchObject([{ exposure: 'candidate', sample: 1 }])
+  })
+
+  it('leaves measurements undefined for executor errors and timeouts', async () => {
+    const errorRunner = createDshEvaluationRunner({ id: 'error', skillName: 'api-debugging' }, 'base', async () => { throw new Error('boom') }, { timeoutMs: 1000 })
+    await expect(errorRunner('base', { id: 'case-1', task: 'debug' })).resolves.toMatchObject({ status: 'unknown', toolCalls: undefined, modelTurns: undefined })
+    const timeoutRunner = createDshEvaluationRunner({ id: 'timeout', skillName: 'api-debugging' }, 'base', async () => new Promise<never>(() => undefined), { timeoutMs: 5 })
+    await expect(timeoutRunner('base', { id: 'case-1', task: 'debug' })).resolves.toMatchObject({ status: 'unknown', toolCalls: undefined, modelTurns: undefined })
+  })
+
   it('converts executor timeouts into unknown evidence', async () => {
     const [result] = await runDshComparison(
       { id: 'proposal-timeout', skillName: 'api-debugging' },
