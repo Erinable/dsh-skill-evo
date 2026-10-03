@@ -6,7 +6,7 @@ import { LockBusyError, withLock } from './locking.js'
 import { proposalRootId } from './proposal.js'
 import { resolveLayout, type EvolutionLayout } from './state-root.js'
 import { assertPublicationScope, type AdoptionBase, type PublicationScope, type SkillManifest, type SkillProposal } from './types.js'
-import { completePublication as completePublicationFile, recoverPendingPublication as recoverPendingPublicationFile, type PublicationJournal, writePublication } from './publication.js'
+import { completePublication as completePublicationFile, readPublication, recoverPendingPublication as recoverPendingPublicationFile, removePublication, type PublicationJournal, writePublication } from './publication.js'
 
 export interface SkillVersionStoreOptions {
   readonly invalidate?: (skillName: string, scope: Exclude<PublicationScope, 'explicit-only'>) => void | Promise<void>
@@ -35,6 +35,18 @@ export class SkillVersionStore {
 
   async readCurrent(skillName: string): Promise<CurrentSkill | undefined> {
     return this.readCurrentUnlocked(skillName)
+  }
+
+  async hasPendingPublication(skillName: string): Promise<boolean> {
+    return (await readTextIfPresent(this.layout().publicationJournalPath(skillName))) !== undefined
+  }
+
+  async pendingPublication(skillName: string): Promise<PublicationJournal | undefined> {
+    return readPublication(this.layout().publicationJournalPath(skillName))
+  }
+
+  async recoverPublication(skillName: string, retainJournal = true): Promise<void> {
+    await this.recoverPendingPublication(skillName, retainJournal)
   }
 
   private async readCurrentUnlocked(skillName: string): Promise<CurrentSkill | undefined> {
@@ -79,11 +91,12 @@ export class SkillVersionStore {
     options: {
       readonly scope: PublicationScope
       readonly expectedBase?: AdoptionBase
+      readonly retainJournal?: boolean
     },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
     return this.withMutationLock(proposal.skillName, 'promote', async () => {
-      await this.recoverPendingPublication(proposal.skillName)
+      await this.recoverPendingPublication(proposal.skillName, options.retainJournal)
       return this.promoteUnlocked(proposal, options)
     })
   }
@@ -93,6 +106,7 @@ export class SkillVersionStore {
     options: {
       readonly scope: PublicationScope
       readonly expectedBase?: AdoptionBase
+      readonly retainJournal?: boolean
     },
   ): Promise<PublishedSkill> {
     assertSkillName(proposal.skillName)
@@ -141,7 +155,7 @@ export class SkillVersionStore {
     const startedAt = this.clock()
     const journal: PublicationJournal = { v: 1, operation: 'promote', skillName: proposal.skillName, scope: options.scope, proposalId: proposalRootId(proposal.id), from: { version: current?.manifest.version ?? 'unversioned', contentHash: current?.manifest.contentHash ?? proposal.expectedBase.contentHash }, to: { version: proposal.proposedVersion, contentHash: createContentHash(proposal.candidateContent) }, startedAt }
     await writePublication(this.layout().publicationJournalPath(proposal.skillName), journal)
-    await this.completePublication(journal)
+    await this.completePublication(journal, options.retainJournal)
     const manifest = this.manifestFor(proposal, options.scope, 'stable', startedAt)
     return { manifest, path: join(directory, 'SKILL.md') }
   }
@@ -149,11 +163,11 @@ export class SkillVersionStore {
   async rollback(
     skillName: string,
     version: string,
-    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
+    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase; readonly retainJournal?: boolean },
   ): Promise<PublishedSkill> {
     assertPublicationScope(options.scope)
     return this.withMutationLock(skillName, 'rollback', async () => {
-      await this.recoverPendingPublication(skillName)
+      await this.recoverPendingPublication(skillName, options.retainJournal)
       return this.rollbackUnlocked(skillName, version, options)
     })
   }
@@ -161,7 +175,7 @@ export class SkillVersionStore {
   private async rollbackUnlocked(
     skillName: string,
     version: string,
-    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase },
+    options: { readonly scope: Exclude<PublicationScope, 'explicit-only'>; readonly expectedBase?: AdoptionBase; readonly retainJournal?: boolean },
   ): Promise<PublishedSkill> {
     assertSkillName(skillName)
     assertVersion(version)
@@ -186,7 +200,7 @@ export class SkillVersionStore {
     const journal: PublicationJournal = { v: 1, operation: 'rollback', skillName, scope: options.scope, from: { version: current?.manifest.version ?? 'unversioned', contentHash: current?.manifest.contentHash ?? createContentHash(content) }, to: { version: manifest.version, contentHash: manifest.contentHash }, startedAt }
     const returnedManifest = { ...manifest, updatedAt: startedAt }
     await writePublication(this.layout().publicationJournalPath(skillName), journal)
-    await this.completePublication(journal)
+    await this.completePublication(journal, options.retainJournal)
     return { manifest: returnedManifest, path: join(directory, 'SKILL.md') }
   }
 
@@ -254,22 +268,28 @@ export class SkillVersionStore {
     }
   }
 
-  private async recoverPendingPublication(skillName: string): Promise<void> {
+  async finalizePublication(skillName: string): Promise<void> {
+    await removePublication(this.layout().publicationJournalPath(skillName))
+  }
+
+  private async recoverPendingPublication(skillName: string, retainJournal = false): Promise<void> {
     await recoverPendingPublicationFile(skillName, {
       root: this.root,
       layout: this.layout(),
       invalidate: this.options.invalidate,
       manifestFor: journal => this.manifestForJournal(journal, 'stable'),
       legacyRecovery: name => recoverPublication(skillDirectory(this.root, name), this.layout().skillVersionsDir(name), this.options.invalidate),
+      retainJournal,
     })
   }
 
-  private async completePublication(journal: PublicationJournal): Promise<void> {
+  private async completePublication(journal: PublicationJournal, retainJournal = false): Promise<void> {
     await completePublicationFile(journal, {
       root: this.root,
       layout: this.layout(),
       invalidate: this.options.invalidate,
       manifestFor: item => this.manifestForJournal(item, 'stable'),
+      retainJournal,
     })
   }
 
