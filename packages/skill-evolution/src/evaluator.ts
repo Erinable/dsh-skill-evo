@@ -2,7 +2,7 @@ import type { EvaluationSample } from './evaluation-cost.js'
 import { analyzeEvaluationCost } from './evaluation-cost.js'
 import type { CaseEvaluation, EvaluationCategory, EvaluationPolicy, EvaluationPolicyInput, SkillEvalResult, SkillEvaluationCase } from './types.js'
 import { createContentHash } from './events.js'
-import { normalizeEvaluationPolicy } from './policy.js'
+import { normalizeEvaluationPolicy, normalizedPolicyHash } from './policy.js'
 
 export const DEFAULT_EVALUATION_POLICY: EvaluationPolicy = {
   version: '1',
@@ -102,7 +102,7 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   if (candidateBoundaryFailures > baseBoundaryFailures) gateReasons.push('new high-severity boundary failure')
   if (categories['original-failure'].total === 0) gateReasons.push('no original-failure cases')
   const total = results.length; const passed = results.filter(result => result.passed).length; const unknown = results.filter(result => result.status === 'unknown').length; const hardReject = securityViolations > normalizedPolicy.maxSecurityViolations || regressions.length > normalizedPolicy.maxRegressionCount
-  return { candidateId: input.candidateId, total, passed, failed: total - passed - unknown, unknown, categories, baseline, regressions, gateReasons, caseResults: results, durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started), schemaValid: validation.valid, invocationPolicyUnchanged, passedGate: gateReasons.length === 0, decision: gateReasons.length === 0 ? 'passed' : (hardReject ? 'rejected' : 'needs-review'), policyVersion: normalizedPolicy.version, baseContentHash: createContentHash(input.baseContent), candidateContentHash: createContentHash(input.candidateContent), caseIds: input.cases.map(item => item.id), createdAt, cost, samples }
+  return { candidateId: input.candidateId, total, passed, failed: total - passed - unknown, unknown, categories, baseline, regressions, gateReasons, caseResults: results, durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started), schemaValid: validation.valid, invocationPolicyUnchanged, passedGate: gateReasons.length === 0, decision: gateReasons.length === 0 ? 'passed' : (hardReject ? 'rejected' : 'needs-review'), policyVersion: normalizedPolicy.version, ...(normalizedPolicy.schema === 2 ? { schemaVersion: 2 as const, policy: normalizedPolicy, policyHash: normalizedPolicyHash(normalizedPolicy), statisticId: 'stratified-permutation-v1' } : {}), baseContentHash: createContentHash(input.baseContent), candidateContentHash: createContentHash(input.candidateContent), caseIds: input.cases.map(item => item.id), createdAt, cost, samples }
 }
 
 function foldSamples(values: readonly CaseRunResult[]): { passed: boolean; status: 'passed' | 'failed' | 'unknown'; reason: string; evidence: readonly string[] } {
