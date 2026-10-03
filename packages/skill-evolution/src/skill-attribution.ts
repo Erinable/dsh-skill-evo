@@ -76,9 +76,11 @@ export function inferSkillAttribution(observations: readonly RuntimeObservation[
     const sessionWindows = windows.filter(window => window.sessionId === sessionId)
     const skills = unique(sessionWindows.map(window => window.skillName))
     const steps = toolSteps(events)
+    const qualification = qualificationIntervals(events)
     const unknownPrefix = numberPayload(events[0]!, 'sessionSeq') !== undefined && (numberPayload(events[0]!, 'sessionSeq') ?? 0) > 0
     const posteriorSteps = steps.map(step => {
-      const eligible = sessionWindows.filter(window => window.stepObservationIds.includes(step.id)).map(window => window.skillName)
+      const stepIndex = events.findIndex(event => event.id === step.id)
+      const eligible = qualification.filter(interval => stepIndex > interval.start && stepIndex < interval.end).map(interval => interval.skillName)
       const scores = new Map<string, number>([['none', 0]])
       for (const skill of eligible) scores.set(skill, scoreStep(step, skill, inputs.contents))
       const max = Math.max(...scores.values()); const exps = [...scores.entries()].map(([name, value]) => [name, Math.exp(value - max)] as const); const total = exps.reduce((sum, [, value]) => sum + value, 0)
@@ -109,6 +111,21 @@ function toolSteps(events: readonly RuntimeObservation[]): ToolStep[] { return e
 function scoreStep(step: ToolStep, skill: string, contents?: ReadonlyMap<string, string>): number { const body = [...(contents?.values() ?? [])].find(value => value.toLowerCase().includes(skill.toLowerCase())) ?? ''; const command = step.command?.toLowerCase() ?? ''; return body && command && body.toLowerCase().includes(command.split(/\s+/)[0]!) ? 2 : command.includes(skill.toLowerCase().split('-')[0]!) ? 1 : command ? -0.5 : 0 }
 function averageShares(values: readonly StateShares[]): StateShares { if (!values.length) return { none: 1, skills: {} }; const skills = new Set(values.flatMap(value => Object.keys(value.skills))); const out: Record<string, number> = {}; for (const skill of skills) out[skill] = round(values.reduce((sum, value) => sum + (value.skills[skill] ?? 0), 0) / values.length); return { none: round(values.reduce((sum, value) => sum + value.none, 0) / values.length), skills: out } }
 function shadowsLoad(shadow: RuntimeObservation, load: RuntimeObservation): boolean { const seq = numberPayload(load, 'sessionSeq'); const ranges = shadow.payload.shadowedSeqRanges; return seq !== undefined && Array.isArray(ranges) && ranges.some(range => Array.isArray(range) && Number(range[0]) <= seq && seq <= Number(range[1])) }
+interface QualificationInterval { readonly skillName: string; readonly start: number; readonly end: number }
+function qualificationIntervals(events: readonly RuntimeObservation[]): QualificationInterval[] {
+  const intervals: QualificationInterval[] = []
+  for (let index = 0; index < events.length; index++) {
+    const load = events[index]
+    if (load.kind !== 'skill-loaded' || load.skill === undefined) continue
+    let end = events.length
+    for (let cursor = index + 1; cursor < events.length; cursor++) {
+      const candidate = events[cursor]
+      if (candidate.kind === 'context-shadowed' && shadowsLoad(candidate, load)) { end = cursor; break }
+    }
+    intervals.push({ skillName: load.skill.name, start: index, end })
+  }
+  return intervals
+}
 function numberPayload(event: RuntimeObservation, key: string): number | undefined { const value = event.payload[key]; return typeof value === 'number' && Number.isFinite(value) ? value : undefined }
 function unique(values: readonly string[]): string[] { return [...new Set(values)].sort() }
 function round(value: number): number { return Math.round(value * 1e6) / 1e6 }
