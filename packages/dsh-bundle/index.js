@@ -43,11 +43,11 @@ export function createDefaultEventMapper() {
     }
 
     if (event.type === 'tool/call') {
-      return mapToolCall(base, event, sessionId, toolCalls)
+      return mapToolCall(base, event, sessionId, toolCalls, sessions)
     }
 
     if (event.type === 'tool/result') {
-      return mapToolResult(base, event, sessionId, toolCalls)
+      return mapToolResult(base, event, sessionId, toolCalls, sessions)
     }
 
     if (event.type === 'turn/end') {
@@ -379,6 +379,10 @@ function mapUserMessage(base, event, sessions) {
     const state = sessions.get(base.sessionId) ?? { userMessages: 0 }
     const isFollowUp = state.userMessages > 0
     state.userMessages += 1
+    const precedingToolKind = state.lastToolKind
+    const precedingToolFailed = state.lastToolFailed
+    state.lastToolKind = undefined
+    state.lastToolFailed = undefined
     sessions.set(base.sessionId, state)
     if (isFollowUp) {
       const text = textFromContent(data.content)
@@ -389,6 +393,8 @@ function mapUserMessage(base, event, sessions) {
         payload: {
           ...base.payload,
           ...(text === undefined ? {} : { text: redactSensitiveText(text) }),
+          ...(precedingToolKind === undefined ? {} : { precedingToolKind }),
+          ...(precedingToolFailed === undefined ? {} : { precedingToolFailed }),
         },
       }
     }
@@ -397,7 +403,7 @@ function mapUserMessage(base, event, sessions) {
   return base
 }
 
-function mapToolCall(base, event, sessionId, toolCalls) {
+function mapToolCall(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId)
   const toolName = stringValue(data?.name)
@@ -407,6 +413,7 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   if (callId !== undefined) toolCalls.set(`${sessionId}:${callId}`, call)
 
   if (toolName === 'skill' && skillName !== undefined) {
+    const state = sessions.get(sessionId); if (state) { state.lastToolKind = 'skill-load-requested'; state.lastToolFailed = undefined }
     return {
       ...base,
       kind: 'skill-load-requested',
@@ -428,13 +435,14 @@ function mapToolCall(base, event, sessionId, toolCalls) {
   }
 }
 
-function mapToolResult(base, event, sessionId, toolCalls) {
+function mapToolResult(base, event, sessionId, toolCalls, sessions) {
   const data = asRecord(event.data)
   const callId = stringValue(data?.callId) ?? stringValue(asRecord(data?.message)?.source?.callId)
   const call = callId === undefined ? undefined : toolCalls.get(`${sessionId}:${callId}`)
   if (callId !== undefined) toolCalls.delete(`${sessionId}:${callId}`)
 
   const failed = toolResultFailed(data)
+  const state = sessions.get(sessionId); if (state) { state.lastToolKind = call?.toolName === 'skill' ? (failed ? 'skill-load-failed' : 'skill-loaded') : 'tool-result'; state.lastToolFailed = failed }
   const payload = {
     ...base.payload,
     ...(callId === undefined ? {} : { toolCallId: callId }),

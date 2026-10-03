@@ -11,6 +11,7 @@ import type {
   SkillFailureCase,
   FeedbackKind,
 } from './types.js'
+import { resolveFollowUps, type FollowUpResolution } from './follow-up.js'
 
 export interface ExperienceProjectionOptions {
   readonly now?: string
@@ -75,7 +76,9 @@ export function buildExperiences(
 }
 
 /** Convert explicit load failures and unambiguous follow-ups into failure cases. */
-export function buildFailureCases(events: readonly RuntimeObservation[]): SkillFailureCase[] {
+export function buildFailureCases(events: readonly RuntimeObservation[], suppliedResolutions?: readonly FollowUpResolution[]): SkillFailureCase[] {
+  const resolutions = suppliedResolutions ?? resolveFollowUps(events)
+  const byId = new Map(resolutions.map(item => [item.observationId, item]))
   const loadedBySession = new Map<string, Set<string>>()
   for (const event of events) {
     if (event.kind === 'skill-loaded' && event.sessionId !== undefined && event.skill !== undefined) {
@@ -87,16 +90,20 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
 
   const cases: SkillFailureCase[] = []
   for (const event of events) {
-    if (event.kind === 'user-follow-up' && event.payload.explicit === true && event.skill !== undefined) {
+    if (event.kind === 'user-follow-up' && event.payload.explicit === true) {
       const feedbackKind = feedbackKindOf(event.payload.feedbackKind)
       const counterEvidence = counterEvidenceFields(event)
-      if (feedbackKind === 'satisfied') continue
+      if (feedbackKind === 'satisfied' || feedbackKind === 'goal-changed') continue
+      const resolution = byId.get(event.id)
+      const skillName = event.skill?.name ?? resolution?.skillName
+      if (skillName === undefined) continue
       cases.push({
         id: `failure:${event.id}`,
-        skillName: event.skill.name,
+        skillName,
         sessionId: event.sessionId,
         origin: 'explicit-feedback',
         ...(feedbackKind === undefined ? {} : { feedbackKind }),
+        ...(resolution === undefined ? {} : { followUpId: resolution.id, intent: resolution.intent, intentSource: resolution.source, ...(resolution.attributionSource === 'override' || resolution.attributionSource === 'tool' ? { attribution: resolution.attribution, attributionSource: resolution.attributionSource } : {}) }),
         ...(typeof event.payload.attributionConfidence === 'number' && Number.isFinite(event.payload.attributionConfidence)
           ? { attributionConfidence: Math.max(0, Math.min(1, event.payload.attributionConfidence)) }
           : {}),
@@ -130,19 +137,24 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
     }
 
     if (event.kind === 'user-follow-up' && event.sessionId !== undefined) {
-      const skills = [...loadedBySession.get(event.sessionId) ?? []]
-      if (skills.length !== 1) continue
+      const resolution = byId.get(event.id)
+      const skills = resolution?.skillName ? [resolution.skillName] : [...loadedBySession.get(event.sessionId) ?? []]
+      if (skills.length !== 1 || resolution === undefined || !['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent)) continue
       const counterEvidence = counterEvidenceFields(event)
       cases.push({
         id: `failure:${event.id}`,
         skillName: skills[0]!,
         sessionId: event.sessionId,
         origin: 'implicit-follow-up',
+        followUpId: resolution.id,
+        intent: resolution.intent,
+        intentSource: resolution.source,
+        ...(resolution.attributionSource === 'override' || resolution.attributionSource === 'tool' ? { attribution: resolution.attribution, attributionSource: resolution.attributionSource } : {}),
         task: taskText(event),
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
         ...counterEvidence,
-        severity: 'medium',
+        severity: resolution.intent === 'constraint' ? 'low' : 'medium',
         createdAt: event.occurredAt,
         status: 'open',
       })
@@ -194,24 +206,25 @@ export function diagnoseFailureCluster(
   cluster: FailureCluster,
   cases: readonly SkillFailureCase[],
   experiences: readonly Experience[] = [],
-  now = new Date().toISOString(),
+  now = cases.filter(failure => cluster.caseIds.includes(failure.id)).reduce((latest, failure) => failure.createdAt > latest ? failure.createdAt : latest, ''),
 ): SkillDiagnosis {
   const selected = cases.filter(failure => cluster.caseIds.includes(failure.id))
   const hasLoadFailure = selected.some(failure => failure.origin === 'load-failure')
-  const hasImplicitFollowUp = selected.some(failure => failure.origin === 'implicit-follow-up')
-  const hasContentFeedback = selected.some(failure => failure.origin === 'explicit-feedback'
-    && (failure.feedbackKind === 'incorrect' || failure.feedbackKind === 'dissatisfied' || failure.feedbackKind === 'retry'))
-  const hasBoundaryFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'constraint')
-  const hasTaskChangeFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'goal-changed')
-  const rootCause = hasLoadFailure
-    ? 'composition'
-    : hasImplicitFollowUp || hasContentFeedback
-      ? 'content'
-      : hasBoundaryFeedback
-        ? 'boundary'
-        : hasTaskChangeFeedback
-          ? 'not-skill'
-          : 'uncertain'
+  const roots = selected.map(failure => {
+    if (failure.origin === 'load-failure') return 'composition' as const
+    if (failure.attribution !== undefined) {
+      if (failure.attribution === 'composition' || failure.attribution === 'content') return failure.attribution
+      if (['tool', 'model', 'task-change', 'not-attributable'].includes(failure.attribution)) return 'not-skill' as const
+    }
+    const intent = failure.intent ?? failure.feedbackKind
+    if (intent === 'incorrect' || intent === 'dissatisfied' || intent === 'retry') return 'content' as const
+    if (intent === 'constraint') return 'boundary' as const
+    if (intent === 'goal-changed') return 'not-skill' as const
+    if (intent === 'other') return 'uncertain' as const
+    if (failure.origin === 'implicit-follow-up' && failure.intent === undefined) return 'content' as const
+    return 'uncertain' as const
+  })
+  const rootCause = (['composition', 'content', 'boundary', 'not-skill', 'uncertain'] as const).find(root => roots.includes(root)) ?? 'uncertain'
   const proposedOperation = rootCause === 'content' ? 'patch-content' : rootCause === 'composition' ? 'edit-metadata' : 'observe-only'
   const hypothesis = rootCause === 'content'
     ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
