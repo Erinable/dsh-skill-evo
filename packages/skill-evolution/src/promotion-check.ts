@@ -37,7 +37,9 @@ export function checkPromotion(input: PromotionCheckInput): void {
     const currentHash = normalizedPolicyHash(currentPolicy)
     if ('schema' in currentPolicy && currentPolicy.schema === 2) {
       if (artifact.policyHash === undefined || artifact.result.policyHash !== currentHash || artifact.policyHash !== currentHash) throw new OperationError('evaluation-mismatch', 'evaluation policy hash does not match the current policy')
-    } else if (artifact.policyHash !== undefined && artifact.policyHash !== currentHash) {
+    } else if ((artifact.policyHash !== undefined && artifact.policyHash !== currentHash)
+      || (artifact.result.policyHash !== undefined && artifact.result.policyHash !== currentHash)
+      || (artifact.policyHash !== undefined && artifact.result.policyHash !== undefined && artifact.policyHash !== artifact.result.policyHash)) {
       throw new OperationError('evaluation-mismatch', 'evaluation policy hash does not match the current policy')
     }
   }
