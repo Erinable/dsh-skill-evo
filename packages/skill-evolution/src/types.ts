@@ -251,6 +251,62 @@ export interface EvaluationPolicy {
   readonly requireOriginalFailureImprovement: boolean
 }
 
+export interface EvaluationPolicyV2 {
+  readonly schema: 2
+  readonly version: string
+  readonly maxRegressionCount: number
+  readonly maxSecurityViolations: number
+  readonly requireNoNewSideEffects: boolean
+  readonly requirePositiveFeedback?: boolean
+  readonly sampling?: { readonly runs?: number }
+  readonly significance?: { readonly alpha?: number }
+  readonly originalFailure?: {
+    readonly requireImprovement?: boolean
+    readonly costMetric?: 'steps' | 'tokens' | 'steps-or-tokens' | 'steps-and-tokens' | null
+    readonly minCostReduction?: number
+  }
+  readonly historicalSuccess?: {
+    readonly maxPassRateDrop?: number
+    readonly maxStepIncrease?: number | null
+    readonly maxTokenIncrease?: number | null
+  }
+  readonly context?: {
+    readonly maxCatalogIncreaseTokens?: number | null
+    readonly maxLoadIncreaseTokens?: number | null
+  }
+}
+
+export type EvaluationPolicyInput = EvaluationPolicy | EvaluationPolicyV2
+
+export interface NormalizedEvaluationPolicy {
+  readonly schema: 1 | 2
+  readonly version: string
+  readonly maxRegressionCount: number
+  readonly maxSecurityViolations: number
+  readonly requireNoNewSideEffects: boolean
+  readonly requirePositiveFeedback: boolean
+  readonly sampling: { readonly runs: number }
+  readonly significance: { readonly alpha: number }
+  readonly originalFailure: {
+    readonly requireImprovement: boolean
+    readonly costMetric: 'steps' | 'tokens' | 'steps-or-tokens' | 'steps-and-tokens' | null
+    readonly minCostReduction: number
+  }
+  readonly historicalSuccess: {
+    readonly maxPassRateDrop: number
+    readonly maxStepIncrease: number | null
+    readonly maxTokenIncrease: number | null
+  }
+  readonly context: {
+    readonly maxCatalogIncreaseTokens: number | null
+    readonly maxLoadIncreaseTokens: number | null
+  }
+  readonly legacy: {
+    readonly maxTokenIncreaseRatio?: number
+    readonly maxContextIncreaseRatio?: number
+  }
+}
+
 export interface ProposalComparison {
   readonly proposalId: string
   readonly caseId: string
