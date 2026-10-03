@@ -323,6 +323,20 @@ describe('promote crash points', () => {
     await expect(reviewProposal(service(root), { proposalRef, decision: 'reject', reason: 'changed my mind' })).rejects.toMatchObject({ code: expect.stringMatching(/^(invalid-transition|conflict)$/) })
     expect(await publicationState(root)).toEqual(reference)
   })
+
+  it('does not skip promotion checks for a different proposal with a pending journal', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P1c'))!
+    const { root } = await crashPromote(row)
+    vi.restoreAllMocks()
+    fault.paths = []
+    const evolution = service(root)
+    const currentBase = await readFile(join(root, skillName, 'SKILL.md'), 'utf8')
+    const proposalRef = await accept(evolution, root, 'proposal-other', currentBase, `${currentBase}Another change.\n`, '1.2.0', 'Another change')
+    const evaluationsPath = join(root, '.skill-evolution', 'evaluations.jsonl')
+    const evaluations = await readFile(evaluationsPath, 'utf8')
+    await writeFile(evaluationsPath, evaluations.replace(/"expiresAt":"[^"]+"/g, '"expiresAt":"2000-01-01T00:00:00.000Z"'))
+    await expect(promoteProposal(evolution, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: expect.stringMatching(/evaluation-expired|evaluation-missing|policy|invalid/) })
+  })
 })
 
 describe('rollback crash points', () => {
