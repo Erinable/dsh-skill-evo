@@ -41,8 +41,12 @@ export class ProposalLedger {
     try {
       record = await this.proposals.appendComputed(records => {
         const root = proposalRootId(from.id)
-        const rootRecords = records.filter(item => proposalRootId(item.id) === root)
+        const rootRecords = records.filter(item => proposalRootId(item.id) === root && isConsistentRecord(item, root))
         const latest = rootRecords.at(-1)
+        const source = records.find(item => item.id === from.id)
+        if (source !== undefined && JSON.stringify(source) !== JSON.stringify(from)) {
+          throw new ProposalLedgerError('conflict', `proposal ${from.id} does not match the stored record`)
+        }
         const replay = records.find(item => item.previousRecordId === from.id && item.status === to)
         if (replay !== undefined) throw new ReplayTransition(replay)
         assertCanTransition(from.status, to)
@@ -125,4 +129,11 @@ function nextFreeId(records: readonly SkillProposal[], root: string, status: Exc
     if (!records.some(item => item.id === id)) return id
     n += 1
   }
+}
+
+function isConsistentRecord(record: SkillProposal, root: string): boolean {
+  if (record.id === root) return true
+  const segments = record.id.split(':')
+  const suffix = /^\d+$/.test(segments.at(-1) ?? '') ? segments.at(-2) : segments.at(-1)
+  return suffix === record.status
 }
