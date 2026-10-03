@@ -279,6 +279,33 @@ test('tracks ordinary tool results and clears them at the next human turn', () =
   assert.equal(followUp.payload.precedingToolFailed, true)
 })
 
+test('omits precedingToolFailed after successful tool activity', () => {
+  const mapEvent = createDefaultEventMapper()
+  const session = { id: 'session-successful-tool' }
+  mapEvent(session, {
+    seq: 1,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Start.' }] },
+  }, { id: 'session-successful-tool:1' })
+  mapEvent(session, {
+    seq: 2,
+    type: 'tool/call',
+    data: { callId: 'call-other', name: 'shell', arguments: '{}' },
+  }, { id: 'session-successful-tool:2' })
+  mapEvent(session, {
+    seq: 3,
+    type: 'tool/result',
+    data: { callId: 'call-other', message: { content: [] } },
+  }, { id: 'session-successful-tool:3' })
+  const followUp = mapEvent(session, {
+    seq: 4,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Please correct this.' }] },
+  }, { id: 'session-successful-tool:4' })
+  assert.equal(followUp.payload.precedingToolKind, 'tool-result')
+  assert.equal('precedingToolFailed' in followUp.payload, false)
+})
+
 test('maps turn completion into a task-finished observation', () => {
   const mapEvent = createDefaultEventMapper()
   const result = mapEvent({ id: 'session-7' }, {

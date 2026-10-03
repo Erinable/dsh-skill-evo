@@ -383,7 +383,7 @@ function mapUserMessage(base, event, sessions) {
     const preceding = isFollowUp
       ? {
           ...(state.precedingToolKind === undefined ? {} : { precedingToolKind: state.precedingToolKind }),
-          ...(state.precedingToolFailed === undefined ? {} : { precedingToolFailed: state.precedingToolFailed }),
+          ...(state.precedingToolFailed === true ? { precedingToolFailed: true } : {}),
         }
       : {}
     clearPrecedingToolState(sessions, base.sessionId)
@@ -566,7 +566,8 @@ function clearPrecedingToolState(sessions, sessionId) {
 function setPrecedingToolState(sessions, sessionId, kind, failed) {
   const state = sessions.get(sessionId) ?? { userMessages: 0, lastSeen: Date.now() }
   state.precedingToolKind = kind
-  state.precedingToolFailed = failed
+  if (failed === true) state.precedingToolFailed = true
+  else delete state.precedingToolFailed
   state.lastSeen = Date.now()
   sessions.set(sessionId, state)
 }
