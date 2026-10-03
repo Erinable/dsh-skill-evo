@@ -11,6 +11,7 @@ import type {
   SkillFailureCase,
   FeedbackKind,
 } from './types.js'
+import { resolveFollowUps, type FollowUpResolution } from './follow-up.js'
 
 export interface ExperienceProjectionOptions {
   readonly now?: string
@@ -22,11 +23,19 @@ export function buildExperiences(
   events: readonly RuntimeObservation[],
   options: ExperienceProjectionOptions = {},
 ): Experience[] {
+  const resolutions = new Map(resolveFollowUps(events).map(item => [item.observationId, item]))
   const loadedBySession = loadedSkillsBySession(events)
   const groups = new Map<string, RuntimeObservation[]>()
   for (const originalEvent of events) {
     if (originalEvent.sessionId === undefined || !isExperienceEvent(originalEvent)) continue
-    const event = withAttribution(originalEvent, loadedBySession)
+    const event = originalEvent.kind === 'user-follow-up' && originalEvent.skill === undefined
+      ? (() => {
+          const index = events.indexOf(originalEvent)
+          const loadedBefore = events.slice(0, index).filter(candidate => candidate.sessionId === originalEvent.sessionId && candidate.kind === 'skill-loaded' && candidate.skill !== undefined)
+          const unique = [...new Set(loadedBefore.map(candidate => candidate.skill!.name))]
+          return unique.length === 1 ? { ...originalEvent, skill: loadedBefore.find(candidate => candidate.skill?.name === unique[0])!.skill } : originalEvent
+        })()
+      : withAttribution(originalEvent, loadedBySession)
     const loaded = loadedBySession.get(originalEvent.sessionId) ?? []
     const attributable = event.skill?.name
     if (attributable === undefined && !(event.kind === 'user-follow-up' || event.kind === 'task-finished') ) continue
@@ -67,36 +76,33 @@ export function buildExperiences(
       observedPattern: describePattern(group),
       evidenceEventIds,
       outcome,
-      attribution: attributionFor(group),
-      confidence: confidenceFor(group),
+      attribution: attributionFor(group, resolutions),
+      confidence: confidenceFor(group, resolutions),
       createdAt: options.now ?? first.occurredAt,
     }
   })
 }
 
 /** Convert explicit load failures and unambiguous follow-ups into failure cases. */
-export function buildFailureCases(events: readonly RuntimeObservation[]): SkillFailureCase[] {
-  const loadedBySession = new Map<string, Set<string>>()
-  for (const event of events) {
-    if (event.kind === 'skill-loaded' && event.sessionId !== undefined && event.skill !== undefined) {
-      const skills = loadedBySession.get(event.sessionId) ?? new Set<string>()
-      skills.add(event.skill.name)
-      loadedBySession.set(event.sessionId, skills)
-    }
-  }
-
+export function buildFailureCases(events: readonly RuntimeObservation[], suppliedResolutions?: readonly FollowUpResolution[]): SkillFailureCase[] {
+  const resolutions = suppliedResolutions ?? resolveFollowUps(events)
+  const byId = new Map(resolutions.map(item => [item.observationId, item]))
   const cases: SkillFailureCase[] = []
   for (const event of events) {
-    if (event.kind === 'user-follow-up' && event.payload.explicit === true && event.skill !== undefined) {
+    if (event.kind === 'user-follow-up' && event.payload.explicit === true) {
       const feedbackKind = feedbackKindOf(event.payload.feedbackKind)
       const counterEvidence = counterEvidenceFields(event)
-      if (feedbackKind === 'satisfied') continue
+      if (feedbackKind === 'satisfied' || feedbackKind === 'goal-changed') continue
+      const resolution = byId.get(event.id)
+      const skillName = event.skill?.name ?? resolution?.skillName
+      if (skillName === undefined) continue
       cases.push({
         id: `failure:${event.id}`,
-        skillName: event.skill.name,
+        skillName,
         sessionId: event.sessionId,
         origin: 'explicit-feedback',
         ...(feedbackKind === undefined ? {} : { feedbackKind }),
+        ...(resolution === undefined ? {} : { followUpId: resolution.id, intent: resolution.intent, intentSource: resolution.source, ...(resolution.attributionSource === 'override' || resolution.attributionSource === 'tool' ? { attribution: resolution.attribution, attributionSource: resolution.attributionSource } : {}) }),
         ...(typeof event.payload.attributionConfidence === 'number' && Number.isFinite(event.payload.attributionConfidence)
           ? { attributionConfidence: Math.max(0, Math.min(1, event.payload.attributionConfidence)) }
           : {}),
@@ -130,19 +136,24 @@ export function buildFailureCases(events: readonly RuntimeObservation[]): SkillF
     }
 
     if (event.kind === 'user-follow-up' && event.sessionId !== undefined) {
-      const skills = [...loadedBySession.get(event.sessionId) ?? []]
-      if (skills.length !== 1) continue
+      const resolution = byId.get(event.id)
+      const skills = resolution?.skillName ? [resolution.skillName] : []
+      if (skills.length !== 1 || resolution === undefined || !['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent)) continue
       const counterEvidence = counterEvidenceFields(event)
       cases.push({
         id: `failure:${event.id}`,
         skillName: skills[0]!,
         sessionId: event.sessionId,
         origin: 'implicit-follow-up',
+        followUpId: resolution.id,
+        intent: resolution.intent,
+        intentSource: resolution.source,
+        ...(resolution.attributionSource === 'override' || resolution.attributionSource === 'tool' ? { attribution: resolution.attribution, attributionSource: resolution.attributionSource } : {}),
         task: taskText(event),
         failure: textPayload(event) ?? 'User follow-up after Skill use',
         evidenceEventIds: [event.id],
         ...counterEvidence,
-        severity: 'medium',
+        severity: resolution.attribution === 'tool' ? 'low' : resolution.intent === 'constraint' ? 'low' : 'medium',
         createdAt: event.occurredAt,
         status: 'open',
       })
@@ -194,24 +205,25 @@ export function diagnoseFailureCluster(
   cluster: FailureCluster,
   cases: readonly SkillFailureCase[],
   experiences: readonly Experience[] = [],
-  now = new Date().toISOString(),
+  now = cases.filter(failure => cluster.caseIds.includes(failure.id)).reduce((latest, failure) => failure.createdAt > latest ? failure.createdAt : latest, ''),
 ): SkillDiagnosis {
   const selected = cases.filter(failure => cluster.caseIds.includes(failure.id))
   const hasLoadFailure = selected.some(failure => failure.origin === 'load-failure')
-  const hasImplicitFollowUp = selected.some(failure => failure.origin === 'implicit-follow-up')
-  const hasContentFeedback = selected.some(failure => failure.origin === 'explicit-feedback'
-    && (failure.feedbackKind === 'incorrect' || failure.feedbackKind === 'dissatisfied' || failure.feedbackKind === 'retry'))
-  const hasBoundaryFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'constraint')
-  const hasTaskChangeFeedback = selected.some(failure => failure.origin === 'explicit-feedback' && failure.feedbackKind === 'goal-changed')
-  const rootCause = hasLoadFailure
-    ? 'composition'
-    : hasImplicitFollowUp || hasContentFeedback
-      ? 'content'
-      : hasBoundaryFeedback
-        ? 'boundary'
-        : hasTaskChangeFeedback
-          ? 'not-skill'
-          : 'uncertain'
+  const roots = selected.map(failure => {
+    if (failure.origin === 'load-failure') return 'composition' as const
+    if (failure.attribution !== undefined) {
+      if (failure.attribution === 'composition' || failure.attribution === 'content') return failure.attribution
+      if (['tool', 'model', 'task-change', 'not-attributable'].includes(failure.attribution)) return 'not-skill' as const
+    }
+    const intent = failure.intent ?? failure.feedbackKind
+    if (intent === 'incorrect' || intent === 'dissatisfied' || intent === 'retry') return 'content' as const
+    if (intent === 'constraint') return 'boundary' as const
+    if (intent === 'goal-changed') return 'not-skill' as const
+    if (intent === 'other') return 'uncertain' as const
+    if (failure.origin === 'implicit-follow-up' && failure.intent === undefined) return 'content' as const
+    return 'uncertain' as const
+  })
+  const rootCause = (['composition', 'content', 'boundary', 'not-skill', 'uncertain'] as const).find(root => roots.includes(root)) ?? 'uncertain'
   const proposedOperation = rootCause === 'content' ? 'patch-content' : rootCause === 'composition' ? 'edit-metadata' : 'observe-only'
   const hypothesis = rootCause === 'content'
     ? 'The loaded Skill was followed by a user correction; inspect its procedure and completion boundaries.'
@@ -273,13 +285,17 @@ function outcomeFor(events: readonly RuntimeObservation[]): ExperienceOutcome {
   return 'unknown'
 }
 
-function attributionFor(events: readonly RuntimeObservation[]): Attribution {
+function attributionFor(events: readonly RuntimeObservation[], resolutions?: ReadonlyMap<string, FollowUpResolution>): Attribution {
   const override = events.find(event => isAttribution(event.payload.attributionOverride))?.payload.attributionOverride
   if (isAttribution(override)) return override
   if (events.some(event => event.kind === 'skill-load-failed')) return 'composition'
   if (events.some(event => event.kind === 'user-follow-up')
     && new Set(events.flatMap(event => event.skill?.name === undefined ? [] : [event.skill.name])).size > 1) return 'not-attributable'
   if (events.every(event => event.skill === undefined)) return 'not-attributable'
+  const followUpResolutions = events.filter(event => event.kind === 'user-follow-up').map(event => resolutions?.get(event.id)).filter((value): value is FollowUpResolution => value !== undefined)
+  const firstFailure = followUpResolutions.find(item => ['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(item.intent))
+  if (firstFailure !== undefined) return firstFailure.attribution
+  if (followUpResolutions.some(item => item.intent === 'goal-changed')) return 'task-change'
   if (events.some(event => event.kind === 'user-follow-up')) return 'unknown'
   return 'unknown'
 }
@@ -289,12 +305,17 @@ function isAttribution(value: unknown): value is Attribution {
     || value === 'tool' || value === 'task-change' || value === 'not-attributable' || value === 'unknown'
 }
 
-function confidenceFor(events: readonly RuntimeObservation[]): number {
+function confidenceFor(events: readonly RuntimeObservation[], resolutions?: ReadonlyMap<string, FollowUpResolution>): number {
   const explicitConfidence = events
     .map(event => event.payload.attributionConfidence)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
     .map(value => Math.max(0, Math.min(1, value)))
   if (explicitConfidence.length > 0) return Math.max(...explicitConfidence)
+  const inferred = events
+    .filter(event => event.kind === 'user-follow-up')
+    .map(event => resolutions?.get(event.id))
+    .find((resolution): resolution is FollowUpResolution => resolution !== undefined && ['incorrect', 'constraint', 'retry', 'dissatisfied', 'other'].includes(resolution.intent))
+  if (inferred !== undefined) return inferred.confidence
   const observationStrength = Math.min(0.6, Math.log2(events.length + 1) / 5)
   const sessionStrength = new Set(events.map(event => event.sessionId).filter((id): id is string => id !== undefined)).size > 0 ? 0.04 : 0
   const feedbackStrength = events.some(event => event.payload.explicit === true) ? 0.15 : 0
