@@ -229,6 +229,7 @@ const convergesToday = new Set<string>([
   'R2 after R1, before R2 observation:rerun',
   'R3 after R2, before R3 rollback decision:rerun',
   'R4 after R3, before R4 ledger record:rerun',
+  'R5 after R4, before R5 transition decision:rerun',
   'P3 after W2, before W3 ledger record:rerun',
   'P3 after W2, before W3 ledger record:repair',
   'R1a R1 before live manifest.json:repair',

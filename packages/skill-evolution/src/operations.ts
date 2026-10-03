@@ -216,6 +216,8 @@ export async function promoteProposal(service: EvolutionService, options: Promot
 
 export async function rollbackSkill(service: EvolutionService, options: RollbackSkillOptions): Promise<RollbackSkillResult> {
   await service.rollback(options.skillName, options.version, options.reason)
+  const rolledBack = (await service.proposals.readAll()).filter(item => item.skillName === options.skillName && item.status === 'rolled-back' && item.proposedVersion === options.version).at(-1)
+  if (rolledBack !== undefined && !(await service.decisions.readAll()).some(item => item.id === `decision:ledger:${rolledBack.id}`)) await service.decisions.append({ id: `decision:ledger:${rolledBack.id}`, proposalId: proposalRootId(rolledBack.id), skillName: options.skillName, action: 'rollback', reason: options.reason ?? 'manual rollback', evidenceIds: [], createdAt: rolledBack.updatedAt, actor: 'maintainer', fromStatus: 'promoted', toStatus: 'rolled-back', recordId: rolledBack.id, baseContentHash: rolledBack.expectedBase.contentHash, candidateContentHash: createContentHash(rolledBack.candidateContent) })
   return { skillName: options.skillName, version: options.version }
 }
 

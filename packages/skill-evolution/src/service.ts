@@ -343,6 +343,11 @@ export class EvolutionService {
     } else if (before?.manifest.version !== version) {
       await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
     } else {
+      const alreadyRolledBack = (await this.proposals.readAll()).filter(item => item.skillName === skillName && item.status === 'rolled-back' && item.proposedVersion === version).at(-1)
+      if (alreadyRolledBack !== undefined) {
+        const id = `decision:ledger:${alreadyRolledBack.id}`
+        if (!(await this.decisions.readAll()).some(item => item.id === id)) await this.decisions.append({ id, proposalId: proposalRootId(alreadyRolledBack.id), skillName, action: 'rollback', reason, evidenceIds: [], createdAt: alreadyRolledBack.updatedAt, actor: this.options.operator ?? 'maintainer', fromStatus: 'promoted', toStatus: 'rolled-back', recordId: alreadyRolledBack.id, baseContentHash: alreadyRolledBack.expectedBase.contentHash, candidateContentHash: createContentHash(alreadyRolledBack.candidateContent) })
+      }
       return
     }
     const published = await this.versions.readCurrent(skillName)
