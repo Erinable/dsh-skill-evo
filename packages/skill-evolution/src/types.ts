@@ -394,7 +394,30 @@ export type FollowUpIntent = typeof FOLLOW_UP_INTENTS[number]
 export interface ObservationDigest { readonly kind: ObservationKind; readonly skillName?: string; readonly toolName?: string; readonly failed?: true }
 export interface FollowUpClassificationInput { readonly observationId: string; readonly text?: string; readonly skillName?: string; readonly before: readonly ObservationDigest[]; readonly after: readonly ObservationDigest[] }
 export interface FollowUpClassifier { readonly version: string; classify(input: FollowUpClassificationInput, signal: AbortSignal): Promise<{ readonly intent: Exclude<FollowUpIntent, 'other'>; readonly confidence: number; readonly rationale?: string }> }
-export interface ClassificationMemoEntry { readonly id: string; readonly classifierVersion: string; readonly inputHash: string; readonly observationId: string; readonly intent: Exclude<FollowUpIntent, 'other'>; readonly confidence: number; readonly rationale?: string; readonly createdAt: string }
+export interface CorrectionClassifierInput { readonly sessionId: string; readonly attempts: readonly ToolAttempt[] }
+export interface CorrectionClassifier { readonly version: string; classify(input: CorrectionClassifierInput, signal: AbortSignal): Promise<readonly EpisodeDraft[]> }
+export interface ClassificationMemoEntry { readonly id: string; readonly classifierVersion: string; readonly inputHash: string; readonly observationId: string; readonly intent: Exclude<FollowUpIntent, 'other'>; readonly confidence: number; readonly rationale?: string; readonly createdAt: string; readonly judge?: 'follow-up' }
+export interface CorrectionClassificationMemoEntry { readonly id: string; readonly judge: 'correction'; readonly classifierVersion: string; readonly inputHash: string; readonly sessionId: string; readonly drafts: readonly EpisodeDraft[]; readonly createdAt: string }
+export type ClassificationMemo = ClassificationMemoEntry | CorrectionClassificationMemoEntry
+
+export interface ToolAttempt {
+  readonly sessionId: string
+  readonly sessionSeq?: number
+  readonly callObservationId: string
+  readonly resultObservationId?: string
+  readonly occurredAt: string
+  readonly toolName: string
+  readonly command?: string
+  readonly argKeys: readonly string[]
+  readonly outcome: 'failure' | 'success' | 'unknown'
+  readonly exitCode?: number
+  readonly signal?: string
+  readonly timedOut?: boolean
+  readonly errorLine?: string
+}
+export interface EpisodeDraft { readonly intent: string; readonly errorSignature: string; readonly correction: readonly string[]; readonly failureObservationIds: readonly string[]; readonly correctionObservationIds: readonly string[]; readonly successObservationId: string }
+export interface CorrectionEpisode extends EpisodeDraft { readonly id: string; readonly sessionId: string; readonly taskId?: string; readonly signatureKey: string; readonly environmental: boolean; readonly retryOnly: boolean; readonly loadedSkills: readonly string[]; readonly occurredAt: string; readonly recognizerVersion: string; readonly fallbackFrom?: string; readonly fallbackReason?: 'not-classified'; readonly inputHash: string; readonly createdAt: string }
+export interface CorrectionPattern { readonly id: string; readonly signatureKey: string; readonly intent: string; readonly errorSignature: string; readonly correction: readonly string[]; readonly environmental: boolean; readonly retryOnly: boolean; readonly occurrences: readonly { readonly episodeId: string; readonly sessionId: string; readonly occurredAt: string }[]; readonly totalSessionCount: number; readonly firstSeenAt: string; readonly lastSeenAt: string; readonly policyVersion: string }
 export interface FollowUpResolution {
   readonly id: string; readonly observationId: string; readonly sessionId?: string; readonly skillName?: string; readonly intent: FollowUpIntent; readonly confidence: number
   readonly source: 'explicit' | 'classifier' | 'rule'; readonly version: string; readonly ruleId?: string; readonly fallbackReason?: 'no-classifier' | 'not-classified'; readonly inputHash?: string

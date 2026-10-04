@@ -9,7 +9,7 @@ import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
 export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows' | 'episodes' | 'patterns'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -65,6 +65,8 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
     ['skill-windows', 'derived', false, join(stateDir, 'skill-windows.jsonl')],
+    ['episodes', 'derived', false, join(stateDir, 'episodes.jsonl')],
+    ['patterns', 'derived', false, join(stateDir, 'patterns.jsonl')],
   ]
   const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
   return {

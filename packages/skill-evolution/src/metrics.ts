@@ -35,6 +35,7 @@ export interface EvolutionMetrics {
   readonly contextCost: number
   readonly skillContext: SkillContextMetric & { readonly estimator: 'utf8-bytes-div4-v1' }
   readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
+  readonly corrections?: { readonly classifierFailures: number; readonly rejectedDrafts: number }
 }
 
 /** Aggregate exportable operational metrics without assigning causal credit. */
@@ -117,6 +118,7 @@ export function aggregateMetrics(
     contextCost,
     skillContext,
     followUpIntents: intentMetrics(resolutions),
+    corrections: { classifierFailures: 0, rejectedDrafts: 0 },
   }
 }
 
