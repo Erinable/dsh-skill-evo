@@ -177,7 +177,14 @@ export class EvolutionService {
     return aggregateMetrics(events, proposals, await this.decisions.readAll(), snapshot.followUps, currentSkills, { episodes: snapshot.episodes ?? [], patterns: snapshot.patterns ?? [], proposals, classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts })
   }
 
-  async recordCorrectionClassifierFailure(): Promise<void> { this.correctionClassifierFailures += 1; const cursor = await readCursor(this.projectionCursorPath); await writeCursor(this.projectionCursorPath, { ...(cursor ?? { count: 0, fingerprint: '' }), correctionClassifierFailures: this.correctionClassifierFailures }) }
+  async recordCorrectionClassifierFailure(): Promise<void> {
+    await withLock(`${this.projectionCursorPath}.lock`, 'correction-failure', async () => {
+      const cursor = await readCursor(this.projectionCursorPath)
+      const failures = (cursor?.correctionClassifierFailures ?? 0) + 1
+      this.correctionClassifierFailures = failures
+      await writeCursor(this.projectionCursorPath, { ...(cursor ?? { count: 0, fingerprint: '' }), correctionClassifierFailures: failures })
+    })
+  }
 
   async health(): Promise<readonly JsonlHealth[]> {
     const reports = await Promise.all(this.layout.stores.map(store => inspectJsonlHealth(

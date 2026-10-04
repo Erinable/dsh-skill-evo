@@ -35,6 +35,12 @@ describe('correction projection', () => {
     expect(assessPattern({ pattern: { ...base, occurrences: base.occurrences.slice(0, 2), totalSessionCount: 2 }, now: '2026-02-14T00:00:00.000Z' })).toMatchObject({ candidate: false, candidateReason: 'insufficient-evidence' })
   })
 
+  it('excludes a complete 31-day-old window and accepts the same sessions at 29 days', () => {
+    const pattern = { id: 'pattern:old', signatureKey: 'sig', intent: 'git push', errorSignature: 'exit:128|x', correction: ['set-env:https_proxy'], environmental: true, retryOnly: false, occurrences: ['s1', 's2', 's3'].map((sessionId, i) => ({ episodeId: `e${i}`, sessionId, occurredAt: `2026-01-14T00:0${i}:00.000Z` })), totalSessionCount: 3, firstSeenAt: '2026-01-14T00:00:00.000Z', lastSeenAt: '2026-01-14T00:02:00.000Z', policyVersion: 'correction-policy-v1' } as const
+    expect(assessPattern({ pattern, now: '2026-02-15T00:00:00.000Z' })).toMatchObject({ candidate: false, windowSessionCount: 0, candidateReason: 'insufficient-evidence' })
+    expect(assessPattern({ pattern, now: '2026-02-13T00:00:00.000Z' })).toMatchObject({ candidate: true, windowSessionCount: 3 })
+  })
+
   it('renders policy-aware correction metrics and reports', () => {
     const pattern = { id: 'pattern:episode:s1:e1', signatureKey: 'sig', intent: 'git push', errorSignature: 'exit:128|x', correction: ['set-env:https_proxy'], environmental: true, retryOnly: false, occurrences: [{ episodeId: 'e1', sessionId: 's1', occurredAt: '2026-01-20T00:00:00.000Z' }], totalSessionCount: 1, firstSeenAt: '2026-01-20T00:00:00.000Z', lastSeenAt: '2026-01-20T00:00:00.000Z', policyVersion: 'correction-policy-v1' } as const
     const metrics = aggregateMetrics([], [], [], [], [], { episodes: [], patterns: [pattern], now: '2026-02-14T00:00:00.000Z', rejectedDrafts: 2 })
@@ -127,6 +133,7 @@ describe('correction projection', () => {
     const open = await classifyCorrections(service); expect(open.skipped.open).toBe(1); expect(calls).toBe(0)
     await service.recordObservation(event('done', 'task-finished', {}, 2)); const failed = await classifyCorrections(service)
     expect(failed.failed).toHaveLength(1); expect(await service.classifications.readAll()).toHaveLength(0); expect((await service.metrics()).corrections?.classifierFailures).toBe(1); expect((await new EvolutionService({ root }).metrics()).corrections?.classifierFailures).toBe(1)
+    const second = new EvolutionService({ root, correctionClassifier: classifier }); const secondFailed = await classifyCorrections(second); expect(secondFailed.failed).toHaveLength(1); expect((await new EvolutionService({ root }).metrics()).corrections?.classifierFailures).toBe(2)
   })
 
   it('round-trips rule output through a memo without projection classifier calls', async () => {
