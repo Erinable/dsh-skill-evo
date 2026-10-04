@@ -87,8 +87,8 @@ describe('correction projection', () => {
   })
 
   it('skips corrupt manifests while computing metrics', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'corrupt-manifest-')); await mkdir(join(root, 'broken', 'versions'), { recursive: true }); await writeFile(join(root, 'broken', 'manifest.json'), '{broken', 'utf8')
-    const service = new EvolutionService({ root }); await service.recordObservation(createObservation({ id: 'broken-event', kind: 'skill-loaded', occurredAt: new Date().toISOString(), sessionId: 'broken-session', skill: { name: 'broken', provider: 'test', source: 'test' }, correlationIds: [], payload: {}, source: 'runtime' })); await expect(service.metrics()).resolves.toBeTruthy()
+    const root = await mkdtemp(join(tmpdir(), 'corrupt-manifest-')); await mkdir(join(root, 'broken', 'versions'), { recursive: true }); await writeFile(join(root, 'broken', 'manifest.json'), '{broken', 'utf8'); await writeFile(join(root, 'broken', 'SKILL.md'), '---\nname: broken\ndescription: x\n---\nBody\n', 'utf8')
+    const service = new EvolutionService({ root }); await service.recordObservation(createObservation({ id: 'broken-event', kind: 'skill-loaded', occurredAt: new Date().toISOString(), sessionId: 'broken-session', skill: { name: 'broken', provider: 'test', source: 'test' }, correlationIds: [], payload: {}, source: 'runtime' })); const metrics = await service.metrics(); expect(metrics.skills.find(skill => skill.skillName === 'broken')?.context).toBeUndefined()
   })
 
   it('does not call classifier for an open session and records classifier failures', async () => {
@@ -113,6 +113,6 @@ describe('correction projection', () => {
     const fake2 = new EvolutionService({ root, correctionClassifier: { version: 'fake-2', classify: async () => [] } }); const fake2Snapshot = await fake2.refreshDerived(); expect(fake2Snapshot.patterns[0]?.id).toBe(after.patterns[0]?.id); expect((await readCursor(fake2.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
     const changedRules = new EvolutionService({ root, correctionRulesVersion: 'rule-2' }); await changedRules.refreshDerived(); expect((await readCursor(changedRules.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
     const changedWindow = new EvolutionService({ root, windowRulesVersion: 'skill-windows-v2' }); await changedWindow.refreshDerived(); expect((await readCursor(changedWindow.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
-    const patternId = after.patterns[0]?.id; const proposalSource = { kind: 'pattern', patternId }; expect(after.patterns.some(pattern => pattern.id === proposalSource.patternId)).toBe(true)
+    const patternId = before.patterns[0]?.id; const proposalSource = { kind: 'pattern', patternId }; expect(fake2Snapshot.patterns.some(pattern => pattern.id === proposalSource.patternId)).toBe(true)
   })
 })
