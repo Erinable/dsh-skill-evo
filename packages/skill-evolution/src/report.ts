@@ -72,6 +72,9 @@ function renderCostMarkdown(cost: SkillEvalResult['cost']): string {
 }
 
 export interface CorrectionReportInput {
+  readonly episodes?: number
+  readonly recognizerVersion?: string
+  readonly classifierFailures?: number
   readonly patterns?: readonly CorrectionPattern[]
   readonly proposals?: readonly ProposalRecord[]
   readonly policy?: CorrectionPolicy
@@ -85,12 +88,12 @@ export function renderFailuresMarkdown(failures: readonly SkillFailureCase[], co
   if (correction.patterns !== undefined) {
     const policy = correction.policy ?? DEFAULT_CORRECTION_POLICY
     const now = correction.now ?? new Date().toISOString()
-    lines.push('', '## Self-corrections', '', `Policy: \`${policy.version}\` (N=${policy.minFailures}, K=${policy.minSessions}, D=${policy.windowDays}d); now: ${now}`, '')
+    lines.push('', '## Self-corrections', '', `Policy: \`${policy.version}\` (N=${policy.minFailures}, K=${policy.minSessions}, D=${policy.windowDays}d); recognizer: ${correction.recognizerVersion ?? 'none'}; episodes: ${correction.episodes ?? 0}; classifier failures: ${correction.classifierFailures ?? 0}; now: ${now}`, '')
     if (correction.patterns.length === 0) lines.push('No correction patterns recorded.')
     for (const pattern of correction.patterns) {
       const assessed = assessPattern({ pattern, policy, now, proposals: correction.proposals })
       const reason = assessed.candidate ? 'candidate' : assessed.candidateReason ?? 'blocked'
-      lines.push(`- \`${pattern.id}\` ${pattern.intent} | ${pattern.errorSignature} | ${pattern.correction.join(', ') || 'retry'} | ${assessed.windowSessionCount}/${policy.minSessions} since ${assessed.since} | ${reason}${assessed.promotedSkill ? ` | target: ${assessed.promotedSkill}` : ''}`)
+      lines.push(`- \`${pattern.id}\` ${pattern.intent} | ${pattern.errorSignature} | ${pattern.correction.join(', ') || 'retry'} | ${assessed.windowSessionCount}/${policy.minSessions} since ${assessed.since} | ${reason} | target: ${assessed.promotedSkill ?? 'undecided'}`)
     }
   }
   return `${lines.join('\n')}\n`

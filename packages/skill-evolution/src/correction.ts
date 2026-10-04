@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createContentHash } from './events.js'
 import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, Experience, RuntimeObservation, ToolAttempt } from './types.js'
+import { latestProposalsByRoot } from './proposal.js'
 
 export const CORRECTION_RULES_VERSION = 'rule-1'
 export const CORRECTION_POLICY_VERSION = 'correction-policy-v1'
@@ -106,11 +107,11 @@ export function groupPatterns(episodes: readonly CorrectionEpisode[], policy = D
   return [...groups.values()].map(items => { const sorted = [...items].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id)); const first = sorted[0]!; const occurrences = sorted.map(ep => ({ episodeId: ep.id, sessionId: ep.sessionId, occurredAt: ep.occurredAt })); return { id: `pattern:${first.id}`, signatureKey: first.signatureKey, intent: first.intent, errorSignature: first.errorSignature, correction: first.correction, environmental: first.environmental, retryOnly: first.retryOnly, occurrences, totalSessionCount: new Set(occurrences.map(o => o.sessionId)).size, firstSeenAt: first.occurredAt, lastSeenAt: sorted.at(-1)!.occurredAt, policyVersion: policy.version } })
 }
 
-export function assessPattern(input: { pattern: CorrectionPattern; policy?: CorrectionPolicy; now: string; proposals?: readonly { id?: string; skillName?: string; status: string; updatedAt?: string; source?: { kind?: string; patternId?: string } }[] }) {
+export function assessPattern(input: { pattern: CorrectionPattern; policy?: CorrectionPolicy; now: string; proposals?: readonly { id: string; skillName?: string; status: string; updatedAt?: string; source?: { kind?: string; patternId?: string } }[] }) {
   const policy = input.policy ?? DEFAULT_CORRECTION_POLICY
   const nowMs = new Date(input.now).getTime()
   const windowStart = nowMs - policy.windowDays * 86_400_000
-  const related = (input.proposals ?? []).filter(p => p.source?.patternId === input.pattern.id)
+  const related = [...latestProposalsByRoot((input.proposals ?? []) as never)].map(([, proposal]) => proposal as NonNullable<typeof input.proposals>[number]).filter(p => p.source?.patternId === input.pattern.id)
   const promoted = related.filter(p => p.status === 'promoted').sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]
   const promotionMs = promoted?.updatedAt === undefined ? Number.NEGATIVE_INFINITY : new Date(promoted.updatedAt).getTime()
   const sinceMs = Math.max(windowStart, promotionMs)

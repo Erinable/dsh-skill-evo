@@ -154,10 +154,10 @@ export async function classifyCorrections(service: EvolutionService, options: { 
       const call = classifier.classify({ sessionId, attempts }, controller.signal); call.catch(() => undefined)
       const abort = new Promise<never>((_, reject) => { rejectTimer = reject })
       const result = await Promise.race([call, abort])
-      if (!Array.isArray(result) || result.some(draft => !validateEpisodeDraft(draft, attempts, DEFAULT_CORRECTION_POLICY))) { service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: 'invalid-output', message: 'classifier returned invalid drafts' }); continue }
+      if (!Array.isArray(result) || result.some(draft => !validateEpisodeDraft(draft, attempts, DEFAULT_CORRECTION_POLICY))) { await service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: 'invalid-output', message: 'classifier returned invalid drafts' }); continue }
       const memo: CorrectionClassificationMemoEntry = { id, judge: 'correction', classifierVersion: classifier.version, inputHash: hash, sessionId, drafts: result, createdAt: new Date().toISOString() }
       await service.classifications.append(memo); existing.set(id, memo); classified++
-    } catch (error) { service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) }) }
+    } catch (error) { await service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) }) }
     finally { if (timer !== undefined) clearTimeout(timer); if (onAbort !== undefined) options.signal?.removeEventListener('abort', onAbort) }
   }
   return { classifierVersion: classifier.version, classified, cached, skipped: { open }, failed }

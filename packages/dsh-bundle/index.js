@@ -257,7 +257,8 @@ async function executeMaintenanceCommand(invocation, config) {
     }
     if (action === 'failures') {
       const snapshot = await service.refreshDerived()
-      return { kind: 'success', text: renderFailuresMarkdown(snapshot.failures, { patterns: snapshot.patterns, proposals: await service.proposals.readAll() }) }
+      const metrics = await service.metrics()
+      return { kind: 'success', text: renderFailuresMarkdown(snapshot.failures, { patterns: snapshot.patterns, episodes: snapshot.episodes?.length, proposals: await service.proposals.readAll(), recognizerVersion: metrics.corrections?.recognizer.version, classifierFailures: metrics.corrections?.classifierFailures }) }
     }
     if (action === 'metrics') return { kind: 'success', text: JSON.stringify(await service.metrics(), null, 2) }
     if (action === 'health') return { kind: 'success', text: JSON.stringify(await service.healthReport(), null, 2) }
