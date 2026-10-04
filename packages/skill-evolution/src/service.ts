@@ -173,8 +173,8 @@ export class EvolutionService {
       try { const current = await this.versions.readCurrent(name); return current === undefined ? undefined : { name, content: current.content } }
       catch { return undefined }
     }))).filter((item): item is { name: string; content: string } => item !== undefined)
-    const metrics = aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
-    return { ...metrics, corrections: { classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts } }
+    const proposals = await this.proposals.readAll()
+    return aggregateMetrics(events, proposals, await this.decisions.readAll(), snapshot.followUps, currentSkills, { episodes: snapshot.episodes ?? [], patterns: snapshot.patterns ?? [], proposals, classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts })
   }
 
   recordCorrectionClassifierFailure(): void { this.correctionClassifierFailures += 1 }
@@ -508,6 +508,7 @@ export class EvolutionService {
     workflow.add(observations)
     const snapshot = workflow.snapshot()
     const episodes: CorrectionEpisode[] = []
+    let rejectedDrafts = 0
     const memoMap = new Map(memoEntries.filter((entry): entry is CorrectionClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge === 'correction').map(entry => [entry.id, entry]))
     const sessions = new Map<string, RuntimeObservation[]>()
     for (const event of observations) if (event.sessionId !== undefined) sessions.set(event.sessionId, [...sessions.get(event.sessionId) ?? [], event])
@@ -516,7 +517,7 @@ export class EvolutionService {
       const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
       const rawDrafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
       const drafts = rawDrafts.filter(draft => validateEpisodeDraft(draft, attempts))
-      this.recordCorrectionRejectedDrafts(rawDrafts.length - drafts.length)
+      rejectedDrafts += rawDrafts.length - drafts.length
       for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
     }
     const patterns = groupPatterns(episodes)
@@ -528,6 +529,7 @@ export class EvolutionService {
     await this.diagnoses.replaceAll(snapshot.diagnoses)
     await this.episodes.replaceAll(episodes)
     await this.patterns.replaceAll(patterns)
+    this.correctionRejectedDrafts = rejectedDrafts
     await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey })
     return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
