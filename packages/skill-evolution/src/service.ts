@@ -168,14 +168,11 @@ export class EvolutionService {
   async metrics(): Promise<EvolutionMetrics> {
     const snapshot = await this.refreshDerived()
     const events = await this.observations.readAll()
-    const skillNames = new Set([
-      ...events.flatMap(event => event.skill?.name === undefined ? [] : [event.skill.name]),
-      ...snapshot.followUps.flatMap(resolution => resolution.skillName === undefined ? [] : [resolution.skillName]),
-    ])
-    const currentSkills = (await Promise.all([...skillNames].filter(isValidSkillName).map(async name => {
-      const current = await this.versions.readCurrent(name)
-      return current === undefined ? undefined : { name, content: current.content }
-    }))).filter((skill): skill is { name: string; content: string } => skill !== undefined)
+    const names = [...new Set(events.map(item => item.skill?.name).filter((name): name is string => name !== undefined))]
+    const currentSkills = (await Promise.all(names.map(async name => {
+      try { const current = await this.versions.readCurrent(name); return current === undefined ? undefined : { name, content: current.content } }
+      catch { return undefined }
+    }))).filter((item): item is { name: string; content: string } => item !== undefined)
     const metrics = aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
     return { ...metrics, corrections: { classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts } }
   }
@@ -536,7 +533,6 @@ export class EvolutionService {
   }
 }
 
-function isValidSkillName(name: string): boolean { return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) }
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')

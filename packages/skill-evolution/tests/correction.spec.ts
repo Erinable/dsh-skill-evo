@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { createObservation } from '../src/events.js'
-import { correlateToolAttempts, recognizeCorrections, validateEpisodeDraft } from '../src/correction.js'
+import { correlateToolAttempts, inputHash, recognizeCorrections, validateEpisodeDraft } from '../src/correction.js'
 import { EvolutionService } from '../src/service.js'
 import { classifyCorrections } from '../src/operations.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { readCursor } from '../src/state-root.js'
 import { isClassificationMemoEntry } from '../src/follow-up.js'
 import { repairJsonlFile } from '../src/repair.js'
@@ -69,6 +69,28 @@ describe('correction projection', () => {
     expect(isClassificationMemoEntry({ id: 'classification:correction:v:h', judge: 'correction', classifierVersion: 'v', inputHash: 'h', sessionId: 's', drafts: [], createdAt: new Date().toISOString() })).toBe(true)
   })
 
+  it('rejects a draft with too few failures when its references are otherwise valid', () => {
+    const attempts = correlateToolAttempts([event('f', 'agent-step', { toolName: 'bash', command: 'git push' }, 3), event('fr', 'tool-result', { callId: 'f', exitCode: 128 }, 4), event('s', 'agent-step', { toolName: 'bash', command: 'git push' }, 5), event('sr', 'tool-result', { callId: 's', exitCode: 0 }, 6)])
+    expect(validateEpisodeDraft({ intent: 'git push', errorSignature: 'exit:128|x', correction: [], failureObservationIds: ['fr'], correctionObservationIds: [], successObservationId: 'sr' }, attempts)).toBe(false)
+  })
+
+  it('rejects a draft with enough failures when one reference is unknown', () => {
+    const attempts = correlateToolAttempts([event('f1', 'agent-step', { toolName: 'bash', command: 'git push' }, 3), event('fr1', 'tool-result', { callId: 'f1', exitCode: 128 }, 4), event('f2', 'agent-step', { toolName: 'bash', command: 'git push' }, 5), event('fr2', 'tool-result', { callId: 'f2', exitCode: 128 }, 6), event('s', 'agent-step', { toolName: 'bash', command: 'git push' }, 7), event('sr', 'tool-result', { callId: 's', exitCode: 0 }, 8)])
+    expect(validateEpisodeDraft({ intent: 'git push', errorSignature: 'exit:128|x', correction: [], failureObservationIds: ['fr1', 'missing'], correctionObservationIds: [], successObservationId: 'sr' }, attempts)).toBe(false)
+  })
+
+  it('counts invalid memo drafts rejected during projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'correction-rejected-')); const service = new EvolutionService({ root })
+    const call = event('memo-call', 'agent-step', { toolName: 'bash', command: 'git push' }, 1); const result = event('memo-result', 'tool-result', { callId: call.id, exitCode: 128 }, 2); await service.recordObservation(call); await service.recordObservation(result); await service.recordObservation(event('finish', 'task-finished', {}, 3))
+    const hash = inputHash(correlateToolAttempts([call, result])); await service.classifications.append({ id: `classification:correction:rule-1:${hash}`, judge: 'correction', classifierVersion: 'rule-1', inputHash: hash, sessionId: 's1', drafts: [{ intent: 'git push', errorSignature: 'x', correction: [], failureObservationIds: ['missing'], correctionObservationIds: [], successObservationId: 'missing' }], createdAt: new Date().toISOString() } as never); await service.refreshDerived()
+    expect((await service.metrics()).corrections?.rejectedDrafts).toBe(1)
+  })
+
+  it('skips corrupt manifests while computing metrics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'corrupt-manifest-')); await mkdir(join(root, 'broken', 'versions'), { recursive: true }); await writeFile(join(root, 'broken', 'manifest.json'), '{broken', 'utf8')
+    const service = new EvolutionService({ root }); await service.recordObservation(createObservation({ id: 'broken-event', kind: 'skill-loaded', occurredAt: new Date().toISOString(), sessionId: 'broken-session', skill: { name: 'broken', provider: 'test', source: 'test' }, correlationIds: [], payload: {}, source: 'runtime' })); await expect(service.metrics()).resolves.toBeTruthy()
+  })
+
   it('does not call classifier for an open session and records classifier failures', async () => {
     const root = await mkdtemp(join(tmpdir(), 'correction-failure-')); let calls = 0
     const classifier = { version: 'throws-1', classify: async () => { calls++; throw new Error('boom') } }
@@ -88,8 +110,9 @@ describe('correction projection', () => {
     const injected = new EvolutionService({ root, correctionClassifier: classifier }); await injected.refreshDerived(); expect(calls).toBe(0); await classifyCorrections(injected); const changed = await injected.refreshDerived(); expect(calls).toBe(1); expect(changed.episodes[0]?.correction).toEqual(['model-said'])
     const memoBytes = await readFile(injected.classifications.filePath, 'utf8'); expect(isClassificationMemoEntry(JSON.parse(memoBytes.trim()))).toBe(true); const repair = await repairJsonlFile(injected.classifications.filePath, { parse: isClassificationMemoEntry }); expect(repair.validRecords).toBe(1); expect(repair.removedInvalidLines).toBe(0); expect(await readFile(injected.classifications.filePath, 'utf8')).toBe(memoBytes)
     const restored = new EvolutionService({ root }); const after = await restored.refreshDerived(); expect(after.episodes).toEqual(before.episodes); expect(after.patterns[0]?.id).toBe('pattern:episode:s1:br0'); expect(await readFile(restored.observations.filePath, 'utf8')).toBe(obsBytes); const originalKey = (await readCursor(restored.layout.cursorPath))?.derivationKey
-    expect((await readCursor((await new EvolutionService({ root, correctionClassifier: { version: 'fake-2', classify: async () => [] } }).refreshDerived(), restored.layout.cursorPath)))?.derivationKey).not.toBe(originalKey)
+    const fake2 = new EvolutionService({ root, correctionClassifier: { version: 'fake-2', classify: async () => [] } }); const fake2Snapshot = await fake2.refreshDerived(); expect(fake2Snapshot.patterns[0]?.id).toBe(after.patterns[0]?.id); expect((await readCursor(fake2.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
     const changedRules = new EvolutionService({ root, correctionRulesVersion: 'rule-2' }); await changedRules.refreshDerived(); expect((await readCursor(changedRules.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
     const changedWindow = new EvolutionService({ root, windowRulesVersion: 'skill-windows-v2' }); await changedWindow.refreshDerived(); expect((await readCursor(changedWindow.layout.cursorPath))?.derivationKey).not.toBe(originalKey)
+    const patternId = after.patterns[0]?.id; const proposalSource = { kind: 'pattern', patternId }; expect(after.patterns.some(pattern => pattern.id === proposalSource.patternId)).toBe(true)
   })
 })

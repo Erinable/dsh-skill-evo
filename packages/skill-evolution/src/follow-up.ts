@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { redactSensitiveText } from './events.js'
-import { FEEDBACK_KINDS, FOLLOW_UP_INTENTS, type Attribution, type ClassificationMemoEntry, type FollowUpClassificationInput, type FollowUpIntent, type FollowUpResolution, type ObservationDigest, type RuntimeObservation } from './types.js'
+import { FEEDBACK_KINDS, FOLLOW_UP_INTENTS, type Attribution, type ClassificationMemo, type ClassificationMemoEntry, type FollowUpClassificationInput, type FollowUpIntent, type FollowUpResolution, type ObservationDigest, type RuntimeObservation } from './types.js'
 export type { FollowUpResolution } from './types.js'
 
 export const FOLLOW_UP_RULES_VERSION = 'follow-up-rules-v1'
@@ -14,7 +14,7 @@ export function isFollowUpClassification(value: unknown): value is Pick<Classifi
     && (row.rationale === undefined || typeof row.rationale === 'string')
 }
 
-export function isClassificationMemoEntry(value: unknown): value is ClassificationMemoEntry {
+export function isClassificationMemoEntry(value: unknown): value is ClassificationMemo {
   if (typeof value === 'object' && value !== null && (value as Record<string, unknown>).judge === 'correction') {
     const row = value as Record<string, unknown>
     return typeof row.id === 'string' && typeof row.classifierVersion === 'string' && typeof row.inputHash === 'string' && row.id === `classification:correction:${row.classifierVersion}:${row.inputHash}` && typeof row.sessionId === 'string' && Array.isArray(row.drafts) && typeof row.createdAt === 'string'
