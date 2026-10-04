@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createObservation } from '../src/events.js'
-import { correlateToolAttempts, inputHash, recognizeCorrections, validateEpisodeDraft } from '../src/correction.js'
+import { assessPattern, correlateToolAttempts, inputHash, recognizeCorrections, validateEpisodeDraft } from '../src/correction.js'
+import { aggregateMetrics } from '../src/metrics.js'
+import { renderFailuresMarkdown } from '../src/report.js'
 import { EvolutionService } from '../src/service.js'
 import { classifyCorrections } from '../src/operations.js'
 import { mkdtemp } from 'node:fs/promises'
@@ -16,6 +18,37 @@ function event(id: string, kind: 'agent-step' | 'tool-result' | 'task-finished',
 }
 
 describe('correction projection', () => {
+  it('assesses window, retry-only, and promotion reset using latest proposal state', () => {
+    const base = { id: 'pattern:episode:s1:e1', signatureKey: 'sig', intent: 'git push', errorSignature: 'exit:128|x', correction: ['set-env:https_proxy'], environmental: true, retryOnly: false, occurrences: [
+      { episodeId: 'e0', sessionId: 'old', occurredAt: '2025-12-01T00:00:00.000Z' },
+      { episodeId: 'e1', sessionId: 's1', occurredAt: '2026-01-20T00:00:00.000Z' },
+      { episodeId: 'e2', sessionId: 's2', occurredAt: '2026-01-21T00:00:00.000Z' },
+      { episodeId: 'e3', sessionId: 's3', occurredAt: '2026-01-22T00:00:00.000Z' },
+    ], totalSessionCount: 4, firstSeenAt: '2025-12-01T00:00:00.000Z', lastSeenAt: '2026-01-22T00:00:00.000Z', policyVersion: 'correction-policy-v1' } as const
+    const proposals = [
+      { id: 'root', skillName: 'proxy', status: 'proposed', updatedAt: '2026-01-10T00:00:00.000Z', source: { kind: 'pattern', patternId: base.id } },
+      { id: 'root:accepted', previousRecordId: 'root:proposed', skillName: 'proxy', status: 'accepted', updatedAt: '2026-01-12T00:00:00.000Z', source: { kind: 'pattern', patternId: base.id } },
+      { id: 'root:promoted', previousRecordId: 'root:accepted', skillName: 'proxy', status: 'promoted', updatedAt: '2026-01-15T00:00:00.000Z', source: { kind: 'pattern', patternId: base.id } },
+    ]
+    expect(assessPattern({ pattern: base, now: '2026-02-14T00:00:00.000Z', proposals })).toMatchObject({ candidate: true, windowSessionCount: 3, promotedSkill: 'proxy' })
+    expect(assessPattern({ pattern: { ...base, retryOnly: true }, now: '2026-02-14T00:00:00.000Z' })).toMatchObject({ candidate: false, candidateReason: 'retry-only' })
+    expect(assessPattern({ pattern: { ...base, occurrences: base.occurrences.slice(0, 2), totalSessionCount: 2 }, now: '2026-02-14T00:00:00.000Z' })).toMatchObject({ candidate: false, candidateReason: 'insufficient-evidence' })
+  })
+
+  it('excludes a complete 31-day-old window and accepts the same sessions at 29 days', () => {
+    const pattern = { id: 'pattern:old', signatureKey: 'sig', intent: 'git push', errorSignature: 'exit:128|x', correction: ['set-env:https_proxy'], environmental: true, retryOnly: false, occurrences: ['s1', 's2', 's3'].map((sessionId, i) => ({ episodeId: `e${i}`, sessionId, occurredAt: `2026-01-14T00:0${i}:00.000Z` })), totalSessionCount: 3, firstSeenAt: '2026-01-14T00:00:00.000Z', lastSeenAt: '2026-01-14T00:02:00.000Z', policyVersion: 'correction-policy-v1' } as const
+    expect(assessPattern({ pattern, now: '2026-02-15T00:00:00.000Z' })).toMatchObject({ candidate: false, windowSessionCount: 0, candidateReason: 'insufficient-evidence' })
+    expect(assessPattern({ pattern, now: '2026-02-13T00:00:00.000Z' })).toMatchObject({ candidate: true, windowSessionCount: 3 })
+  })
+
+  it('renders policy-aware correction metrics and reports', () => {
+    const pattern = { id: 'pattern:episode:s1:e1', signatureKey: 'sig', intent: 'git push', errorSignature: 'exit:128|x', correction: ['set-env:https_proxy'], environmental: true, retryOnly: false, occurrences: [{ episodeId: 'e1', sessionId: 's1', occurredAt: '2026-01-20T00:00:00.000Z' }], totalSessionCount: 1, firstSeenAt: '2026-01-20T00:00:00.000Z', lastSeenAt: '2026-01-20T00:00:00.000Z', policyVersion: 'correction-policy-v1' } as const
+    const metrics = aggregateMetrics([], [], [], [], [], { episodes: [], patterns: [pattern], now: '2026-02-14T00:00:00.000Z', rejectedDrafts: 2 })
+    expect(metrics.corrections).toMatchObject({ episodes: 0, patterns: 1, recognizer: { version: 'none' }, assessments: [{ patternId: pattern.id, candidate: false, candidateReason: 'insufficient-evidence', target: 'undecided' }] })
+    const report = renderFailuresMarkdown([], { patterns: [pattern], now: '2026-02-14T00:00:00.000Z' })
+    expect(report).toContain('Self-corrections')
+    expect(report).toContain('target: undecided')
+  })
   it('groups three failures and emits only the environment correction', () => {
     const events = [1, 2, 3].flatMap((n, i) => { const id = `c${n}`; return [event(id, 'agent-step', { toolName: 'bash', command: 'git push origin main' }, i * 2), event(`r${n}`, 'tool-result', { callId: id, exitCode: 128, errorLine: 'connect port 443' }, i * 2 + 1)] })
     const call = event('c4', 'agent-step', { toolName: 'bash', command: 'HTTPS_PROXY=http://10.0.0.1:7890 git push origin main' }, 7)
@@ -84,6 +117,7 @@ describe('correction projection', () => {
     const call = event('memo-call', 'agent-step', { toolName: 'bash', command: 'git push' }, 1); const result = event('memo-result', 'tool-result', { callId: call.id, exitCode: 128 }, 2); await service.recordObservation(call); await service.recordObservation(result); await service.recordObservation(event('finish', 'task-finished', {}, 3))
     const hash = inputHash(correlateToolAttempts([call, result])); await service.classifications.append({ id: `classification:correction:rule-1:${hash}`, judge: 'correction', classifierVersion: 'rule-1', inputHash: hash, sessionId: 's1', drafts: [{ intent: 'git push', errorSignature: 'x', correction: [], failureObservationIds: ['missing'], correctionObservationIds: [], successObservationId: 'missing' }], createdAt: new Date().toISOString() } as never); await service.refreshDerived()
     expect((await service.metrics()).corrections?.rejectedDrafts).toBe(1)
+    expect((await new EvolutionService({ root }).metrics()).corrections?.rejectedDrafts).toBe(1)
   })
 
   it('skips corrupt manifests while computing metrics', async () => {
@@ -98,7 +132,8 @@ describe('correction projection', () => {
     await service.recordObservation(event('open', 'agent-step', { toolName: 'bash', command: 'git push' }, 1))
     const open = await classifyCorrections(service); expect(open.skipped.open).toBe(1); expect(calls).toBe(0)
     await service.recordObservation(event('done', 'task-finished', {}, 2)); const failed = await classifyCorrections(service)
-    expect(failed.failed).toHaveLength(1); expect(await service.classifications.readAll()).toHaveLength(0); expect((await service.metrics()).corrections?.classifierFailures).toBe(1)
+    expect(failed.failed).toHaveLength(1); expect(await service.classifications.readAll()).toHaveLength(0); expect((await service.metrics()).corrections?.classifierFailures).toBe(1); expect((await new EvolutionService({ root }).metrics()).corrections?.classifierFailures).toBe(1)
+    const second = new EvolutionService({ root, correctionClassifier: classifier }); const secondFailed = await classifyCorrections(second); expect(secondFailed.failed).toHaveLength(1); expect((await new EvolutionService({ root }).metrics()).corrections?.classifierFailures).toBe(2)
   })
 
   it('round-trips rule output through a memo without projection classifier calls', async () => {

@@ -1,4 +1,6 @@
 import type { FailureCluster, SkillDiagnosis, SkillEvalResult, SkillFailureCase, SkillProposal } from './types.js'
+import type { CorrectionPattern, SkillProposal as ProposalRecord } from './types.js'
+import { assessPattern, DEFAULT_CORRECTION_POLICY, type CorrectionPolicy } from './correction.js'
 
 export interface ProposalReportInput {
   readonly proposal: SkillProposal
@@ -69,10 +71,31 @@ function renderCostMarkdown(cost: SkillEvalResult['cost']): string {
   return lines.join('\n')
 }
 
-export function renderFailuresMarkdown(failures: readonly SkillFailureCase[]): string {
+export interface CorrectionReportInput {
+  readonly episodes?: number
+  readonly recognizerVersion?: string
+  readonly classifierFailures?: number
+  readonly patterns?: readonly CorrectionPattern[]
+  readonly proposals?: readonly ProposalRecord[]
+  readonly policy?: CorrectionPolicy
+  readonly now?: string
+}
+
+export function renderFailuresMarkdown(failures: readonly SkillFailureCase[], correction: CorrectionReportInput = {}): string {
   const lines = ['# Skill Evolution Failures', '', `Total: ${failures.length}`, '']
   if (failures.length === 0) lines.push('No failure cases recorded.')
   else for (const failure of failures) lines.push(`- \`${failure.id}\` **${failure.skillName}** [${failure.severity}${failure.intentSource ? ` · ${failure.intentSource}` : ''}] ${failure.failure}`)
+  if (correction.patterns !== undefined) {
+    const policy = correction.policy ?? DEFAULT_CORRECTION_POLICY
+    const now = correction.now ?? new Date().toISOString()
+    lines.push('', '## Self-corrections', '', `Policy: \`${policy.version}\` (N=${policy.minFailures}, K=${policy.minSessions}, D=${policy.windowDays}d); recognizer: ${correction.recognizerVersion ?? 'none'}; episodes: ${correction.episodes ?? 0}; classifier failures: ${correction.classifierFailures ?? 0}; now: ${now}`, '')
+    if (correction.patterns.length === 0) lines.push('No correction patterns recorded.')
+    for (const pattern of correction.patterns) {
+      const assessed = assessPattern({ pattern, policy, now, proposals: correction.proposals })
+      const reason = assessed.candidate ? 'candidate' : assessed.candidateReason ?? 'blocked'
+      lines.push(`- \`${pattern.id}\` ${pattern.intent} | ${pattern.errorSignature} | ${pattern.correction.join(', ') || 'retry'} | ${assessed.windowSessionCount}/${policy.minSessions} since ${assessed.since} | ${reason} | target: ${assessed.promotedSkill ?? 'undecided'}`)
+    }
+  }
   return `${lines.join('\n')}\n`
 }
 

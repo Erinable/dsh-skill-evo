@@ -554,7 +554,7 @@ test('maintenance command reads the same configured store as the event collector
     listeners.get('session/event')({ id: 'shared-session' }, { seq: 1, type: 'turn/start' })
     await new Promise(resolve => setTimeout(resolve, 30))
     const result = await registered[0].handler({ rawInput: 'observe', agent: { session: { id: 'shared-session', header: { cwd: dir } } } })
-    assert.equal(JSON.parse(result.text).observations, 1)
+    assert.deepEqual(JSON.parse(result.text), { observations: 1, experiences: 0, failures: 0, clusters: 0, episodes: 0, patterns: 0 })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

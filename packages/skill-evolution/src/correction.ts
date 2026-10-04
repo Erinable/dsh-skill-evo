@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createContentHash } from './events.js'
 import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, Experience, RuntimeObservation, ToolAttempt } from './types.js'
+import { latestProposalsByRoot } from './proposal.js'
 
 export const CORRECTION_RULES_VERSION = 'rule-1'
 export const CORRECTION_POLICY_VERSION = 'correction-policy-v1'
@@ -106,6 +107,17 @@ export function groupPatterns(episodes: readonly CorrectionEpisode[], policy = D
   return [...groups.values()].map(items => { const sorted = [...items].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id)); const first = sorted[0]!; const occurrences = sorted.map(ep => ({ episodeId: ep.id, sessionId: ep.sessionId, occurredAt: ep.occurredAt })); return { id: `pattern:${first.id}`, signatureKey: first.signatureKey, intent: first.intent, errorSignature: first.errorSignature, correction: first.correction, environmental: first.environmental, retryOnly: first.retryOnly, occurrences, totalSessionCount: new Set(occurrences.map(o => o.sessionId)).size, firstSeenAt: first.occurredAt, lastSeenAt: sorted.at(-1)!.occurredAt, policyVersion: policy.version } })
 }
 
-export function assessPattern(input: { pattern: CorrectionPattern; policy?: CorrectionPolicy; now: string; proposals?: readonly { skillName?: string; status: string; updatedAt?: string; source?: { kind?: string; patternId?: string } }[] }) {
-  const policy = input.policy ?? DEFAULT_CORRECTION_POLICY; const sinceDate = new Date(input.now).getTime() - policy.windowDays * 86_400_000; const related = (input.proposals ?? []).filter(p => p.source?.patternId === input.pattern.id); const promoted = related.filter(p => p.status === 'promoted').sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]; const since = promoted?.updatedAt && new Date(promoted.updatedAt).getTime() > sinceDate ? promoted.updatedAt : new Date(sinceDate).toISOString(); const sessions = new Set(input.pattern.occurrences.filter(o => o.occurredAt >= since).map(o => o.sessionId)); const pending = related.find(p => !['rejected', 'rolled-back', 'reverted', 'promoted'].includes(p.status)); return { since, windowSessionCount: sessions.size, candidate: !input.pattern.retryOnly && pending === undefined && sessions.size >= policy.minSessions, ...(pending ? { blockedBy: { proposalId: pending.skillName ?? '', status: pending.status } } : {}), ...(promoted?.skillName ? { promotedSkill: promoted.skillName } : {}) }
+export function assessPattern(input: { pattern: CorrectionPattern; policy?: CorrectionPolicy; now: string; proposals?: readonly { id: string; skillName?: string; status: string; updatedAt?: string; source?: { kind?: string; patternId?: string } }[] }) {
+  const policy = input.policy ?? DEFAULT_CORRECTION_POLICY
+  const nowMs = new Date(input.now).getTime()
+  const windowStart = nowMs - policy.windowDays * 86_400_000
+  const related = [...latestProposalsByRoot((input.proposals ?? []) as never)].map(([, proposal]) => proposal as NonNullable<typeof input.proposals>[number]).filter(p => p.source?.patternId === input.pattern.id)
+  const promoted = related.filter(p => p.status === 'promoted').sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]
+  const promotionMs = promoted?.updatedAt === undefined ? Number.NEGATIVE_INFINITY : new Date(promoted.updatedAt).getTime()
+  const sinceMs = Math.max(windowStart, promotionMs)
+  const since = new Date(sinceMs).toISOString()
+  const sessions = new Set(input.pattern.occurrences.filter(o => new Date(o.occurredAt).getTime() >= sinceMs && new Date(o.occurredAt).getTime() <= nowMs).map(o => o.sessionId))
+  const pending = related.find(p => !['rejected', 'rolled-back', 'reverted', 'promoted'].includes(p.status))
+  const candidateReason = pending ? 'already-proposed' : input.pattern.retryOnly ? 'retry-only' : sessions.size < policy.minSessions ? 'insufficient-evidence' : undefined
+  return { since, windowSessionCount: sessions.size, candidate: candidateReason === undefined, ...(candidateReason === undefined ? {} : { candidateReason }), ...(pending ? { blockedBy: { proposalId: pending.id ?? '', status: pending.status } } : {}), ...(promoted?.skillName ? { promotedSkill: promoted.skillName } : {}), policyVersion: policy.version, policy }
 }

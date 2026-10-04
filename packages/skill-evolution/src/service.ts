@@ -173,12 +173,18 @@ export class EvolutionService {
       try { const current = await this.versions.readCurrent(name); return current === undefined ? undefined : { name, content: current.content } }
       catch { return undefined }
     }))).filter((item): item is { name: string; content: string } => item !== undefined)
-    const metrics = aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
-    return { ...metrics, corrections: { classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts } }
+    const proposals = await this.proposals.readAll()
+    return aggregateMetrics(events, proposals, await this.decisions.readAll(), snapshot.followUps, currentSkills, { episodes: snapshot.episodes ?? [], patterns: snapshot.patterns ?? [], proposals, classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts })
   }
 
-  recordCorrectionClassifierFailure(): void { this.correctionClassifierFailures += 1 }
-  recordCorrectionRejectedDrafts(count: number): void { this.correctionRejectedDrafts += count }
+  async recordCorrectionClassifierFailure(): Promise<void> {
+    await withLock(`${this.projectionCursorPath}.lock`, 'correction-failure', async () => {
+      const cursor = await readCursor(this.projectionCursorPath)
+      const failures = (cursor?.correctionClassifierFailures ?? 0) + 1
+      this.correctionClassifierFailures = failures
+      await writeCursor(this.projectionCursorPath, { ...(cursor ?? { count: 0, fingerprint: '' }), correctionClassifierFailures: failures })
+    })
+  }
 
   async health(): Promise<readonly JsonlHealth[]> {
     const reports = await Promise.all(this.layout.stores.map(store => inspectJsonlHealth(
@@ -488,6 +494,7 @@ export class EvolutionService {
   private async refreshDerivedUnlocked(options: { readonly force?: boolean }): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
     const observations = await this.observations.readAll()
     const cursor = await readCursor(this.projectionCursorPath)
+    this.correctionClassifierFailures = cursor?.correctionClassifierFailures ?? this.correctionClassifierFailures
     const lastId = observations.at(-1)?.id
     const fingerprint = fingerprintOf(observations.map(item => item.id))
     const memoEntries = await this.classifications.readAll()
@@ -495,6 +502,8 @@ export class EvolutionService {
     const lastMemo = memoEntries.at(-1)
     const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: this.options.windowRulesVersion ?? 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null, correction: { rules: this.options.correctionRulesVersion ?? CORRECTION_RULES_VERSION, policy: CORRECTION_POLICY_VERSION, classifier: this.correctionClassifier?.version ?? 'none' } }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
+      this.correctionRejectedDrafts = cursor.correctionRejectedDrafts ?? 0
+      this.correctionClassifierFailures = cursor.correctionClassifierFailures ?? 0
       return {
         experiences: await this.experiences.readAll(),
         failures: await this.failures.readAll(),
@@ -508,6 +517,7 @@ export class EvolutionService {
     workflow.add(observations)
     const snapshot = workflow.snapshot()
     const episodes: CorrectionEpisode[] = []
+    let rejectedDrafts = 0
     const memoMap = new Map(memoEntries.filter((entry): entry is CorrectionClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge === 'correction').map(entry => [entry.id, entry]))
     const sessions = new Map<string, RuntimeObservation[]>()
     for (const event of observations) if (event.sessionId !== undefined) sessions.set(event.sessionId, [...sessions.get(event.sessionId) ?? [], event])
@@ -516,7 +526,7 @@ export class EvolutionService {
       const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
       const rawDrafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
       const drafts = rawDrafts.filter(draft => validateEpisodeDraft(draft, attempts))
-      this.recordCorrectionRejectedDrafts(rawDrafts.length - drafts.length)
+      rejectedDrafts += rawDrafts.length - drafts.length
       for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
     }
     const patterns = groupPatterns(episodes)
@@ -528,7 +538,8 @@ export class EvolutionService {
     await this.diagnoses.replaceAll(snapshot.diagnoses)
     await this.episodes.replaceAll(episodes)
     await this.patterns.replaceAll(patterns)
-    await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey })
+    this.correctionRejectedDrafts = rejectedDrafts
+    await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey, correctionRejectedDrafts: rejectedDrafts, correctionClassifierFailures: this.correctionClassifierFailures })
     return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
 }
