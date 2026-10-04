@@ -324,7 +324,7 @@ describe('promote crash points', () => {
     expect(await publicationState(root)).toEqual(reference)
   })
 
-  it('G2 other Proposal Promote keeps the pending journal and rejects the stale branch', async () => {
+  it('does not skip promotion checks for a different proposal with a pending journal', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     vi.restoreAllMocks()
@@ -340,21 +340,21 @@ describe('promote crash points', () => {
     await expect(readFile(join(root, '.skill-evolution', 'publications', `${skillName}.json`), 'utf8')).resolves.toContain('proposal-crash')
   })
 
-  it('G3 direct Rollback completes the pending Promote before changing live state', async () => {
+  it('rollback completes a pending Promote before changing live state', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root } = await crashPromote(row)
     await expect(rollbackSkill(service(root), { skillName, version: 'unversioned' })).resolves.toMatchObject({ version: 'unversioned' })
     await expect(readFile(join(root, skillName, 'SKILL.md'), 'utf8')).resolves.toBe(first)
   })
 
-  it('G4 Rollback isolates a pending Promote and a later Promote can be retried', async () => {
+  it('rollback over a pending Promote leaves a stale proposal rejected on retry', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P1c'))!
     const { root, proposalRef } = await crashPromote(row)
     await expect(rollbackSkill(service(root), { skillName, version: '1.1.0' })).resolves.toMatchObject({ version: '1.1.0' })
     await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'stale-base' })
   })
 
-  it('R0 rerun completes from the pre-journal failure without duplicate facts', async () => {
+  it('P0 rerun completes from the pre-journal failure without duplicate facts', async () => {
     const row = promoteRows.find(item => item.point.startsWith('P0'))!
     const { root, proposalRef, reference } = await crashPromote(row)
     await promoteProposal(service(root), { proposalRef, scope: 'project' })
@@ -371,6 +371,7 @@ describe('promote crash points', () => {
     await expect(promoteProposal(service(root), { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
     expect(await publicationState(root)).toEqual(before)
   })
+
 })
 
 describe('rollback crash points', () => {

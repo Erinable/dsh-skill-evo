@@ -196,6 +196,22 @@ describe('core maintenance operations', () => {
     expect(await readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8')).toBe(before.files)
   })
 
+  it('dry-run of an already promoted Proposal matches the idempotent real Promote', async () => {
+    const { service, proposalRef } = await acceptedProposal()
+    await promoteProposal(service, { proposalRef, scope: 'project' })
+    const before = await service.observations.readAll()
+    await expect(promoteProposal(service, { proposalRef, scope: 'project', dryRun: true })).resolves.toMatchObject({ dryRun: true })
+    expect(await service.observations.readAll()).toEqual(before)
+  })
+
+  it('maps a permanent Rollback publication mismatch to publication-conflict', async () => {
+    const { service } = await acceptedProposal()
+    const original = service.versions.rollback
+    service.versions.rollback = (async () => { throw new PublicationPermanentError('rollback target conflict') }) as typeof original
+    await expect(service.rollback('api-debugging', '1.0.0')).rejects.toMatchObject({ code: 'publication-conflict' })
+    service.versions.rollback = original
+  })
+
   it('classifies a permanent publication mismatch as publication-conflict', async () => {
     const { service, proposalRef } = await acceptedProposal()
     const original = service.versions.promote
