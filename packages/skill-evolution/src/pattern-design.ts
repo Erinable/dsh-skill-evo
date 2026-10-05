@@ -88,6 +88,7 @@ export function createPatternProposal(input: PatternProposalInput): SkillProposa
     operation: createSkill ? 'create-skill' : 'patch-content',
     source: {
       kind: 'pattern',
+      environmental: input.pattern.environmental,
       patternId: input.pattern.id,
       signatureKey: input.pattern.signatureKey,
       episodeIds: [...input.episodeIds ?? input.pattern.occurrences.map(item => item.episodeId)],

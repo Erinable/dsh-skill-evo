@@ -10,7 +10,7 @@ import { OperationError } from './errors.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import { classificationInputFor, isFollowUpClassification } from './follow-up.js'
 import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
-import { correlateToolAttempts, DEFAULT_CORRECTION_POLICY, inputHash, validateEpisodeDraft } from './correction.js'
+import { correlateToolAttempts, DEFAULT_CORRECTION_POLICY, inputHash, validateEpisodeDraft, isPatternScopeAllowed } from './correction.js'
 import type { CorrectionClassificationMemoEntry } from './types.js'
 
 export { OperationError } from './errors.js'
@@ -220,7 +220,7 @@ export async function evaluateProposal(service: EvolutionService, options: Evalu
   else if (proposal.status === 'evaluating') assertTransition(proposal, 'evaluated')
   else throw new OperationError('invalid-transition', `proposal ${proposal.id} cannot be evaluated from ${proposal.status}`)
   const current = await service.versions.readCurrent(proposal.skillName)
-  if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash) {
+  if ((current === undefined && proposal.expectedBase.contentHash !== 'absent') || (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash)) {
     throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
   }
   const cases = options.cases ?? await readJson<SkillEvaluationCase[]>(options.casesFile, 'evaluation cases')
@@ -256,6 +256,9 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
 export async function promoteProposal(service: EvolutionService, options: PromoteProposalOptions): Promise<PromoteResult> {
   const scope = assertScope(options.scope)
   const proposal = await resolveProposal(service, options.proposalRef)
+  if (!isPatternScopeAllowed(proposal, scope)) {
+    throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
+  }
   if (proposal.status !== 'accepted' && !(await service.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
   const artifact = options.evaluationPath === undefined
     ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)

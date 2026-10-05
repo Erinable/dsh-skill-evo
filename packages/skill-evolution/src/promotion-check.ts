@@ -22,7 +22,8 @@ export function checkPromotion(input: PromotionCheckInput): void {
   if (artifact.proposalId !== root || artifact.candidateId !== root || artifact.result.candidateId !== root) {
     throw new OperationError('evaluation-mismatch', 'evaluation artifact belongs to a different proposal')
   }
-  if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash || artifact.baseContentHash !== proposal.expectedBase.contentHash || (current.manifest.version !== 'unversioned' && current.manifest.version !== proposal.baseVersion)) {
+  const absentBase = proposal.expectedBase.contentHash === 'absent'
+  if ((!absentBase && current === undefined) || (absentBase ? current !== undefined : current?.manifest.contentHash !== proposal.expectedBase.contentHash) || artifact.baseContentHash !== proposal.expectedBase.contentHash || (!absentBase && current!.manifest.version !== 'unversioned' && current!.manifest.version !== proposal.baseVersion)) {
     throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
   }
   const candidateHash = createContentHash(proposal.candidateContent)
@@ -49,7 +50,7 @@ export function checkPromotion(input: PromotionCheckInput): void {
   }
   if (!artifact.passedGate || !artifact.result.passedGate) throw new OperationError('gate-failed', `proposal ${proposal.id} failed the evaluation gate`)
   const validation = validateSkillDocument(proposal.candidateContent, proposal.skillName)
-  const change = validateSkillCandidate(current.content, proposal.candidateContent, proposal.skillName)
+  const change = validateSkillCandidate(current?.content ?? '', proposal.candidateContent, proposal.skillName)
   if (!validation.valid || !change.valid) throw new OperationError('evaluation-mismatch', `candidate Skill is invalid: ${[...validation.errors, ...change.errors].join('; ')}`)
 }
 
