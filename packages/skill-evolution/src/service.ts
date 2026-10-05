@@ -276,11 +276,12 @@ export class EvolutionService {
     const loaded = new Map<string, number>()
     for (const event of events) if (event.kind === 'skill-loaded' && event.skill?.name !== undefined) loaded.set(event.skill.name, (loaded.get(event.skill.name) ?? 0) + 1)
     const promoted = (await this.proposals.readAll()).filter(item => item.status === 'promoted' && item.source?.patternId === patternId).at(-1)?.skillName
-    const skillNames = [...new Set([...loaded.keys(), ...(await this.proposals.readAll()).filter(item => item.status === 'promoted').map(item => item.skillName)])]
+    const managedNames = await this.managedSkillNames()
+    const skillNames = [...new Set([...managedNames, ...loaded.keys(), ...(await this.proposals.readAll()).filter(item => item.status === 'promoted').map(item => item.skillName)])]
     const similarities = new Map<string, number>()
     for (const skillName of skillNames) {
       const current = await this.versions.readCurrent(skillName)
-      if (current !== undefined) similarities.set(skillName, tokenSimilarity(`${pattern.intent} ${pattern.signatureKey}`, current.content))
+      if (current !== undefined) similarities.set(skillName, tokenSimilarity(`${pattern.intent} ${pattern.errorSignature} ${pattern.correction.join(' ')}`, skillMetadata(current.content, skillName)))
     }
     const selection = selectPatternTarget({ explicitSkill: options.skillName, promotedTarget: promoted, loadedSkills: loaded, similarities })
     if (selection.reason === 'ambiguous') throw new OperationError('ambiguous-target', `ambiguous pattern target: ${selection.candidates?.join(', ')}`)
@@ -293,6 +294,12 @@ export class EvolutionService {
     const base = selection.target === undefined ? undefined : await this.versions.readCurrent(selection.target)
     const proposal = createPatternProposal({ pattern, skillName: selection.target, proposedVersion: options.proposedVersion, candidateContent: candidate, ...(base === undefined ? {} : { baseVersion: base.manifest.version, baseContent: base.content }), evidenceEventIds: evidence, targetReason: selection.reason, targetCandidates: selection.candidates })
     return this.stageProposal(proposal)
+  }
+
+  private async managedSkillNames(): Promise<readonly string[]> {
+    try {
+      return (await readdir(this.options.root, { withFileTypes: true })).filter(item => item.isDirectory() && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(item.name)).map(item => item.name)
+    } catch { return [] }
   }
 
   async stageProposal(proposal: SkillProposal): Promise<SkillProposal> {
@@ -582,9 +589,20 @@ export class EvolutionService {
 function collectMachineValues(value: unknown, key = ''): string[] {
   if (typeof value === 'string') {
     if (/command|proxy/iu.test(key)) {
-      const values = [value]
-      for (const match of value.matchAll(/(?:https?|socks5?):\/\/([^\s/]+)(?::\d+)?/giu)) values.push(match[1]!)
-      for (const match of value.matchAll(/(?:proxy|http|https)[_ -]?(?:host|url)?=([^\s]+)/giu)) values.push(match[1]!)
+      const values: string[] = []
+      for (const match of value.matchAll(/(?:https?|socks5?):\/\/([^\s]+)/giu)) {
+        try {
+          const url = new URL(match[0]!)
+          for (const item of [url.hostname, url.host, url.username, url.password]) if (item.length > 0) values.push(item)
+        } catch { /* malformed URLs are not machine facts */ }
+      }
+      for (const match of value.matchAll(/(?:proxy|http|https)[_ -]?(?:host|url)?=([^\s]+)/giu)) {
+        const raw = match[1]!
+        try {
+          const url = new URL(raw.includes('://') ? raw : `http://${raw}`)
+          for (const item of [url.hostname, url.host, url.username, url.password]) if (item.length > 0) values.push(item)
+        } catch { values.push(raw) }
+      }
       return values
     }
     return /^(?:proxy(?:[-_].*)?|host|ip|address|username|password|user|pass)$/iu.test(key) ? [value] : []
@@ -597,7 +615,12 @@ function collectMachineValues(value: unknown, key = ''): string[] {
 function tokenSimilarity(left: string, right: string): number {
   const terms = (value: string) => new Set(value.toLowerCase().split(/[^a-z0-9]+/u).filter(item => item.length > 2))
   const a = terms(left); const b = terms(right); const intersection = [...a].filter(item => b.has(item)).length
-  return a.size + b.size === 0 ? 0 : intersection / (a.size + b.size - intersection)
+  return a.size === 0 ? 0 : intersection / a.size
+}
+
+function skillMetadata(content: string, name: string): string {
+  const description = content.match(/^description:\s*(.+)$/imu)?.[1] ?? ''
+  return `${name} ${description}`
 }
 
 

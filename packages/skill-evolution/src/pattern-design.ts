@@ -73,7 +73,7 @@ export interface PatternProposalInput {
 /** Construct pattern metadata without exposing the full observation stream to a Designer. */
 export function createPatternProposal(input: PatternProposalInput): SkillProposal {
   const seed = `${input.pattern.intent}-${input.pattern.signatureKey}-${input.pattern.id}`
-  const slug = seed.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 48) || 'generated'
+  const slug = seed.toLowerCase().replace(/[^a-z0-9]+/gu, '-').slice(0, 48).replace(/^-+|-+$/gu, '') || 'generated'
   const target = input.skillName ?? `pattern-${slug}`
   const createSkill = input.baseContent === undefined
   const proposalInput: ProposalInput = {
