@@ -27,7 +27,7 @@ SKIL-181（父 issue SKIL-179，来源：架构扫描 SKIL-178 第 1、5 项）�
 | `service.ts:504-515` fast path 返回 | 加 `readAll()` | 调用方读不到 |
 | `service.ts:516-540` 全量重建 | 计算 + `replaceAll` | 不落盘 |
 | `service.ts:543` 全量返回 | 加字段 | 调用方读不到 |
-| `workflow.ts:16-24` `WorkflowSnapshot` | 加字段 | 无 |
+| `workflow.ts:33-41` `WorkflowSnapshot` | 加字段 | 无 |
 | `state-root.ts:21-28` + `:93-115` cursor | 新计数 / `judges` 字段 | 计数丢失 |
 | `service.ts:254-261` `proposeChange` | 再算一遍 | Designer 看到另一份结果 |
 
@@ -35,7 +35,7 @@ SKIL-181（父 issue SKIL-179，来源：架构扫描 SKIL-178 第 1、5 项）�
 
 - `skill-windows` 在 `service.ts:533` 落盘，但 fast path（`:507-514`）和全量返回（`:543`）都不带它，`refreshDerived()` 的调用方读不到窗口。
 - PR #113 的 `refreshDerivedUnlocked` 加了 `skill-posteriors`、`failure-attributions`，两条返回路径也都没带上。
-- `windowRulesVersion`、`correctionRulesVersion` 只进 `derivationKey`，投影代码不读它们；反过来，PR #113 的 `skill-attribution.ts:94` 把 `'hmm-1'` 写成字面量，service 里又另写了一遍 `'hmm-1'` 进 key。版本靠两处手抄保持一致。
+- `windowRulesVersion`、`correctionRulesVersion` 只进 `derivationKey`，投影代码不读它们；反过来，main 上 `skill-attribution.ts:94`（`inferSkillAttribution`，main 的 service 还没调用它）已经把模型版本 `'hmm-1'` 和 emission 版本 `'rule-1'` 写成字面量，PR #113 的 service 又另写了一遍 `'hmm-1'` 进 key。版本靠两处手抄保持一致；而 `'rule-1'` 恰好与 `CORRECTION_RULES_VERSION`（`correction.ts:6`）同值，按值核对分不出两者（§4 G4 因此按名字核对）。
 
 ### 1.3 探针：`proposeChange` 和存储的投影分叉
 
@@ -76,7 +76,7 @@ SKIL-181（父 issue SKIL-179，来源：架构扫描 SKIL-178 第 1、5 项）�
 | K1. 现状：手写一个对象做 hash | 新投影的作者要记得往里加字段 | 静默过期 |
 | **K2. 投影只能从 `DerivationContext` 取输入，key 是 context 里除 Observation 外全部内容的 hash（推荐）** | `versions` 整个进 hash；memo 指纹按注册表里所有 `memo` store 遍历；正文哈希集合进 hash | 新的 memo store 自动进 key；新版本号不进 `versions` 就传不进投影函数 |
 
-K2 下 key 不是第二份手写清单，而是投影输入本身的指纹，所以「改了输入却没改 key」在结构上做不到。剩下的漏洞是投影代码直接 import 一个常量或写字面量（如 PR #113 的 `'hmm-1'`），由 §4 的 G4 测试兜住。采用默认答案，成员可推翻。
+K2 下 key 不是第二份手写清单，而是投影输入本身的指纹，所以「改了输入却没改 key」在结构上做不到。剩下的漏洞是投影代码直接 import 一个常量或写字面量（如 main 上 `skill-attribution.ts:94` 的 `'hmm-1'`、`'rule-1'`），由 §4 的 G4 测试和 `VERSION_SOURCES` 的穷举类型兜住。采用默认答案，成员可推翻。
 
 ### 2.3 `proposeChange` 的读取路径
 
@@ -107,7 +107,7 @@ K2 下 key 不是第二份手写清单，而是投影输入本身的指纹，所
 
 ## 3. 推荐方案：接口
 
-三层，依赖方向从上到下：`service.ts` → `derivation.ts`（`DerivedProjection`）→ `projection-steps.ts`（纯函数 `projectDerived`）→ `store-registry.ts`（注册表）。`state-root.ts` 也依赖 `store-registry.ts`，不再自己维护 store 清单。文件名避开已有的 `store.ts`（Observation log）和 `projection.ts`（exposure view），这两个文件不动。
+三层，依赖方向从上到下：`service.ts` → `derivation.ts`（`DerivedProjection`）→ `projection-steps.ts`（纯函数 `projectDerived`）→ `store-registry.ts`（注册表）。`state-root.ts` 也依赖 `store-registry.ts`，不再自己维护 store 清单。`projection-steps.ts` 还依赖 `workflow.ts`，以复用 `projectWorkflow`（§3.5 第 4 条）；`workflow.ts` 不反向依赖新文件。文件名避开已有的 `store.ts`（Observation log）和 `projection.ts`（exposure view），这两个文件不动。
 
 ### 3.1 store 注册表（新文件 `store-registry.ts`，唯一的注册位置）
 
@@ -154,7 +154,21 @@ export interface DerivationVersions {            // 写进 cursor.judges，整�
   readonly correctionRules: string
   readonly correctionPolicy: string
   readonly correctionClassifier: string
-  // PR #113 合并后由 T3 迁入：emission、posteriorModel、posteriorParams
+  readonly posteriorModel: string                // POSTERIOR_MODEL_VERSION（T3 把 skill-attribution.ts:94 的 'hmm-1' 提成常量）
+  readonly emissionRules: string                 // EMISSION_RULES_VERSION（T3 把同一行的 'rule-1' 提成常量）
+  // PR #113 合并后由 T3 迁入：emission judge 版本、posteriorParams
+}
+
+/** 每个版本字段的来源，按名字登记。Record 穷举 DerivationVersions：少一项编译失败。 */
+export const VERSION_SOURCES: { readonly [K in keyof DerivationVersions]:
+  | { readonly kind: 'constant'; readonly name: string; readonly value: string;          // name = 导出常量的标识符
+      readonly override?: 'windowRulesVersion' | 'correctionRulesVersion' }           // 测试用的覆盖选项（§1.2）
+  | { readonly kind: 'injected'; readonly option: 'followUpClassifier' | 'correctionClassifier' } } = {   // 取注入对象的 version，缺省 'none'
+  followUpRules:  { kind: 'constant', name: 'FOLLOW_UP_RULES_VERSION', value: FOLLOW_UP_RULES_VERSION },
+  intentPolicy:   { kind: 'constant', name: 'INTENT_POLICY_VERSION', value: INTENT_POLICY_VERSION },
+  followUpClassifier: { kind: 'injected', option: 'followUpClassifier' },
+  windowRules:    { kind: 'constant', name: 'SKILL_WINDOW_RULES_VERSION', value: SKILL_WINDOW_RULES_VERSION, override: 'windowRulesVersion' },
+  // …其余字段同理
 }
 
 export interface DerivationContext {
@@ -176,8 +190,9 @@ export function resolveDerivationVersions(options: Pick<EvolutionServiceOptions,
   'followUpClassifier' | 'correctionClassifier' | 'windowRulesVersion' | 'correctionRulesVersion'>): DerivationVersions
 ```
 
-- `projectDerived` 的函数体就是今天 `refreshDerivedUnlocked` 里 `:516-532` 的计算加 `buildSkillWindows`，内部仍可拆成 follow-up、experience、correction、attribution 几个私有步骤；这些是内部 seam，只给 module 自己的测试用。
-- `resolveDerivationVersions` 是读取版本常量和注入对象 `version` 的唯一位置。`windowRulesVersion`、`correctionRulesVersion` 两个选项今天只进 key、不进计算（§1.2）；保持这个语义，它们只覆盖 `versions` 里对应的值，用来在测试里强制重投影。投影步骤要用版本号时一律读 `ctx.versions`。
+- `projectDerived` 的函数体就是今天 `refreshDerivedUnlocked` 里 `:516-532` 的计算加 `buildSkillWindows`。它分成几个导出的步骤函数，其中第一步是 `projectWorkflow(observations, options)`（§3.5），即今天 `EvolutionWorkflow.snapshot()` 的函数体原样搬出，返回 `WorkflowSnapshot`。`projectDerived` 在它之后接 correction、skill windows、attribution 几步，再把 correction 经验拼进 `experiences`。步骤函数是内部 seam，只给 module 自己的测试和 `EvolutionWorkflow` 用。
+- `DerivationContext` 不含 `now`、`taskCluster`（`ExperienceProjectionOptions`，`experience.ts:16-19`）：service 今天构造 `EvolutionWorkflow` 时从不传这两个（`service.ts:558` @ `82a9aef`），`projectDerived` 按默认值调用 `projectWorkflow`，行为不变。它们只留在 `EvolutionWorkflow` 的构造参数上，见 §3.5 第 4 条。
+- `resolveDerivationVersions` 遍历 `VERSION_SOURCES` 生成 `DerivationVersions`，是读取版本常量和注入对象 `version` 的唯一位置。`windowRulesVersion`、`correctionRulesVersion` 两个选项今天只进 key、不进计算（§1.2）；保持这个语义，它们只覆盖 `versions` 里对应的值，用来在测试里强制重投影。投影步骤要用版本号时一律读 `ctx.versions`。
 - `memos` 的类型由注册表映射出来：新增一个 `memo` store，`DerivationContext.memos` 自动多一个字段。`DerivedProjection` 按注册表遍历读取所有 memo store，不用手写读取代码；它的指纹也自动进 key（§3.3）。
 
 ### 3.3 持久化 module（新文件 `derivation.ts`）
@@ -212,7 +227,8 @@ interface 只有两个方法。全量重建入口就是 `refresh({ force: true }
 
 ### 3.4 service 和其他调用方
 
-- `refreshDerived(options)` 变成 `this.projection.refresh(options)`，返回 `{ ...view.records }`（属性名就是注册表的 key：`experiences`、`followUps`、`skillWindows`……）。这是今天 `WorkflowSnapshot` 的超集：`episodes`、`patterns` 从可选变成必有，多了 `skillWindows`。`maintenance.ts:30`、`bin/dsh-skill-evolution.mjs:74`、`dsh-bundle/index.js:255-259` 只读其中几个字段，不用改。`WorkflowSnapshot` 改为 `DerivedRecords` 的别名。
+- `refreshDerived(options)` 变成 `this.projection.refresh(options)`，返回 `{ ...view.records }`（属性名就是注册表的 key：`experiences`、`followUps`、`skillWindows`……）。返回类型从 `WorkflowSnapshot` 改为 `DerivedRecords`。`DerivedRecords` 是 `WorkflowSnapshot` 的结构超集：五个必有字段同名同类型，`episodes`、`patterns` 在后者里是可选、在前者里是必有，另外多了 `skillWindows` 等字段。所以 `const s: WorkflowSnapshot = await service.refreshDerived()` 照样能编译，调用方只读的话不受影响。`maintenance.ts:30`、`bin/dsh-skill-evolution.mjs:74`、`dsh-bundle/index.js:255-259` 只读其中几个字段，不用改。
+- **`WorkflowSnapshot` 保持现状**（`workflow.ts:33-41`），不改成别名，字段和可选性都不动。它继续是 `EvolutionWorkflow.snapshot()` 和 `projectWorkflow()` 的返回类型。
 - `metrics()` 从 `view.counters` 取两个计数，删掉 service 上的 `correctionClassifierFailures`、`correctionRejectedDrafts` 两个私有字段（`service.ts:81-82`）。
 - `recordCorrectionClassifierFailure()` 保留为公开方法（`operations.ts` 在用），内部改为委托 `recordClassifierFailure()`。
 - `skillContents`、`skillContentSource` 和 cursor 的 `judges` 字段要等 PR #113 合入才有。按 §6 的顺序 T3 和 T4 在 #113 之后开工，可以直接按上面的形状写。如果 #113 被撤回，这几项就从 interface 里删掉，其余部分不变。
@@ -223,10 +239,14 @@ interface 只有两个方法。全量重建入口就是 `refresh({ force: true }
 
 推荐 P1，Designer 读存储视图：
 
-1. 把 `workflow.propose(clusterId, designer)` 里组装 `DesignerInput` 的逻辑抽成纯函数 `proposeFromRecords(records: DerivedRecords, clusterId, designer)`，放在 `workflow.ts`。找 cluster、证据门槛检查、找 diagnosis、组装 input、调 designer、`createProposal`（`workflow.ts:45-73`）整段搬过去，行为不变。
+1. 把 `workflow.propose(clusterId, designer)` 里组装 `DesignerInput` 的逻辑抽成纯函数 `proposeFromRecords(records, clusterId, designer)`，放在 `workflow.ts`，`records` 的类型见第 4 条。找 cluster、证据门槛检查、找 diagnosis、组装 input、调 designer、`createProposal`（`workflow.ts:45-73`）整段搬过去，行为不变。
 2. `proposeChange(clusterId, designer)` = `const view = await this.projection.refresh()`，然后 `proposeFromRecords(view.records, clusterId, designer)`。refresh 在锁内，designer 在锁外调用，因为 designer 可能是慢的 LLM 调用，不应该占着 cursor 锁。
 3. `proposePattern`（#114，已合入，`service.ts:266` @ `82a9aef`）已经是"先 refresh 再读 patterns/episodes store"，改为直接读 `view.records`，语义不变，只是少读一次盘。
-4. `EvolutionWorkflow` 保留导出（`index.ts` 对外），改成薄包装：`snapshot()` = `projectDerived(默认 context).records` 的旧字段子集，`propose()` = `proposeFromRecords(this.snapshot(), …)`。它在 `src` 里不再被 service 使用，只给现有单测和外部调用方用。
+4. `EvolutionWorkflow` 保留导出（`index.ts:26`），**签名和语义都不变**：
+   - 构造参数仍是 `ExperienceProjectionOptions & { memo?, classifierVersion? }`，`now`、`taskCluster` 照旧从这里传。
+   - `snapshot(): WorkflowSnapshot` 的函数体搬到 `workflow.ts` 里新导出的纯函数 `projectWorkflow(observations, options)`，`snapshot()` 只调用它。输出与今天逐字节一致，**不含** correction 经验，不含 `episodes`、`patterns`。
+   - `propose()` = `proposeFromRecords(this.snapshot(), clusterId, designer)`。`proposeFromRecords` 的第一个参数类型取两者的公共部分 `Pick<WorkflowSnapshot, 'experiences' | 'failures' | 'clusters' | 'diagnoses'>`，`WorkflowSnapshot` 和 `DerivedRecords` 都能传。
+   - `projectDerived` 通过 `projectWorkflow` 复用同一份计算（依赖方向 `projection-steps.ts → workflow.ts`），不再 new `EvolutionWorkflow`。service 也不再 new 它；它只给现有单测和外部调用方用。
 5. 后果：Designer 的 `input.experiences` 里会出现 correction 经验。这正是 SKIL-179 要的（Designer 能看到纠正经验）。`DesignerInput` 的类型不变，因为 correction 经验本来就是 `Experience`（`correction.ts:92`）。存储里的 diagnoses 是在拼入 correction 经验之前算的（`workflow.ts:41`），所以 `supportingExperienceIds` / `addressedExperienceIds` 与今天一致。要不要让 diagnosis 也引用 correction 经验是行为变更，不在本设计里做。
 - `experience.ts:14` 已经 import `follow-up.ts`，§3.6 的改动不会引入新的依赖方向。
 
@@ -253,7 +273,7 @@ export function isFailureIntent(intent: FollowUpIntent): boolean {
 }
 ```
 
-- `Record<FollowUpIntent, …>` 是穷举的：`types.ts:390-392` 往 `FEEDBACK_KINDS` 或 `FOLLOW_UP_INTENTS` 里加一个意图，这里不补就编译失败。这一点比单纯导出一个数组（F1）强，F1 漏分类时不会报错。
+- `Record<FollowUpIntent, …>` 是穷举的：往 `FOLLOW_UP_INTENTS`（`types.ts:408` @ `82a9aef`）里加一个意图，这里不补就编译失败。这一点比单纯导出一个数组（F1）强，F1 漏分类时不会报错。只往 `FEEDBACK_KINDS` 里加不会触发这条保护：`FollowUpIntent` 由 `FOLLOW_UP_INTENTS` 手写数组推出，类型不变，而 `follow-up.ts:95` 用 `as FollowUpIntent` 强转了显式反馈。所以 T1 同时在 `types.ts` 加一条编译期断言，要求 `FeedbackKind` 是 `FollowUpIntent` 的子集：`const _feedbackKindsAreIntents: readonly FollowUpIntent[] = FEEDBACK_KINDS`。这样漏同步 `FOLLOW_UP_INTENTS` 会编译失败，同步之后再被 `INTENT_OUTCOME` 的穷举拦住。
 - 四处字面量（`experience.ts:141,296,317`、`metrics.ts:154`）改成 `isFailureIntent(x)` 或 `FAILURE_INTENTS`。`metrics.ts` 新增一个对 `follow-up.ts` 的依赖。`follow-up.ts` 只依赖 `events.js`、`types.js`，不会形成环。
 - 实施前要逐个确认上表里 `satisfied`、`goal-changed` 的现有语义与四处调用一致：四处用的都是"属于这 5 个就算失败"，所以只有 `failure` 一类会影响行为，其余三类是新增的命名，不改行为。
 - 升版本的约束靠测试 G6 守住（§4）：对 `INTENT_OUTCOME` 做快照，快照变了而 `INTENT_POLICY_VERSION` 没变就失败。`INTENT_POLICY_VERSION` 已经进 key，所以分类一改，下次 refresh 就会全量重建。
@@ -266,7 +286,7 @@ export function isFailureIntent(intent: FollowUpIntent): boolean {
 | 新 derived store 没写进投影函数 | `Derivation.records: DerivedRecords` 是注册表的映射类型，`projectDerived` 少返回一个 key 就编译失败 | `tsc`（`npm run build`） |
 | 新 memo store 没进 key | 不可能漏：key 的 memo 指纹按注册表遍历生成 | 结构保证，G3 兜底 |
 | fast path 漏返回某个投影（今天的 skill-windows） | 不可能漏：fast path 按 `DERIVED_KEYS` 遍历读取；G1 兜底 | 结构保证 + vitest |
-| 新版本常量没进 key（今天的 `windowRulesVersion` 只进 key、`'hmm-1'` 硬编码两处） | G4：投影步骤模块导出的每个 `*_VERSION` 常量都必须出现在 `resolveDerivationVersions()` 的输出里 | vitest |
+| 新版本常量没进 key（今天的 `windowRulesVersion` 只进 key；`'hmm-1'`、`'rule-1'` 在 `skill-attribution.ts:94` 硬编码） | `DerivationVersions` 新增字段而 `VERSION_SOURCES` 没登记：编译失败。导出了 `*_VERSION` 常量却没登记：G4 **按名字**核对 | `tsc` + vitest |
 | 新代码绕过 module 直接写 derived store 或 cursor | G5：架构测试 grep `src/`，`.replaceAll(` 作用在 derived store 上、`readCursor` / `writeCursor`、`new EvolutionWorkflow` 只允许出现在白名单文件里 | vitest |
 | 改了意图分类不升版本 | G6：`INTENT_OUTCOME` 快照与 `INTENT_POLICY_VERSION` 绑定 | vitest |
 
@@ -275,10 +295,15 @@ export function isFailureIntent(intent: FollowUpIntent): boolean {
 ### 4.1 守护测试（新文件 `tests/derivation.spec.ts`）
 
 - **G1 fast path ≡ 全量重建**：用覆盖所有投影的 fixture 跑 `refresh({ force: true })`，再跑一次 `refresh()` 走 fast path，对每个 `DERIVED_KEYS` 做 deep-equal。fixture 本身先断言每个 derived store 至少产出一条记录，否则 deep-equal 两个空数组没有意义。
-- **G2 版本进 key**：对 `DerivationVersions` 的每个 key 单独改一个值，断言 `derivationKey` 变了，且下一次 `refresh()` 走了重建（用 `replaceAll` 的调用计数或 cursor 的变化判断）。key 列表从 `resolveDerivationVersions()` 的输出里取，加版本时测试自动覆盖。
+- **G2 版本进 key**：对 `DerivationVersions` 的每个 key 单独改一个值，断言 `derivationKey` 变了，且下一次 `refresh()` 走了重建（用 `replaceAll` 的调用计数或 cursor 的变化判断）。key 列表取自 `Object.keys(VERSION_SOURCES)`，加版本时测试自动覆盖。
 - **G3 memo 进 key**：对每个 `MemoKey` 追加一条记录，断言 key 变了。
-- **G4 常量登记**：import 投影步骤模块（`follow-up`、`correction`、`skill-attribution`，以及 #113 引入的 emission 模块），收集所有名字以 `_VERSION` 结尾的字符串导出，断言每个值都出现在 `resolveDerivationVersions({})` 的值里。残余风险：没写成常量的内联字面量逃得过 G4，所以 T3 要把 `'hmm-1'` 这类字面量都改成导出常量。
-- **G5 架构约束**：读 `src/*.ts` 文本，按上表白名单断言。白名单：`derivation.ts`（cursor、derived `replaceAll`）、`state-root.ts`（cursor 函数定义）、`workflow.ts`（`EvolutionWorkflow` 定义）。
+- **G4 常量登记（按名字，不按值）**：`import * as` 投影步骤模块（`follow-up`、`correction`、`skill-attribution`、`workflow`，以及 #113 引入的 emission 模块），收集所有名字以 `_VERSION` 结尾的字符串导出 `[name, value]`。断言三件事：
+  1. 每个导出名都等于 `VERSION_SOURCES` 里某个 `kind: 'constant'` 项的 `name`；
+  2. 该项的 `value` 与导出值相同，防止登记了名字、取的却是别的常量；
+  3. 反向检查：每个 `constant` 项的 `name` 都能在这些模块的导出里找到，防止登记了已删除或拼错的名字。
+
+  值相同也分得开：例如 T3 新增 `EMISSION_RULES_VERSION = 'rule-1'` 却没登记时，第 1 条以名字 `EMISSION_RULES_VERSION` 失败，不会因为 `CORRECTION_RULES_VERSION` 也是 `'rule-1'` 而通过。G2 的 key 列表也改为取自 `Object.keys(VERSION_SOURCES)`（由 `DerivationVersions` 穷举），不再取 `resolveDerivationVersions()` 的输出。残余风险：没写成导出常量的内联字面量逃得过 G4，所以 T3 要把 `skill-attribution.ts:94` 的 `'hmm-1'`、`'rule-1'`，以及 `service.ts` 的 `'skill-windows-v1'` 都改成导出常量。G5 再加一条，禁止投影步骤模块里出现 `version: '<字面量>'` 形式的写法。
+- **G5 架构约束**：读 `src/*.ts` 文本，按上表白名单断言。白名单：`derivation.ts`（cursor、derived `replaceAll`）、`state-root.ts`（cursor 函数定义）、`workflow.ts`（`EvolutionWorkflow` 定义）。另加一条：投影步骤模块（G4 列出的那几个）里不允许出现 `version: '…'` 形式的字符串字面量，版本值只能来自导出常量。这条是文本匹配，属于兜底，主保护仍是 G4。main 上命中两处，T3 都要清掉：`skill-attribution.ts:94` 是值，`skill-attribution.ts:21` 是类型 `readonly version: 'hmm-1'`。类型这一处改成 `typeof POSTERIOR_MODEL_VERSION`，常量本身用 `as const` 声明。
 - **G6 意图分类**：`expect({ version: INTENT_POLICY_VERSION, table: INTENT_OUTCOME }).toMatchInlineSnapshot()`，并在测试旁注明：表变了就同时升版本再更新快照。
 
 ### 4.2 回归测试（SKIL-179 要求点名）
@@ -318,7 +343,7 @@ PR #113 现在的写法（新 store 写在 service 里、`judges` 和 key 手写
 每一步单独成 PR，单独可回滚，合入后 `npm run build` 和 `npx vitest run tests` 全绿。T1 独立；T2–T5 串行，并且都在 #113 合入之后。
 
 **T1 失败意图单一定义**（可以立刻开工）
-- 文件：`src/follow-up.ts`（加 `IntentOutcome`、`INTENT_OUTCOME`、`FAILURE_INTENTS`、`isFailureIntent`），`src/experience.ts:141,296,317`，`src/metrics.ts:154`，`src/index.ts` 导出。
+- 文件：`src/follow-up.ts`（加 `IntentOutcome`、`INTENT_OUTCOME`、`FAILURE_INTENTS`、`isFailureIntent`），`src/types.ts`（加 `FeedbackKind ⊆ FollowUpIntent` 的编译期断言，§3.6），`src/experience.ts:141,296,317`，`src/metrics.ts:154`，`src/index.ts` 导出。
 - 验收：`grep -rn "'incorrect', 'constraint'" packages/skill-evolution/src` 只剩 `types.ts` 的两个常量定义；新增 G6；现有测试全绿，`derivationKey` 不变（`INTENT_POLICY_VERSION` 不升，因为分类没变）。
 
 **T2 store 注册表**
@@ -326,16 +351,27 @@ PR #113 现在的写法（新 store 写在 service 里、`judges` 和 key 手写
 - 验收：`tests/core.spec.ts:113` 的 layout 断言不改且通过；`StoreName` 不再是手写联合；service 公开字段名不变。
 
 **T3 纯投影函数**
-- 文件：新增 `src/projection-steps.ts`（`projectDerived`、`resolveDerivationVersions`、`DerivationVersions`、`DerivationContext`、`Derivation`）；`'skill-windows-v1'`、`'hmm-1'` 等字面量改为导出常量（如 `SKILL_WINDOW_RULES_VERSION`、`POSTERIOR_MODEL_VERSION`）。
-- 验收：新增单测：同一个 ctx 调两次 `projectDerived`，结果 deep-equal；结果与旧的 `refreshDerivedUnlocked` 全量路径产出 deep-equal（迁移期对照测试，T4 合入后删除）；新增 G4。
+- 文件：
+  - 新增 `src/projection-steps.ts`，包含 `projectDerived`、`resolveDerivationVersions`、`VERSION_SOURCES`、`DerivationVersions`、`DerivationContext`、`Derivation`。
+  - `src/workflow.ts` 抽出 `projectWorkflow(observations, options)`，`EvolutionWorkflow.snapshot()` 改为调用它，签名不变。
+  - 字面量改为导出常量：`service.ts` 的 `'skill-windows-v1'` 改为 `SKILL_WINDOW_RULES_VERSION`；`skill-attribution.ts:94` 的 `'hmm-1'` 改为 `POSTERIOR_MODEL_VERSION`，同一行的 `'rule-1'` 改为 `EMISSION_RULES_VERSION`。这三个常量都登记进 `VERSION_SOURCES`。
+- 验收：
+  - 同一个 ctx 调两次 `projectDerived`，结果 deep-equal。
+  - 结果与旧的 `refreshDerivedUnlocked` 全量路径产出 deep-equal。这是迁移期对照测试，T4 合入后删除。
+  - 现有直接用 `EvolutionWorkflow` 的单测不改且通过。
+  - 新增 G4（按名字核对），并加一条反例自测：临时导出一个与 `CORRECTION_RULES_VERSION` 同值、但未登记的 `*_VERSION` 常量，G4 必须失败。
 
 **T4 `DerivedProjection` 接管 cursor、key、fast path、重建**
-- 文件：新增 `src/derivation.ts`（§3.3）；`service.ts` 的 `refreshDerived` / `refreshDerivedUnlocked` / `metrics` / `recordCorrectionClassifierFailure` 委托给它，删除 `:81-82` 两个私有计数字段；`WorkflowSnapshot` 改为 `DerivedRecords` 的别名。
+- 文件：新增 `src/derivation.ts`（§3.3）；`service.ts` 的 `refreshDerived` / `refreshDerivedUnlocked` / `metrics` / `recordCorrectionClassifierFailure` 委托给它，删除 `:81-82` 两个私有计数字段；`refreshDerived()` 的返回类型改为 `DerivedRecords`。`WorkflowSnapshot` 不动。
 - 验收：新增 G1、G2、G3、G5（G5 先不含 `new EvolutionWorkflow` 一条）；升级后第一次 `refresh()` 全量重建一次、之后走 fast path；`refreshDerived()` 返回里有 `skillWindows`、`skillPosteriors`、`failureAttributions`；`tests/correction.spec.ts:128-150`、`tests/archive-health-repair.spec.ts:157-229` 通过。
 
 **T5 统一读取路径**
-- 文件：`src/workflow.ts`（抽出 `proposeFromRecords`，`EvolutionWorkflow` 改为薄包装）；`service.ts` 的 `proposeChange`、`proposePattern` 读 view。
-- 验收：新增 R1、R2；G5 加上 `new EvolutionWorkflow` 只在 `workflow.ts` 里出现这一条；`tests/pattern-design.spec.ts` 通过。
+- 文件：
+  - `src/workflow.ts` 抽出 `proposeFromRecords(records: Pick<WorkflowSnapshot, 'experiences' | 'failures' | 'clusters' | 'diagnoses'>, …)`，`EvolutionWorkflow.propose()` 改为调用它，签名和语义不变。
+  - `service.ts` 的 `proposeChange`、`proposePattern` 改为读 view。
+- 验收：
+  - 新增 R1、R2。
+  - `EvolutionWorkflow.snapshot()` 的输出不含 `experience:correction:*`，与 T5 之前逐字节一致。用现有 workflow 单测，再加一条对照断言。G5 加上 `new EvolutionWorkflow` 只在 `workflow.ts` 里出现这一条；`tests/pattern-design.spec.ts` 通过。
 
 G1–G6 分别放进对应的 T 里交付，不单独成任务。
 
@@ -353,8 +389,13 @@ G1–G6 分别放进对应的 T 里交付，不单独成任务。
 
 - 落盘格式：store 文件名、路径、顺序、记录形状都不变（T2 的 layout 断言守住）。cursor 字段不变。`derivationKey` 和 `judges` 的内容会变，但 cursor 本来就可以删掉重建（ADR-0026），旧值只会触发一次全量重建。
 - `correctionClassifierFailures` 不搬出 cursor（C1），所以不用为格式变更写 ADR。不搬的理由见 §2.4：这个计数只用于展示，不进门槛，也没有按 session 追溯的需求。将来门槛要读它时，再按 C2 写 ADR。
-- 公开接口：`refreshDerived()` 的返回是超集；`EvolutionWorkflow`、`WorkflowSnapshot` 保留导出；`FAILURE_INTENTS`、`isFailureIntent`、`INTENT_OUTCOME` 和新模块的导出都是新增。没有删除或改签名。
-- 依赖方向：`metrics.ts` → `follow-up.ts` 是新边，`experience.ts` → `follow-up.ts` 已有，都不成环；新文件之间是单向的 `service → derivation → projection-steps → store-registry`。
+- 公开接口（`index.ts` 以 `export *` 导出 `workflow.ts`、`service.ts` 等）：
+  - `WorkflowSnapshot` 不动。
+  - `EvolutionWorkflow` 的构造参数、`snapshot()`、`propose()` 的签名和输出都不变（§3.5 第 4 条，由 T5 的对照断言守住）。
+  - 唯一改变的签名是 `EvolutionService.refreshDerived()` 的返回类型，从 `WorkflowSnapshot` 收窄为它的结构子类型 `DerivedRecords`：可选字段变成必有，并增加字段。返回类型协变收窄，所有现有调用方都能编译。只有手写一个实现 `refreshDerived` 的替身类、且返回旧形状时才会报错，仓库里没有这种用法（`grep -rn "refreshDerived" packages` 只命中调用方）。
+  - 新增的导出有 `FAILURE_INTENTS`、`isFailureIntent`、`INTENT_OUTCOME`、`projectWorkflow`、`proposeFromRecords`、`VERSION_SOURCES` 以及新模块的类型。
+  - 没有删除导出，也没有不兼容的签名变更。返回类型收窄完全可以撤回（改回标注 `WorkflowSnapshot` 即可），所以不算不可逆。
+- 依赖方向：`metrics.ts` → `follow-up.ts` 是新边，`experience.ts` → `follow-up.ts` 已有，都不成环；新文件之间是单向的 `service → derivation → projection-steps → store-registry`，另有 `projection-steps → workflow`，`workflow.ts` 只依赖已有模块，不成环。
 
 ## 10. 可逆的默认选择（采用默认答案，成员可推翻）
 
@@ -362,6 +403,8 @@ G1–G6 分别放进对应的 T 里交付，不单独成任务。
 - key 方案 K2（整个 context 除 Observation 外的指纹），不选 K1（继续手写对象做 hash）。
 - 读取路径 P1（Designer 读存储视图）。
 - 计数位置 C1（留在 cursor）。
+- `WorkflowSnapshot` 和 `EvolutionWorkflow` 保持现状，不改成 `DerivedRecords` 的别名、不改语义（评审第 1 轮的选项 a）。两者通过 `projectWorkflow` 共用一份计算。
+- 版本登记用 `VERSION_SOURCES` 按名字核对（G4），不按值。
 - 失败意图 F2（穷举映射放在 `follow-up.ts`）。
 - §6 的合入顺序。
 - 注册表 key 用 camelCase（`followUps`），文件名保持 kebab-case（`follow-ups`）。
