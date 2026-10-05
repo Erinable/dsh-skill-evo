@@ -34,6 +34,24 @@ export interface ProposeSkillChangeResult {
   readonly reportPath: string
 }
 
+export interface DesignPatternOptions {
+  readonly root?: string
+  readonly patternId: string
+  readonly skillName?: string
+  readonly proposedVersion: string
+  readonly designer: (input: import('./workflow.js').PatternDesignerInput) => string | Promise<string>
+  readonly reportPath?: string
+}
+
+export interface DesignPatternResult { readonly proposal: SkillProposal; readonly reportPath: string }
+
+export async function designPattern(service: EvolutionService, options: DesignPatternOptions): Promise<DesignPatternResult> {
+  const proposal = await service.proposePattern(options.patternId, options.designer, { proposedVersion: options.proposedVersion, ...(options.skillName === undefined ? {} : { skillName: options.skillName }) })
+  const reportPath = options.reportPath ?? join(service.layout.proposalReportsDir, `${proposalRootId(proposal.id)}.md`)
+  await writeText(reportPath, renderProposalMarkdown({ proposal }))
+  return { proposal, reportPath }
+}
+
 export interface EvaluateProposalOptions {
   readonly root?: string
   readonly proposalRef: string
