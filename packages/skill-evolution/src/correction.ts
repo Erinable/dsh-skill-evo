@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto'
 import { createContentHash } from './events.js'
-import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, Experience, RuntimeObservation, ToolAttempt } from './types.js'
+import type { CorrectionEpisode, CorrectionPattern, EpisodeDraft, Experience, RuntimeObservation, ToolAttempt, PublicationScope, SkillProposal } from './types.js'
 import { latestProposalsByRoot } from './proposal.js'
 
 export const CORRECTION_RULES_VERSION = 'rule-1'
 export const CORRECTION_POLICY_VERSION = 'correction-policy-v1'
 export interface CorrectionPolicy { readonly version: string; readonly minFailures: number; readonly minSessions: number; readonly windowDays: number; readonly maxAttemptsToSuccess: number; readonly allowedScopes: readonly string[] }
 export const DEFAULT_CORRECTION_POLICY: CorrectionPolicy = { version: CORRECTION_POLICY_VERSION, minFailures: 2, minSessions: 3, windowDays: 30, maxAttemptsToSuccess: 20, allowedScopes: ['project', 'user'] }
+
+/** Pattern publication is intentionally limited to policy-approved scopes. */
+export function isPatternScopeAllowed(proposal: Pick<SkillProposal, 'operation' | 'source'>, scope: PublicationScope, policy: CorrectionPolicy = DEFAULT_CORRECTION_POLICY): boolean {
+  if (proposal.operation !== 'create-skill' && proposal.source?.environmental !== true) return true
+  return policy.allowedScopes.includes(scope)
+}
 
 export function correlateToolAttempts(events: readonly RuntimeObservation[]): ToolAttempt[] {
   const calls = new Map<string, RuntimeObservation>()

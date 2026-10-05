@@ -19,7 +19,7 @@ import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEnt
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier, CorrectionClassificationMemoEntry, CorrectionEpisode, CorrectionPattern, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
-import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft, assessPattern, DEFAULT_CORRECTION_POLICY } from './correction.js'
+import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft, assessPattern, DEFAULT_CORRECTION_POLICY, isPatternScopeAllowed } from './correction.js'
 import { readPublication } from './publication.js'
 import { createPatternProposal, patternDesignerInput, selectPatternTarget, validateEnvironmentNeutralCandidate } from './pattern-design.js'
 import type { PatternDesignerInput } from './workflow.js'
@@ -389,8 +389,8 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
-    if (scope === 'stable' && (proposal.operation === 'create-skill' || (proposal.source?.kind === 'pattern' && proposal.source.environmental === true))) {
-      throw new OperationError('scope-not-allowed', `stable scope is not allowed for ${proposal.operation === 'create-skill' ? 'create-skill' : 'environmental pattern'} proposals`)
+    if (!isPatternScopeAllowed(proposal, scope)) {
+      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
     }
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)

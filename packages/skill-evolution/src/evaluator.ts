@@ -54,11 +54,8 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   const validation = validateSkillDocument(input.candidateContent, input.expectedSkillName)
   const baseValidation = validateSkillDocument(input.baseContent, input.expectedSkillName)
   const changeValidation = validateSkillCandidate(input.baseContent, input.candidateContent, input.expectedSkillName)
-  // A create-skill proposal has no Base document.  The empty baseline is a
-  // deliberate exposure that still runs through the real runner; there is no
-  // invocation policy to compare until the candidate exists.
   const absentBase = input.baseContent.length === 0
-  const invocationPolicyUnchanged = absentBase || sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
+  const invocationPolicyUnchanged = sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
   const runner = input.runner ?? runContentChecks
   const runs = normalizedPolicy.sampling.runs; const createdAt = new Date().toISOString()
   const samples: EvaluationSample[] = []
