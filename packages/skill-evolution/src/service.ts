@@ -21,6 +21,8 @@ import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier,
 import { OperationError } from './errors.js'
 import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft } from './correction.js'
 import { readPublication } from './publication.js'
+import { createPatternProposal, patternDesignerInput, selectPatternTarget, validateEnvironmentNeutralCandidate } from './pattern-design.js'
+import type { PatternDesignerInput } from './workflow.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -257,6 +259,28 @@ export class EvolutionService {
     const workflow = new EvolutionWorkflow({ memo, classifierVersion: this.followUpClassifier?.version })
     workflow.add(await this.observations.readAll())
     const proposal = await workflow.propose(clusterId, designer)
+    return this.stageProposal(proposal)
+  }
+
+  /** Design a proposal from an aggregated correction pattern using bounded input. */
+  async proposePattern(patternId: string, designer: (input: PatternDesignerInput) => string | Promise<string>, options: { readonly skillName?: string; readonly proposedVersion: string } ): Promise<SkillProposal> {
+    await this.refreshDerived()
+    const pattern = (await this.patterns.readAll()).find(item => item.id === patternId)
+    if (pattern === undefined) throw new OperationError('not-found', `unknown correction pattern "${patternId}"`)
+    const events = await this.observations.readAll()
+    const evidence = (await this.episodes.readAll()).filter(item => pattern.occurrences.some(occurrence => occurrence.episodeId === item.id)).flatMap(item => [...item.failureObservationIds, ...item.correctionObservationIds, item.successObservationId]).slice(0, 64)
+    const loaded = new Map<string, number>()
+    for (const event of events) if (event.kind === 'skill-loaded' && event.skill?.name !== undefined) loaded.set(event.skill.name, (loaded.get(event.skill.name) ?? 0) + 1)
+    const promoted = (await this.proposals.readAll()).filter(item => item.status === 'promoted' && item.source?.patternId === patternId).at(-1)?.skillName
+    const selection = selectPatternTarget({ explicitSkill: options.skillName, promotedTarget: promoted, loadedSkills: loaded })
+    if (selection.reason === 'ambiguous') throw new OperationError('ambiguous', `ambiguous pattern target: ${selection.candidates?.join(', ')}`)
+    const input = patternDesignerInput(pattern, evidence)
+    const candidate = await designer(input)
+    const observedMachineValues = events.flatMap(event => collectMachineValues(event.payload)).slice(0, 128)
+    const validation = validateEnvironmentNeutralCandidate(candidate, observedMachineValues)
+    if (!validation.valid) throw new OperationError('invalid-option', validation.errors.join('; '))
+    const base = selection.target === undefined ? undefined : await this.versions.readCurrent(selection.target)
+    const proposal = createPatternProposal({ pattern, skillName: selection.target, proposedVersion: options.proposedVersion, candidateContent: candidate, ...(base === undefined ? {} : { baseVersion: base.manifest.version, baseContent: base.content }), evidenceEventIds: evidence })
     return this.stageProposal(proposal)
   }
 
@@ -542,6 +566,13 @@ export class EvolutionService {
     await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey, correctionRejectedDrafts: rejectedDrafts, correctionClassifierFailures: this.correctionClassifierFailures })
     return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
+}
+
+function collectMachineValues(value: unknown, key = ''): string[] {
+  if (typeof value === 'string') return /proxy|host|user|pass|address|ip/iu.test(key) ? [value] : []
+  if (Array.isArray(value)) return value.flatMap(item => collectMachineValues(item, key))
+  if (value !== null && typeof value === 'object') return Object.entries(value).flatMap(([name, item]) => collectMachineValues(item, name))
+  return []
 }
 
 

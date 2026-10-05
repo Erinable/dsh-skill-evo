@@ -2,13 +2,27 @@ import { buildExperiences, buildFailureCases, clusterFailureCases, diagnoseFailu
 import { resolveFollowUps } from './follow-up.js'
 import type { ClassificationMemoEntry } from './types.js'
 import { createProposal, type ProposalInput } from './proposal.js'
-import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience, CorrectionEpisode, CorrectionPattern } from './types.js'
+import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience, CorrectionEpisode, CorrectionPattern, ProposalSource } from './types.js'
 
 export interface DesignerInput {
-  readonly diagnosis: SkillDiagnosis
-  readonly cluster: FailureCluster
+  readonly source: 'cluster' | 'pattern'
+  readonly diagnosis?: SkillDiagnosis
+  readonly cluster?: FailureCluster
+  readonly pattern?: PatternDesignerInput
   readonly cases: readonly SkillFailureCase[]
   readonly experiences: readonly Experience[]
+}
+
+/** Bounded, redacted information exposed to a Designer for pattern proposals. */
+export interface PatternDesignerInput {
+  readonly id: string
+  readonly signatureKey: string
+  readonly intent: string
+  readonly errorSignature: string
+  readonly correction: readonly string[]
+  readonly environmental: boolean
+  readonly retryOnly: boolean
+  readonly episodes: readonly { readonly id: string; readonly sessionId: string; readonly occurredAt: string; readonly evidenceEventIds: readonly string[] }[]
 }
 
 export type Designer = (input: DesignerInput) => Omit<ProposalInput, 'intent' | 'addressedExperienceIds'> | Promise<Omit<ProposalInput, 'intent' | 'addressedExperienceIds'>>
@@ -52,6 +66,7 @@ export class EvolutionWorkflow {
     const diagnosis = snapshot.diagnoses.find(item => item.clusterId === clusterId)
     if (diagnosis === undefined) throw new Error(`missing diagnosis for cluster "${clusterId}"`)
     const input = await designer({
+      source: 'cluster',
       diagnosis,
       cluster,
       cases: snapshot.failures.filter(item => cluster.caseIds.includes(item.id)),
@@ -66,6 +81,7 @@ export class EvolutionWorkflow {
         .flatMap(item => item.evidenceEventIds),
       intent: diagnosis.hypothesis,
       addressedExperienceIds: diagnosis.supportingExperienceIds,
+      source: { kind: 'cluster', evidenceEventIds: snapshot.failures.filter(item => cluster.caseIds.includes(item.id)).flatMap(item => item.evidenceEventIds) },
     })
   }
 }
