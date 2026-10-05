@@ -194,6 +194,7 @@ export interface SkillProposal {
 
 export interface ProposalSource {
   readonly kind: 'pattern' | 'cluster'
+  readonly environmental?: boolean
   readonly patternId?: string
   readonly signatureKey?: string
   readonly episodeIds?: readonly string[]

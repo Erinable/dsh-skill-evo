@@ -327,17 +327,19 @@ export class EvolutionService {
       : proposal
     const proposalId = proposalRootId(proposal.id)
     const current = await this.versions.readCurrent(proposal.skillName)
-    if (current === undefined) throw new Error(`cannot evaluate without a current Skill: ${proposal.skillName}`)
-    if (current.manifest.contentHash !== proposal.expectedBase.contentHash) throw new Error(`proposal ${proposal.id} base no longer matches the current Skill`)
+    const absentBase = proposal.expectedBase.contentHash === 'absent'
+    if (current === undefined && !absentBase) throw new Error(`cannot evaluate without a current Skill: ${proposal.skillName}`)
+    if (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash) throw new Error(`proposal ${proposal.id} base no longer matches the current Skill`)
     if (this.options.evaluationPolicy !== undefined) validateEvaluationPolicy(this.options.evaluationPolicy)
     const input: EvaluateCandidateInput = {
       candidateId: proposalId,
-      baseContent: current.content,
+      baseContent: current?.content ?? '',
       candidateContent: proposal.candidateContent,
       cases,
       runner,
       expectedSkillName: proposal.skillName,
       policy: this.options.evaluationPolicy,
+      ...(absentBase ? { baseContentHash: 'absent' } : {}),
     }
     validateEvaluationCases(cases)
     const result = await evaluateCandidate(input)
@@ -372,6 +374,11 @@ export class EvolutionService {
   }
 
   async acceptProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
+    if (proposal.source?.kind === 'pattern') {
+      const artifact = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (artifact === undefined) throw new OperationError('evaluation-missing', `pattern proposal ${proposal.id} requires an evaluation artifact before acceptance`)
+      if (!artifact.passedGate || !artifact.result.passedGate) throw new OperationError('gate-failed', `pattern proposal ${proposal.id} failed the evaluation gate`)
+    }
     return (await this.ledger.transition(proposal, 'accepted', { reason, action: 'accepted', evidenceIds })).record
   }
 
@@ -382,6 +389,9 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
+    if (scope === 'stable' && (proposal.operation === 'create-skill' || (proposal.source?.kind === 'pattern' && proposal.source.environmental === true))) {
+      throw new OperationError('scope-not-allowed', `stable scope is not allowed for ${proposal.operation === 'create-skill' ? 'create-skill' : 'environmental pattern'} proposals`)
+    }
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)
     if (latest?.status === 'promoted') {

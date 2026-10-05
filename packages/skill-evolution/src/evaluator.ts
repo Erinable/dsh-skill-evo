@@ -42,6 +42,8 @@ export interface EvaluateCandidateInput {
   readonly expectedSkillName?: string
   readonly now?: () => number
   readonly policy?: EvaluationPolicyInput
+  /** Persisted sentinel for create-skill proposals whose Base is absent. */
+  readonly baseContentHash?: string
 }
 
 /** Evaluate a candidate against original, historical, and boundary evidence. */
@@ -52,7 +54,11 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   const validation = validateSkillDocument(input.candidateContent, input.expectedSkillName)
   const baseValidation = validateSkillDocument(input.baseContent, input.expectedSkillName)
   const changeValidation = validateSkillCandidate(input.baseContent, input.candidateContent, input.expectedSkillName)
-  const invocationPolicyUnchanged = sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
+  // A create-skill proposal has no Base document.  The empty baseline is a
+  // deliberate exposure that still runs through the real runner; there is no
+  // invocation policy to compare until the candidate exists.
+  const absentBase = input.baseContent.length === 0
+  const invocationPolicyUnchanged = absentBase || sameInvocationPolicy(baseValidation.invocationPolicy, validation.invocationPolicy)
   const runner = input.runner ?? runContentChecks
   const runs = normalizedPolicy.sampling.runs; const createdAt = new Date().toISOString()
   const samples: EvaluationSample[] = []
@@ -61,7 +67,9 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   let securityViolations = 0; let candidateSideEffects = 0; let baselineSideEffects = 0; let positiveFeedback = false
   for (let sample = 0; sample < runs; sample++) for (const evaluationCase of input.cases) {
     const entry = raw.get(evaluationCase.id) ?? { base: [], candidate: [] }
-    const call = async (exposure: 'base' | 'candidate', content: string, valid: boolean) => valid ? runner(content, evaluationCase, { exposure, sample }) : { passed: false, status: 'unknown' as const, reason: `${exposure} Skill document is invalid` }
+    const call = async (exposure: 'base' | 'candidate', content: string, valid: boolean) => (valid || (exposure === 'base' && absentBase))
+      ? runner(content, evaluationCase, { exposure, sample })
+      : { passed: false, status: 'unknown' as const, reason: `${exposure} Skill document is invalid` }
     const baselineRun = await call('base', input.baseContent, baseValidation.valid); entry.base.push(baselineRun)
     const candidateStarted = Date.now()
     const candidateRun = await call('candidate', input.candidateContent, validation.valid); entry.candidate.push(candidateRun)
@@ -102,7 +110,7 @@ export async function evaluateCandidate(input: EvaluateCandidateInput): Promise<
   if (candidateBoundaryFailures > baseBoundaryFailures) gateReasons.push('new high-severity boundary failure')
   if (categories['original-failure'].total === 0) gateReasons.push('no original-failure cases')
   const total = results.length; const passed = results.filter(result => result.passed).length; const unknown = results.filter(result => result.status === 'unknown').length; const hardReject = securityViolations > normalizedPolicy.maxSecurityViolations || regressions.length > normalizedPolicy.maxRegressionCount
-  return { candidateId: input.candidateId, total, passed, failed: total - passed - unknown, unknown, categories, baseline, regressions, gateReasons, caseResults: results, durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started), schemaValid: validation.valid, invocationPolicyUnchanged, passedGate: gateReasons.length === 0, decision: gateReasons.length === 0 ? 'passed' : (hardReject ? 'rejected' : 'needs-review'), policyVersion: normalizedPolicy.version, ...(normalizedPolicy.schema === 2 ? { schemaVersion: 2 as const, policy: normalizedPolicy, policyHash: normalizedPolicyHash(normalizedPolicy), statisticId: 'stratified-permutation-v1' } : {}), baseContentHash: createContentHash(input.baseContent), candidateContentHash: createContentHash(input.candidateContent), caseIds: input.cases.map(item => item.id), createdAt, cost, samples }
+  return { candidateId: input.candidateId, total, passed, failed: total - passed - unknown, unknown, categories, baseline, regressions, gateReasons, caseResults: results, durationMs: Math.max(0, (input.now?.() ?? Date.now()) - started), schemaValid: validation.valid, invocationPolicyUnchanged, passedGate: gateReasons.length === 0, decision: gateReasons.length === 0 ? 'passed' : (hardReject ? 'rejected' : 'needs-review'), policyVersion: normalizedPolicy.version, ...(normalizedPolicy.schema === 2 ? { schemaVersion: 2 as const, policy: normalizedPolicy, policyHash: normalizedPolicyHash(normalizedPolicy), statisticId: 'stratified-permutation-v1' } : {}), baseContentHash: input.baseContentHash ?? createContentHash(input.baseContent), candidateContentHash: createContentHash(input.candidateContent), caseIds: input.cases.map(item => item.id), createdAt, cost, samples }
 }
 
 function foldSamples(values: readonly CaseRunResult[]): { passed: boolean; status: 'passed' | 'failed' | 'unknown'; reason: string; evidence: readonly string[] } {

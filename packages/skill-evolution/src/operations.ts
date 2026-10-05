@@ -220,7 +220,7 @@ export async function evaluateProposal(service: EvolutionService, options: Evalu
   else if (proposal.status === 'evaluating') assertTransition(proposal, 'evaluated')
   else throw new OperationError('invalid-transition', `proposal ${proposal.id} cannot be evaluated from ${proposal.status}`)
   const current = await service.versions.readCurrent(proposal.skillName)
-  if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash) {
+  if ((current === undefined && proposal.expectedBase.contentHash !== 'absent') || (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash)) {
     throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
   }
   const cases = options.cases ?? await readJson<SkillEvaluationCase[]>(options.casesFile, 'evaluation cases')
@@ -256,6 +256,9 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
 export async function promoteProposal(service: EvolutionService, options: PromoteProposalOptions): Promise<PromoteResult> {
   const scope = assertScope(options.scope)
   const proposal = await resolveProposal(service, options.proposalRef)
+  if (scope === 'stable' && (proposal.operation === 'create-skill' || (proposal.source?.kind === 'pattern' && proposal.source.environmental === true))) {
+    throw new OperationError('scope-not-allowed', `stable scope is not allowed for ${proposal.operation === 'create-skill' ? 'create-skill' : 'environmental pattern'} proposals`)
+  }
   if (proposal.status !== 'accepted' && !(await service.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
   const artifact = options.evaluationPath === undefined
     ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)
