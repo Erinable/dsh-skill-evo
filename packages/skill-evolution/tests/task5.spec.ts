@@ -6,6 +6,7 @@ import { evaluateCandidate } from '../src/evaluator.js'
 import { EvolutionService } from '../src/service.js'
 import { createProposal } from '../src/proposal.js'
 import { isPatternScopeAllowed } from '../src/correction.js'
+import { promoteProposal } from '../src/operations.js'
 
 const baseCases = [
   { id: 'failure', category: 'original-failure' as const, task: 'recover' },
@@ -52,6 +53,35 @@ describe('Task 5 safety contracts', () => {
       expect(isPatternScopeAllowed(proposal, 'project')).toBe(true)
       expect(isPatternScopeAllowed(proposal, 'user')).toBe(true)
     }
+  })
+
+  it('rejects create-skill scopes through promoteProposal without writes, then permits project after accept', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'task5-scope-'))
+    const service = new EvolutionService({ root })
+    const proposal = createProposal({ id: 'scope-create', skillName: 'generated', baseVersion: 'absent', expectedBase: { name: 'generated', contentHash: 'absent' }, proposedVersion: '1.0.0', candidateContent: skill, intent: 'create', operation: 'create-skill', source: { kind: 'pattern', patternId: 'pattern:x' } })
+    const proposed = await service.stageProposal(proposal)
+    const evaluated = await service.evaluate(proposed, baseCases, async (_content, _item, context) => ({ passed: context!.exposure === 'candidate' }))
+    const evaluatedRecord = (await service.proposals.readAll()).at(-1)!
+    await expect(promoteProposal(service, { proposalRef: evaluatedRecord.id, evaluation: evaluated, scope: 'project', dryRun: true })).rejects.toMatchObject({ code: 'invalid-transition' })
+    const accepted = await service.acceptProposal(evaluatedRecord, 'human review')
+    const before = { proposals: (await service.proposals.readAll()).length, decisions: (await service.decisions.readAll()).length, current: await service.versions.readCurrent('generated') }
+    for (const scope of ['stable', 'explicit-only'] as const) for (const dryRun of [true, false]) {
+      await expect(promoteProposal(service, { proposalRef: accepted.id, evaluation: evaluated, scope, dryRun })).rejects.toMatchObject({ code: 'scope-not-allowed' })
+      expect({ proposals: (await service.proposals.readAll()).length, decisions: (await service.decisions.readAll()).length, current: await service.versions.readCurrent('generated') }).toEqual(before)
+    }
+    await expect(promoteProposal(service, { proposalRef: accepted.id, evaluation: evaluated, scope: 'project', dryRun: true })).resolves.toMatchObject({ dryRun: true })
+    await expect(promoteProposal(service, { proposalRef: accepted.id, evaluation: evaluated, scope: 'project' })).resolves.toMatchObject({ promoted: true, scope: 'project' })
+  })
+
+  it('hits the service-level environmental scope guard', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'task5-environmental-'))
+    await mkdir(join(root, 'generated'), { recursive: true }); await writeFile(join(root, 'generated', 'SKILL.md'), skill)
+    const service = new EvolutionService({ root })
+    const proposal = createProposal({ id: 'scope-environmental', skillName: 'generated', baseVersion: 'unversioned', baseContent: skill, proposedVersion: '1.0.0', candidateContent: skill.replace('procedure', 'changed'), intent: 'patch', operation: 'patch-content', source: { kind: 'pattern', patternId: 'pattern:x', environmental: true } })
+    const proposed = await service.stageProposal(proposal)
+    const evaluated = await service.evaluate(proposed, [{ id: 'failure', category: 'original-failure', task: 'recover' }], async (_content, _item, context) => ({ passed: context!.exposure === 'candidate' }))
+    const accepted = await service.acceptProposal((await service.proposals.readAll()).at(-1)!, 'human review')
+    await expect(service.promote(accepted, evaluated, 'stable')).rejects.toMatchObject({ code: 'scope-not-allowed' })
   })
 
   it('keeps recognizer and designer modules independent of lifecycle mutation modules', async () => {
