@@ -253,9 +253,13 @@ async function executeMaintenanceCommand(invocation, config) {
     const service = new EvolutionService({ root, store: storePath, ...(config.invalidate === undefined ? {} : { invalidate: config.invalidate }) })
     if (action === 'observe') {
       const snapshot = await service.refreshDerived()
-      return { kind: 'success', text: JSON.stringify({ observations: (await service.observations.readAll()).length, experiences: snapshot.experiences.length, failures: snapshot.failures.length, clusters: snapshot.clusters.length }, null, 2) }
+      return { kind: 'success', text: JSON.stringify({ observations: (await service.observations.readAll()).length, experiences: snapshot.experiences.length, failures: snapshot.failures.length, clusters: snapshot.clusters.length, episodes: snapshot.episodes?.length ?? 0, patterns: snapshot.patterns?.length ?? 0 }, null, 2) }
     }
-    if (action === 'failures') return { kind: 'success', text: renderFailuresMarkdown(await service.listFailures()) }
+    if (action === 'failures') {
+      const snapshot = await service.refreshDerived()
+      const metrics = await service.metrics()
+      return { kind: 'success', text: renderFailuresMarkdown(snapshot.failures, { patterns: snapshot.patterns, episodes: snapshot.episodes?.length, proposals: await service.proposals.readAll(), recognizerVersion: metrics.corrections?.recognizer.version, classifierFailures: metrics.corrections?.classifierFailures }) }
+    }
     if (action === 'metrics') return { kind: 'success', text: JSON.stringify(await service.metrics(), null, 2) }
     if (action === 'health') return { kind: 'success', text: JSON.stringify(await service.healthReport(), null, 2) }
     if (action === 'repair') return { kind: 'success', text: JSON.stringify(await service.repair(), null, 2) }

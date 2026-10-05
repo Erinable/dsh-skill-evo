@@ -133,6 +133,8 @@ describe('EvolutionLayout', () => {
       { name: 'clusters', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'clusters.jsonl') },
       { name: 'diagnoses', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'diagnoses.jsonl') },
       { name: 'skill-windows', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'skill-windows.jsonl') },
+      { name: 'episodes', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'episodes.jsonl') },
+      { name: 'patterns', role: 'derived', projectionInput: false, path: join(root, '.skill-evolution', 'patterns.jsonl') },
     ])
   })
 
@@ -154,6 +156,8 @@ describe('EvolutionLayout', () => {
       join(root, '.skill-evolution', 'clusters.jsonl'),
       join(root, '.skill-evolution', 'diagnoses.jsonl'),
       join(root, '.skill-evolution', 'skill-windows.jsonl'),
+      join(root, '.skill-evolution', 'episodes.jsonl'),
+      join(root, '.skill-evolution', 'patterns.jsonl'),
     ])
   })
 })

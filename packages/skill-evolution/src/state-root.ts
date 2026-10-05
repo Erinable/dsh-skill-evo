@@ -9,7 +9,7 @@ import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
 export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows'
+export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows' | 'episodes' | 'patterns'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -23,6 +23,8 @@ export interface ProjectionCursor {
   readonly lastId?: string
   readonly fingerprint: string
   readonly derivationKey?: string
+  readonly correctionRejectedDrafts?: number
+  readonly correctionClassifierFailures?: number
 }
 
 export interface EvolutionLayout {
@@ -65,6 +67,8 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
     ['skill-windows', 'derived', false, join(stateDir, 'skill-windows.jsonl')],
+    ['episodes', 'derived', false, join(stateDir, 'episodes.jsonl')],
+    ['patterns', 'derived', false, join(stateDir, 'patterns.jsonl')],
   ]
   const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
   return {
@@ -88,13 +92,15 @@ export function resolveLayout(options: { readonly root: string; readonly observa
 
 export async function readCursor(path: string): Promise<ProjectionCursor | undefined> {
   try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown; derivationKey?: unknown }
+    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown; derivationKey?: unknown; correctionRejectedDrafts?: unknown; correctionClassifierFailures?: unknown }
     if (typeof value.count !== 'number' || !Number.isFinite(value.count) || typeof value.fingerprint !== 'string') return undefined
     return {
       count: value.count,
       ...(typeof value.lastId === 'string' ? { lastId: value.lastId } : {}),
       fingerprint: value.fingerprint,
       ...(typeof value.derivationKey === 'string' ? { derivationKey: value.derivationKey } : {}),
+      ...(typeof value.correctionRejectedDrafts === 'number' ? { correctionRejectedDrafts: value.correctionRejectedDrafts } : {}),
+      ...(typeof value.correctionClassifierFailures === 'number' ? { correctionClassifierFailures: value.correctionClassifierFailures } : {}),
     }
   } catch {
     return undefined

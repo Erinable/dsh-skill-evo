@@ -1,4 +1,5 @@
-import type { DecisionRecord, RuntimeObservation, SkillProposal, FollowUpResolution } from './types.js'
+import type { DecisionRecord, RuntimeObservation, SkillProposal, FollowUpResolution, CorrectionEpisode, CorrectionPattern } from './types.js'
+import { assessPattern, DEFAULT_CORRECTION_POLICY, type CorrectionPolicy } from './correction.js'
 import { latestProposalsByRoot, proposalRootId } from './proposal.js'
 import { measureSkillContext } from './evaluation-cost.js'
 
@@ -35,6 +36,7 @@ export interface EvolutionMetrics {
   readonly contextCost: number
   readonly skillContext: SkillContextMetric & { readonly estimator: 'utf8-bytes-div4-v1' }
   readonly followUpIntents: Readonly<Record<'explicit' | 'classifier' | 'rule', { readonly total: number; readonly failures: number; readonly byIntent: Readonly<Record<string, number>> }>>
+  readonly corrections?: { readonly classifierFailures: number; readonly rejectedDrafts: number; readonly policy: Pick<CorrectionPolicy, 'version' | 'minFailures' | 'minSessions' | 'windowDays'>; readonly recognizer: { readonly version: string; readonly fallbacks: number }; readonly episodes: number; readonly patterns: number; readonly candidates: number; readonly assessments: readonly { readonly patternId: string; readonly since: string; readonly windowSessionCount: number; readonly candidate: boolean; readonly candidateReason?: string; readonly target: string }[] }
 }
 
 /** Aggregate exportable operational metrics without assigning causal credit. */
@@ -44,6 +46,7 @@ export function aggregateMetrics(
   decisions: readonly DecisionRecord[] = [],
   resolutions: readonly FollowUpResolution[] = [],
   currentSkills: readonly CurrentSkillContent[] = [],
+  correction?: { readonly episodes: readonly CorrectionEpisode[]; readonly patterns: readonly CorrectionPattern[]; readonly proposals?: readonly SkillProposal[]; readonly policy?: CorrectionPolicy; readonly now?: string; readonly classifierFailures?: number; readonly rejectedDrafts?: number },
 ): EvolutionMetrics {
   const bySkill = new Map<string, { exposed: Set<string>; requested: Set<string>; succeeded: Set<string>; failed: Set<string>; followUps: Set<string>; resolutions: FollowUpResolution[] }>()
   const sessions = new Set<string>()
@@ -117,6 +120,24 @@ export function aggregateMetrics(
     contextCost,
     skillContext,
     followUpIntents: intentMetrics(resolutions),
+    corrections: correction === undefined ? undefined : correctionMetrics(correction),
+  }
+}
+
+function correctionMetrics(correction: NonNullable<Parameters<typeof aggregateMetrics>[5]>): NonNullable<EvolutionMetrics['corrections']> {
+  const policy = correction.policy ?? DEFAULT_CORRECTION_POLICY
+  const now = correction.now ?? new Date().toISOString()
+  const assessed = correction.patterns.map(pattern => ({ pattern, result: assessPattern({ pattern, policy, now, proposals: correction.proposals }) }))
+  const versions = new Set(correction.episodes.map(episode => episode.recognizerVersion))
+  return {
+    classifierFailures: correction.classifierFailures ?? 0,
+    rejectedDrafts: correction.rejectedDrafts ?? 0,
+    policy: { version: policy.version, minFailures: policy.minFailures, minSessions: policy.minSessions, windowDays: policy.windowDays },
+    recognizer: { version: versions.size === 0 ? 'none' : versions.size === 1 ? [...versions][0]! : 'mixed', fallbacks: correction.episodes.filter(episode => episode.fallbackReason === 'not-classified').length },
+    episodes: correction.episodes.length,
+    patterns: correction.patterns.length,
+    candidates: assessed.filter(item => item.result.candidate).length,
+    assessments: assessed.map(({ pattern, result }) => ({ patternId: pattern.id, since: result.since, windowSessionCount: result.windowSessionCount, candidate: result.candidate, ...(result.candidateReason === undefined ? {} : { candidateReason: result.candidateReason }), target: result.promotedSkill ?? 'undecided' })),
   }
 }
 
