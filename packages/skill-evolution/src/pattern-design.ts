@@ -66,11 +66,15 @@ export interface PatternProposalInput {
   readonly episodeIds?: readonly string[]
   readonly generatedBy?: 'designer' | 'human'
   readonly now?: string
+  readonly targetReason?: PatternTargetSelection['reason']
+  readonly targetCandidates?: readonly string[]
 }
 
 /** Construct pattern metadata without exposing the full observation stream to a Designer. */
 export function createPatternProposal(input: PatternProposalInput): SkillProposal {
-  const target = input.skillName ?? `pattern-${input.pattern.id.replace(/^pattern:/u, '')}`
+  const seed = `${input.pattern.intent}-${input.pattern.signatureKey}-${input.pattern.id}`
+  const slug = seed.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 48) || 'generated'
+  const target = input.skillName ?? `pattern-${slug}`
   const createSkill = input.baseContent === undefined
   const proposalInput: ProposalInput = {
     skillName: target,
@@ -81,20 +85,22 @@ export function createPatternProposal(input: PatternProposalInput): SkillProposa
     candidateContent: redactSensitiveText(input.candidateContent),
     intent: input.pattern.intent,
     generatedBy: input.generatedBy ?? 'designer',
-    operation: createSkill ? 'create-skill' : (input.pattern.environmental ? 'patch-content' : 'patch-content'),
+    operation: createSkill ? 'create-skill' : 'patch-content',
     source: {
       kind: 'pattern',
       patternId: input.pattern.id,
       signatureKey: input.pattern.signatureKey,
       episodeIds: [...input.episodeIds ?? input.pattern.occurrences.map(item => item.episodeId)],
       evidenceEventIds: [...input.evidenceEventIds ?? []],
+      ...(input.targetReason === undefined ? {} : { targetReason: input.targetReason }),
+      ...(input.targetCandidates === undefined ? {} : { targetCandidates: [...input.targetCandidates] }),
     },
     now: input.now,
   }
   return createProposal(proposalInput)
 }
 
-export function patternDesignerInput(pattern: CorrectionPattern, evidenceEventIds: readonly string[] = []): PatternDesignerInput {
+export function patternDesignerInput(pattern: CorrectionPattern, evidenceByEpisode: ReadonlyMap<string, readonly string[]> = new Map()): PatternDesignerInput {
   return {
     id: pattern.id,
     signatureKey: pattern.signatureKey,
@@ -103,6 +109,6 @@ export function patternDesignerInput(pattern: CorrectionPattern, evidenceEventId
     correction: pattern.correction.map(item => redactSensitiveText(item).slice(0, 120)).slice(0, 16),
     environmental: pattern.environmental,
     retryOnly: pattern.retryOnly,
-    episodes: pattern.occurrences.map(item => ({ id: item.episodeId, sessionId: item.sessionId, occurredAt: item.occurredAt, evidenceEventIds: evidenceEventIds.slice(0, 32) })).slice(0, 20),
+    episodes: [...pattern.occurrences].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 20).map(item => ({ id: item.episodeId, sessionId: item.sessionId, occurredAt: item.occurredAt, evidenceEventIds: [...evidenceByEpisode.get(item.episodeId) ?? []].slice(0, 32) })),
   }
 }

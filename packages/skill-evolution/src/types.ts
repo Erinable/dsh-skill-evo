@@ -198,6 +198,8 @@ export interface ProposalSource {
   readonly signatureKey?: string
   readonly episodeIds?: readonly string[]
   readonly evidenceEventIds?: readonly string[]
+  readonly targetReason?: 'promoted' | 'explicit' | 'majority-loaded' | 'similarity' | 'create-skill' | 'ambiguous'
+  readonly targetCandidates?: readonly string[]
 }
 
 export type EvaluationCategory = 'original-failure' | 'historical-success' | 'boundary'

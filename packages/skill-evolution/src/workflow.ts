@@ -4,11 +4,14 @@ import type { ClassificationMemoEntry } from './types.js'
 import { createProposal, type ProposalInput } from './proposal.js'
 import type { FailureCluster, RuntimeObservation, SkillDiagnosis, SkillFailureCase, SkillProposal, Experience, CorrectionEpisode, CorrectionPattern, ProposalSource } from './types.js'
 
-export interface DesignerInput {
-  readonly source: 'cluster' | 'pattern'
-  readonly diagnosis?: SkillDiagnosis
-  readonly cluster?: FailureCluster
-  readonly pattern?: PatternDesignerInput
+export type DesignerInput = ({
+  readonly source: 'cluster'
+  readonly diagnosis: SkillDiagnosis
+  readonly cluster: FailureCluster
+} | {
+  readonly source: 'pattern'
+  readonly pattern: PatternDesignerInput
+}) & {
   readonly cases: readonly SkillFailureCase[]
   readonly experiences: readonly Experience[]
 }
