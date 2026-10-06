@@ -58,6 +58,10 @@ _Avoid_: blame
 对一条用户跟进的意图判断，例如纠正、补充约束、改目标、致谢；取值是 feedback kind 的超集，另有 `not-attributable`、`unknown`（ADR-0035）。显式反馈的 kind 优先于任何推断。
 _Avoid_: sentiment, 情绪
 
+**Failure intent**:
+被归类为失败结果的 Follow-up intent；当前包括 `incorrect`、`constraint`、`retry`、`dissatisfied`、`other`。它是意图的结果分类，不是另一种 Observation 或 Failure case。
+_Avoid_: 所有用户跟进, 所有负面措辞
+
 **Follow-up resolution**:
 一条用户跟进的意图、来源（显式、规则、分类器）和推导版本，属于 Derived record；Failure case 只从这里读意图，不再看跟进原文。
 _Avoid_: label, 标注
