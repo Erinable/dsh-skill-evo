@@ -102,6 +102,24 @@ describe('file publication journals', () => {
     await expect(completePublication(journal, { root, layout: resolveLayout({ root }), manifestFor: async () => ({ name: 'api-debugging', version: '1.0.0', contentHash: journal.to.contentHash, status: 'stable', scope: 'project', createdBy: 'human', createdAt: journal.startedAt, updatedAt: journal.startedAt }) })).rejects.toThrow()
   })
 
+  it('accepts stable scope journals during pending-publication recovery', async () => {
+    const { root, value } = await store()
+    const directory = join(root, '.skill-evolution', 'publications')
+    await (await import('node:fs/promises')).mkdir(directory, { recursive: true })
+    const journal = {
+      v: 1 as const,
+      operation: 'promote' as const,
+      skillName: 'api-debugging',
+      scope: 'stable' as const,
+      from: { version: 'unversioned', contentHash: createContentHash(base) },
+      to: { version: '1.0.0', contentHash: createContentHash(candidate) },
+      startedAt: '2026-10-03T00:00:00.000Z',
+    }
+    await writeFile(join(directory, 'api-debugging.json'), `${JSON.stringify(journal)}\n`)
+    await expect(readPublication(join(directory, 'api-debugging.json'))).resolves.toEqual(journal)
+    await expect(value.pendingPublication('api-debugging')).resolves.toEqual(journal)
+  })
+
   it('quarantines a pre-existing target manifest with the wrong hash', async () => {
     const { root, value } = await store(); const p = proposal('manifest-target'); await value.writeCandidate(p)
     const target = join(root, 'api-debugging', 'versions', '1.0.0'); await (await import('node:fs/promises')).mkdir(target, { recursive: true })

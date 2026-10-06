@@ -77,8 +77,18 @@ import {
   groupPatterns,
   recognizeCorrections,
   validateEpisodeDraft,
+  assessPattern,
+  DEFAULT_CORRECTION_POLICY,
+  isPatternScopeAllowed,
 } from './correction.js'
 import { readPublication } from './publication.js'
+import {
+  createPatternProposal,
+  patternDesignerInput,
+  selectPatternTarget,
+  validateEnvironmentNeutralCandidate,
+} from './pattern-design.js'
+import type { PatternDesignerInput } from './workflow.js'
 import {
   checkPromotion,
   defaultPolicyVersion,
@@ -593,6 +603,148 @@ export class EvolutionService {
     return this.stageProposal(proposal)
   }
 
+  /** Design a proposal from an aggregated correction pattern using bounded input. */
+  async proposePattern(
+    patternId: string,
+    designer: (input: PatternDesignerInput) => string | Promise<string>,
+    options: { readonly skillName?: string; readonly proposedVersion: string },
+  ): Promise<SkillProposal> {
+    await this.refreshDerived()
+    const pattern = (await this.patterns.readAll()).find(
+      (item) => item.id === patternId,
+    )
+    if (pattern === undefined)
+      throw new OperationError(
+        'not-found',
+        `unknown correction pattern "${patternId}"`,
+      )
+    const events = await this.observations.readAll()
+    const episodeRecords = (await this.episodes.readAll()).filter((item) =>
+      pattern.occurrences.some(
+        (occurrence) => occurrence.episodeId === item.id,
+      ),
+    )
+    const evidenceByEpisode = new Map(
+      episodeRecords.map((item) => [
+        item.id,
+        [
+          ...item.failureObservationIds,
+          ...item.correctionObservationIds,
+          item.successObservationId,
+        ] as readonly string[],
+      ]),
+    )
+    const evidence = episodeRecords
+      .flatMap((item) => evidenceByEpisode.get(item.id) ?? [])
+      .slice(0, 64)
+    const assessment = assessPattern({
+      pattern,
+      policy: DEFAULT_CORRECTION_POLICY,
+      now: new Date().toISOString(),
+      proposals: await this.proposals.readAll(),
+    })
+    if (!assessment.candidate)
+      throw new OperationError(
+        assessment.candidateReason === 'already-proposed'
+          ? 'already-proposed'
+          : 'insufficient-evidence',
+        `pattern ${patternId} is not eligible: ${assessment.candidateReason}`,
+      )
+    const loaded = new Map<string, number>()
+    for (const event of events)
+      if (event.kind === 'skill-loaded' && event.skill?.name !== undefined)
+        loaded.set(event.skill.name, (loaded.get(event.skill.name) ?? 0) + 1)
+    const promoted = (await this.proposals.readAll())
+      .filter(
+        (item) =>
+          item.status === 'promoted' && item.source?.patternId === patternId,
+      )
+      .at(-1)?.skillName
+    const managedNames = await this.managedSkillNames()
+    const skillNames = [
+      ...new Set([
+        ...managedNames,
+        ...loaded.keys(),
+        ...(await this.proposals.readAll())
+          .filter((item) => item.status === 'promoted')
+          .map((item) => item.skillName),
+      ]),
+    ]
+    const similarities = new Map<string, number>()
+    for (const skillName of skillNames) {
+      const current = await this.versions.readCurrent(skillName)
+      if (current !== undefined)
+        similarities.set(
+          skillName,
+          tokenSimilarity(
+            `${pattern.intent} ${pattern.errorSignature} ${pattern.correction.join(' ')}`,
+            skillMetadata(current.content, skillName),
+          ),
+        )
+    }
+    const selection = selectPatternTarget({
+      explicitSkill: options.skillName,
+      promotedTarget: promoted,
+      loadedSkills: loaded,
+      similarities,
+    })
+    if (selection.reason === 'ambiguous')
+      throw new OperationError(
+        'ambiguous-target',
+        `ambiguous pattern target: ${selection.candidates?.join(', ')}`,
+      )
+    const input = patternDesignerInput(pattern, evidenceByEpisode)
+    let candidate: string
+    try {
+      candidate = await designer(input)
+    } catch (error) {
+      throw new OperationError(
+        'designer-failed',
+        error instanceof Error ? error.message : String(error),
+        error,
+      )
+    }
+    const observedMachineValues = events
+      .flatMap((event) => collectMachineValues(event.payload))
+      .slice(0, 128)
+    const validation = validateEnvironmentNeutralCandidate(
+      candidate,
+      observedMachineValues,
+    )
+    if (!validation.valid)
+      throw new OperationError('invalid-option', validation.errors.join('; '))
+    const base =
+      selection.target === undefined
+        ? undefined
+        : await this.versions.readCurrent(selection.target)
+    const proposal = createPatternProposal({
+      pattern,
+      skillName: selection.target,
+      proposedVersion: options.proposedVersion,
+      candidateContent: candidate,
+      ...(base === undefined
+        ? {}
+        : { baseVersion: base.manifest.version, baseContent: base.content }),
+      evidenceEventIds: evidence,
+      targetReason: selection.reason,
+      targetCandidates: selection.candidates,
+    })
+    return this.stageProposal(proposal)
+  }
+
+  private async managedSkillNames(): Promise<readonly string[]> {
+    try {
+      return (await readdir(this.options.root, { withFileTypes: true }))
+        .filter(
+          (item) =>
+            item.isDirectory() && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(item.name),
+        )
+        .map((item) => item.name)
+    } catch {
+      return []
+    }
+  }
+
   async stageProposal(proposal: SkillProposal): Promise<SkillProposal> {
     if (proposal.status !== 'draft')
       throw new Error(
@@ -641,11 +793,12 @@ export class EvolutionService {
         : proposal
     const proposalId = proposalRootId(proposal.id)
     const current = await this.versions.readCurrent(proposal.skillName)
-    if (current === undefined)
+    const absentBase = proposal.expectedBase.contentHash === 'absent'
+    if (current === undefined && !absentBase)
       throw new Error(
         `cannot evaluate without a current Skill: ${proposal.skillName}`,
       )
-    if (current.manifest.contentHash !== proposal.expectedBase.contentHash)
+    if (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash)
       throw new Error(
         `proposal ${proposal.id} base no longer matches the current Skill`,
       )
@@ -653,12 +806,13 @@ export class EvolutionService {
       validateEvaluationPolicy(this.options.evaluationPolicy)
     const input: EvaluateCandidateInput = {
       candidateId: proposalId,
-      baseContent: current.content,
+      baseContent: current?.content ?? '',
       candidateContent: proposal.candidateContent,
       cases,
       runner,
       expectedSkillName: proposal.skillName,
       policy: this.options.evaluationPolicy,
+      ...(absentBase ? { baseContentHash: 'absent' } : {}),
     }
     validateEvaluationCases(cases)
     const result = await evaluateCandidate(input)
@@ -710,6 +864,11 @@ export class EvolutionService {
     reason: string,
     evidenceIds: readonly string[] = [],
   ): Promise<SkillProposal> {
+    if (proposal.source?.kind === 'pattern') {
+      const artifact = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (artifact === undefined) throw new OperationError('evaluation-missing', `pattern proposal ${proposal.id} requires an evaluation artifact before acceptance`)
+      if (!artifact.passedGate || !artifact.result.passedGate) throw new OperationError('gate-failed', `pattern proposal ${proposal.id} failed the evaluation gate`)
+    }
     return (
       await this.ledger.transition(proposal, 'accepted', {
         reason,
@@ -726,6 +885,11 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
+    if (!isPatternScopeAllowed(proposal, scope))
+      throw new OperationError(
+        'scope-not-allowed',
+        `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`,
+      )
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(
       rootId,
@@ -1311,6 +1475,79 @@ export class EvolutionService {
       patterns,
     }
   }
+}
+
+function collectMachineValues(value: unknown, key = ''): string[] {
+  if (typeof value === 'string') {
+    if (/command|proxy/iu.test(key)) {
+      const values: string[] = []
+      for (const match of value.matchAll(
+        /(?:https?|socks5?):\/\/([^\s]+)/giu,
+      )) {
+        try {
+          const url = new URL(match[0]!)
+          for (const item of [
+            url.hostname,
+            url.host,
+            url.username,
+            url.password,
+          ])
+            if (item.length > 0) values.push(item)
+        } catch {
+          /* malformed URLs are not machine facts */
+        }
+      }
+      for (const match of value.matchAll(
+        /(?:proxy|http|https)[_ -]?(?:host|url)?=([^\s]+)/giu,
+      )) {
+        const raw = match[1]!
+        try {
+          const url = new URL(raw.includes('://') ? raw : `http://${raw}`)
+          for (const item of [
+            url.hostname,
+            url.host,
+            url.username,
+            url.password,
+          ])
+            if (item.length > 0) values.push(item)
+        } catch {
+          values.push(raw)
+        }
+      }
+      return values
+    }
+    return /^(?:proxy(?:[-_].*)?|host|ip|address|username|password|user|pass)$/iu.test(
+      key,
+    )
+      ? [value]
+      : []
+  }
+  if (Array.isArray(value))
+    return value.flatMap((item) => collectMachineValues(item, key))
+  if (value !== null && typeof value === 'object')
+    return Object.entries(value).flatMap(([name, item]) =>
+      collectMachineValues(item, name),
+    )
+  return []
+}
+
+function tokenSimilarity(left: string, right: string): number {
+  const terms = (value: string) =>
+    new Set(
+      value
+        .toLowerCase()
+        .split(/[^a-z0-9]+/u)
+        .filter((item) => item.length > 2),
+    )
+  const a = terms(left)
+  const b = terms(right)
+  const intersection = [...a].filter((item) => b.has(item)).length
+  return a.size === 0 ? 0 : intersection / a.size
+}
+
+function skillMetadata(content: string, name: string): string {
+  const description = content.match(/^description:\s*(.+)$/imu)?.[1] ?? ''
+  return `${name} ${description}`
 }
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {

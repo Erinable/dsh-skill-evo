@@ -10,6 +10,7 @@ import {
   resolveLayout,
   assertFeedbackKind,
   proposeSkillChange,
+  designPattern,
   evaluateProposal,
   reviewProposal,
   promoteProposal,
@@ -37,6 +38,7 @@ try {
     case 'health': await health(); break
     case 'feedback': await feedback(); break
     case 'propose': await propose(); break
+    case 'design': await design(); break
     case 'evaluate': await evaluate(); break
     case 'accept': await accept(); break
     case 'reject': await reject(); break
@@ -122,6 +124,21 @@ async function propose() {
   console.log(JSON.stringify({ proposal: result.proposal, markdown: result.reportPath }, null, 2))
 }
 
+async function design() {
+  const candidateFile = required('--candidate-file')
+  const candidateContent = readFileSync(resolve(candidateFile), 'utf8')
+  const output = value('--output')
+  const skillName = value('--skill')
+  const result = await designPattern(service, {
+    patternId: required('--pattern'),
+    proposedVersion: required('--proposed-version'),
+    ...(skillName === undefined ? {} : { skillName }),
+    ...(output === undefined ? {} : { reportPath: resolve(output) }),
+    designer: async () => candidateContent,
+  })
+  console.log(JSON.stringify({ proposal: result.proposal, markdown: result.reportPath }, null, 2))
+}
+
 async function evaluate() {
   const output = value('--output')
   const report = value('--report')
@@ -201,7 +218,8 @@ async function rotate() {
 }
 
 function usage(code) {
-  const message = `Usage: dsh-skill-evolution <version|observe|failures|metrics|health|feedback|propose|evaluate|accept|reject|defer|promote|rollback|repair|worker|rotate> [options]\n\nExamples:\n  dsh-skill-evolution observe --root .\n  dsh-skill-evolution failures --format markdown\n  dsh-skill-evolution metrics --root .\n  dsh-skill-evolution health --root .\n  dsh-skill-evolution feedback --session SESSION --kind incorrect --skill api-debugging --note "..."\n  dsh-skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "..."\n  dsh-skill-evolution evaluate --proposal proposal-id --cases cases.json --output evaluation.json\n  dsh-skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"\n  dsh-skill-evolution reject --proposal proposal-id --reason "Unsafe change"\n  dsh-skill-evolution defer --proposal proposal-id --reason "Need more evidence"\n  dsh-skill-evolution promote --proposal proposal-id --evaluation evaluation.json --scope project\n  dsh-skill-evolution rollback --skill api-debugging --version 1.0.0\n  dsh-skill-evolution repair --root .\n  dsh-skill-evolution worker --root . --watch --interval-ms 60000\n  dsh-skill-evolution rotate --root . --max-bytes 10485760 --retention-days 30`
+  const message = `Usage: dsh-skill-evolution <version|observe|failures|metrics|health|feedback|propose|design|evaluate|accept|reject|defer|promote|rollback|repair|worker|rotate> [options]\n\nExamples:\n  dsh-skill-evolution observe --root .\n  dsh-skill-evolution failures --format markdown\n  dsh-skill-evolution metrics --root .\n  dsh-skill-evolution health --root .\n  dsh-skill-evolution feedback --session SESSION --kind incorrect --skill api-debugging --note "..."\n  dsh-skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "..."\n  dsh-skill-evolution design --pattern pattern:episode-id --candidate-file candidate.md --proposed-version 1.0.0
+  dsh-skill-evolution evaluate --proposal proposal-id --cases cases.json --output evaluation.json\n  dsh-skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"\n  dsh-skill-evolution reject --proposal proposal-id --reason "Unsafe change"\n  dsh-skill-evolution defer --proposal proposal-id --reason "Need more evidence"\n  dsh-skill-evolution promote --proposal proposal-id --evaluation evaluation.json --scope project\n  dsh-skill-evolution rollback --skill api-debugging --version 1.0.0\n  dsh-skill-evolution repair --root .\n  dsh-skill-evolution worker --root . --watch --interval-ms 60000\n  dsh-skill-evolution rotate --root . --max-bytes 10485760 --retention-days 30`
   if (code === 0) console.log(message)
   else console.error(message)
   process.exitCode = code
