@@ -1,7 +1,7 @@
 import { mkdir, readFile, unlink, writeFile, rename } from 'node:fs/promises'
 import { basename, dirname, join, parse } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { PublicationScope, SkillManifest } from './types.js'
+import { PUBLICATION_SCOPES, type PublicationScope, type SkillManifest } from './types.js'
 import type { EvolutionLayout } from './state-root.js'
 import { createContentHash } from './events.js'
 
@@ -62,7 +62,7 @@ export function isPublicationJournal(value: unknown): value is PublicationJourna
     && typeof (candidate as Record<string, unknown>).version === 'string'
     && typeof (candidate as Record<string, unknown>).contentHash === 'string'
   const skillName = typeof item.skillName === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.skillName)
-  const scope = item.scope === 'project' || item.scope === 'user' || item.scope === 'explicit-only'
+  const scope = typeof item.scope === 'string' && (PUBLICATION_SCOPES as readonly string[]).includes(item.scope)
   const version = (candidate: unknown) => endpoint(candidate) && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test((candidate as { version: string }).version)
   return item.v === 1 && (item.operation === 'promote' || item.operation === 'rollback')
     && skillName && scope && version(item.from) && version(item.to) && typeof item.startedAt === 'string'

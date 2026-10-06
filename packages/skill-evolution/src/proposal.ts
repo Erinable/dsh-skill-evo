@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createContentHash } from './events.js'
-import type { AdoptionBase, FailureCluster, SkillProposal, SkillDiagnosis, ProposalStatus, ProposalSurface } from './types.js'
+import type { AdoptionBase, FailureCluster, SkillProposal, SkillDiagnosis, ProposalStatus, ProposalSurface, ProposalOperation, ProposalSource } from './types.js'
 
 export interface ProposalInput {
   readonly id?: string
@@ -9,7 +9,8 @@ export interface ProposalInput {
   readonly clusterId?: string
   readonly evidenceEventIds?: readonly string[]
   readonly baseVersion: string
-  readonly baseContent: string
+  readonly baseContent?: string
+  readonly expectedBase?: AdoptionBase
   readonly proposedVersion: string
   readonly candidateContent: string
   readonly intent: string
@@ -18,6 +19,8 @@ export interface ProposalInput {
   readonly knownRisks?: readonly string[]
   readonly comparisonCaseIds?: readonly string[]
   readonly generatedBy?: 'designer' | 'human'
+  readonly operation?: ProposalOperation
+  readonly source?: ProposalSource
   readonly now?: string
 }
 
@@ -147,9 +150,10 @@ export function findProposalById(proposals: readonly SkillProposal[], id: string
 /** Build a reviewable candidate without touching the production Skill file. */
 export function createProposal(input: ProposalInput): SkillProposal {
   const now = input.now ?? new Date().toISOString()
-  const expectedBase: AdoptionBase = {
+  const baseContent = input.baseContent ?? ''
+  const expectedBase: AdoptionBase = input.expectedBase ?? {
     name: input.skillName,
-    contentHash: createContentHash(input.baseContent),
+    contentHash: createContentHash(baseContent),
   }
   return {
     id: input.id ?? `proposal:${randomUUID()}`,
@@ -160,8 +164,10 @@ export function createProposal(input: ProposalInput): SkillProposal {
     baseVersion: input.baseVersion,
     expectedBase,
     proposedVersion: input.proposedVersion,
+    ...(input.operation === undefined ? {} : { operation: input.operation }),
+    ...(input.source === undefined ? {} : { source: input.source }),
     candidateContent: input.candidateContent,
-    diff: createUnifiedDiff(input.baseContent, input.candidateContent),
+    diff: createUnifiedDiff(baseContent, input.candidateContent),
     intent: input.intent,
     changedSurfaces: [...input.changedSurfaces ?? ['procedure']],
     addressedExperienceIds: [...input.addressedExperienceIds ?? []],
@@ -232,5 +238,6 @@ function changedSurfacesFor(operation: SkillDiagnosis['proposedOperation']): Pro
     case 'merge': return ['composition', 'procedure']
     case 'retire': return ['composition']
     case 'observe-only': return []
+    case 'create-skill': return ['description', 'trigger', 'procedure']
   }
 }

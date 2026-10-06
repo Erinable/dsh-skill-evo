@@ -243,16 +243,16 @@ const convergesToday = new Set<string>([
 ])
 const recovery = (row: CrashRow, path: 'rerun' | 'repair') => convergesToday.has(`${row.point}:${path}`) ? it : pending
 
-async function crashPromote(row: CrashRow): Promise<{ root: string; proposalRef: string; reference: unknown; before: unknown }> {
+async function crashPromote(row: CrashRow, scope: 'project' | 'stable' = 'project'): Promise<{ root: string; proposalRef: string; reference: unknown; before: unknown }> {
   const reference = await promoteScenario('reference', row.versionedBase).then(async ({ root, proposalRef }) => {
-    await promoteProposal(service(root), { proposalRef, scope: 'project' })
+    await promoteProposal(service(root), { proposalRef, scope })
     return publicationState(root)
   })
   const { root, proposalRef } = await promoteScenario('crash', row.versionedBase)
   const before = await publicationState(root)
   const crashing = service(root)
   arm(row.crash, root, crashing)
-  await expect(promoteProposal(crashing, { proposalRef, scope: 'project' })).rejects.toThrow('injected crash')
+  await expect(promoteProposal(crashing, { proposalRef, scope })).rejects.toThrow('injected crash')
   return { root, proposalRef, reference, before }
 }
 
@@ -294,6 +294,14 @@ describe('promote crash points', () => {
     expect(publicationsOf(repaired)).toEqual([expect.objectContaining({ skillName, operation: 'promote', outcome: 'completed' })])
     expect(publicationsOf(await service(root).healthReport())).toEqual([])
     expect(await latestStatus(root, 'proposal-crash')).toBe('promoted')
+  })
+
+  it('health and repair handle a crashed stable-scope promote', async () => {
+    const row = promoteRows.find(item => item.point.startsWith('P3'))!
+    const { root } = await crashPromote(row, 'stable')
+    expect(publicationsOf(await service(root).healthReport())).toEqual([expect.objectContaining({ skillName, scope: 'stable', operation: 'promote', proposalId: 'proposal-crash' })])
+    await expect(service(root).repair()).resolves.toMatchObject({ publications: [expect.objectContaining({ skillName, scope: 'stable', operation: 'promote', outcome: 'completed' })] })
+    expect(await service(root).healthReport()).toMatchObject({ publications: [] })
   })
 
   it('health reads a half-written promote without changing any file', async () => {

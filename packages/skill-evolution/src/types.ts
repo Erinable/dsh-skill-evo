@@ -51,7 +51,8 @@ export interface ExposureView {
 
 export interface AdoptionBase {
   readonly name: string
-  readonly contentHash: string
+  /** `absent` is the explicit base sentinel for create-skill proposals. */
+  readonly contentHash: string | 'absent'
 }
 
 export interface AdoptionCandidate {
@@ -145,6 +146,7 @@ export type DiagnosisRootCause =
   | 'uncertain'
 
 export type ProposalOperation = 'edit-metadata' | 'patch-content' | 'split' | 'merge' | 'retire' | 'observe-only'
+  | 'create-skill'
 
 export interface SkillDiagnosis {
   readonly id: string
@@ -173,6 +175,10 @@ export interface SkillProposal {
   readonly baseVersion: string
   readonly expectedBase: AdoptionBase
   readonly proposedVersion: string
+  /** The lifecycle operation represented by this proposal. */
+  readonly operation?: ProposalOperation
+  /** Pattern provenance retained on pattern-derived proposals. */
+  readonly source?: ProposalSource
   readonly candidateContent: string
   readonly diff: string
   readonly intent: string
@@ -184,6 +190,17 @@ export interface SkillProposal {
   readonly status: ProposalStatus
   readonly createdAt: string
   readonly updatedAt: string
+}
+
+export interface ProposalSource {
+  readonly kind: 'pattern' | 'cluster'
+  readonly environmental?: boolean
+  readonly patternId?: string
+  readonly signatureKey?: string
+  readonly episodeIds?: readonly string[]
+  readonly evidenceEventIds?: readonly string[]
+  readonly targetReason?: 'promoted' | 'explicit' | 'majority-loaded' | 'similarity' | 'create-skill' | 'ambiguous'
+  readonly targetCandidates?: readonly string[]
 }
 
 export type EvaluationCategory = 'original-failure' | 'historical-success' | 'boundary'

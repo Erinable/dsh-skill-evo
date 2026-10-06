@@ -17,9 +17,12 @@ import { archivePaths } from './state-root.js'
 import { assertFeedbackKind, assertPublicationScope } from './types.js'
 import { FOLLOW_UP_RULES_VERSION, INTENT_POLICY_VERSION, isClassificationMemoEntry } from './follow-up.js'
 import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
-import type { ClassificationMemoEntry, FollowUpClassifier, FollowUpResolution } from './types.js'
+import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier, CorrectionClassificationMemoEntry, CorrectionEpisode, CorrectionPattern, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
+import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft, assessPattern, DEFAULT_CORRECTION_POLICY, isPatternScopeAllowed } from './correction.js'
 import { PublicationPermanentError, quarantinePublication, readPublication, removePublication } from './publication.js'
+import { createPatternProposal, patternDesignerInput, selectPatternTarget, validateEnvironmentNeutralCandidate } from './pattern-design.js'
+import type { PatternDesignerInput } from './workflow.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import type {
   DecisionRecord,
@@ -48,6 +51,9 @@ export interface EvolutionServiceOptions {
   readonly evaluationTtlMs?: number
   readonly followUpClassifier?: FollowUpClassifier
   readonly classifierTimeoutMs?: number
+  readonly correctionClassifier?: CorrectionClassifier
+  readonly correctionRulesVersion?: string
+  readonly windowRulesVersion?: string
 }
 
 /** Maintainer-facing service for the full observe → diagnose → evaluate → publish loop. */
@@ -61,7 +67,9 @@ export class EvolutionService {
   readonly clusters: JsonlRecordStore<FailureCluster>
   readonly diagnoses: JsonlRecordStore<SkillDiagnosis>
   readonly skillWindows: JsonlRecordStore<SkillWindow>
-  readonly classifications: JsonlRecordStore<ClassificationMemoEntry>
+  readonly classifications: JsonlRecordStore<ClassificationMemo>
+  readonly episodes: JsonlRecordStore<CorrectionEpisode>
+  readonly patterns: JsonlRecordStore<CorrectionPattern>
   readonly followUps: JsonlRecordStore<FollowUpResolution>
   readonly feedback: JsonlRecordStore<FeedbackRecord>
   readonly evaluations: JsonlRecordStore<EvaluationArtifact>
@@ -71,11 +79,15 @@ export class EvolutionService {
   readonly layout: ReturnType<typeof resolveLayout>
   readonly followUpClassifier: FollowUpClassifier | undefined
   readonly classifierTimeoutMs: number
+  readonly correctionClassifier: CorrectionClassifier | undefined
+  private correctionClassifierFailures = 0
+  private correctionRejectedDrafts = 0
 
   constructor(private readonly options: EvolutionServiceOptions) {
     this.evaluationPolicy = options.evaluationPolicy
     this.followUpClassifier = options.followUpClassifier
     this.classifierTimeoutMs = options.classifierTimeoutMs ?? 10_000
+    this.correctionClassifier = options.correctionClassifier
     this.layout = resolveLayout({ root: options.root, observationStore: options.store })
     this.projectionCursorPath = this.layout.cursorPath
     const path = (name: string) => this.layout.stores.find(store => store.name === name)!.path
@@ -89,6 +101,8 @@ export class EvolutionService {
     this.diagnoses = new JsonlRecordStore(path('diagnoses'))
     this.skillWindows = new JsonlRecordStore(path('skill-windows'))
     this.classifications = new JsonlRecordStore(path('classifications'))
+    this.episodes = new JsonlRecordStore(path('episodes'))
+    this.patterns = new JsonlRecordStore(path('patterns'))
     this.followUps = new JsonlRecordStore(path('follow-ups'))
     this.feedback = new JsonlRecordStore(path('feedback'))
     this.evaluations = new JsonlRecordStore(path('evaluations'))
@@ -161,7 +175,17 @@ export class EvolutionService {
       try { const current = await this.versions.readCurrent(name); return current === undefined ? undefined : { name, content: current.content } }
       catch { return undefined }
     }))).filter((item): item is { name: string; content: string } => item !== undefined)
-    return aggregateMetrics(events, await this.proposals.readAll(), await this.decisions.readAll(), snapshot.followUps, currentSkills)
+    const proposals = await this.proposals.readAll()
+    return aggregateMetrics(events, proposals, await this.decisions.readAll(), snapshot.followUps, currentSkills, { episodes: snapshot.episodes ?? [], patterns: snapshot.patterns ?? [], proposals, classifierFailures: this.correctionClassifierFailures, rejectedDrafts: this.correctionRejectedDrafts })
+  }
+
+  async recordCorrectionClassifierFailure(): Promise<void> {
+    await withLock(`${this.projectionCursorPath}.lock`, 'correction-failure', async () => {
+      const cursor = await readCursor(this.projectionCursorPath)
+      const failures = (cursor?.correctionClassifierFailures ?? 0) + 1
+      this.correctionClassifierFailures = failures
+      await writeCursor(this.projectionCursorPath, { ...(cursor ?? { count: 0, fingerprint: '' }), correctionClassifierFailures: failures })
+    })
   }
 
   async health(): Promise<readonly JsonlHealth[]> {
@@ -211,7 +235,6 @@ export class EvolutionService {
     try { entries = await readdir(this.layout.publicationsDir) } catch { return [] }
     const reports: Record<string, unknown>[] = []
     for (const entry of entries.filter(item => item.endsWith('.json'))) {
-      const skillName = basename(entry, '.json')
       let journal: Awaited<ReturnType<typeof readPublication>>
       try {
         journal = await readPublication(join(this.layout.publicationsDir, entry))
@@ -226,11 +249,8 @@ export class EvolutionService {
         } else if (journal.operation === 'rollback') {
           await this.rollback(journal.skillName, journal.to.version)
         }
-        reports.push({ skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt, outcome: 'completed' })
+        reports.push({ skillName: journal.skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt, outcome: 'completed' })
       } catch (error) {
-        // Retryable failures keep their journal for a later repair. Permanent
-        // publication errors are quarantined here; either way
-        // one bad Skill must not prevent other journals or JSONL from repairing.
         const permanent = this.isPermanentPublicationError(error)
         let quarantined = false
         if (permanent && journal !== undefined) {
@@ -240,11 +260,10 @@ export class EvolutionService {
             await quarantinePublication(this.layout.publicationQuarantineDir, journal.skillName, raw, error, 'repair')
             await removePublication(path)
             quarantined = true
-          } catch { /* retain the journal when isolation itself fails */ }
+          } catch { /* retain journal when isolation fails */ }
         }
         reports.push({
-          skillName,
-          ...(journal === undefined ? {} : { operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
+          ...(journal === undefined ? {} : { skillName: journal.skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
           outcome: quarantined ? 'quarantined' : 'failed',
           error: error instanceof Error ? error.message : String(error),
         })
@@ -261,11 +280,51 @@ export class EvolutionService {
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
     await this.refreshDerived()
-    const memo = new Map((await this.classifications.readAll()).map(entry => [entry.id, entry]))
+    const memo = new Map<string, ClassificationMemoEntry>((await this.classifications.readAll()).filter((entry): entry is ClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge !== 'correction').map(entry => [entry.id, entry]))
     const workflow = new EvolutionWorkflow({ memo, classifierVersion: this.followUpClassifier?.version })
     workflow.add(await this.observations.readAll())
     const proposal = await workflow.propose(clusterId, designer)
     return this.stageProposal(proposal)
+  }
+
+  /** Design a proposal from an aggregated correction pattern using bounded input. */
+  async proposePattern(patternId: string, designer: (input: PatternDesignerInput) => string | Promise<string>, options: { readonly skillName?: string; readonly proposedVersion: string } ): Promise<SkillProposal> {
+    await this.refreshDerived()
+    const pattern = (await this.patterns.readAll()).find(item => item.id === patternId)
+    if (pattern === undefined) throw new OperationError('not-found', `unknown correction pattern "${patternId}"`)
+    const events = await this.observations.readAll()
+    const episodeRecords = (await this.episodes.readAll()).filter(item => pattern.occurrences.some(occurrence => occurrence.episodeId === item.id))
+    const evidenceByEpisode = new Map(episodeRecords.map(item => [item.id, [...item.failureObservationIds, ...item.correctionObservationIds, item.successObservationId] as readonly string[]]))
+    const evidence = episodeRecords.flatMap(item => evidenceByEpisode.get(item.id) ?? []).slice(0, 64)
+    const assessment = assessPattern({ pattern, policy: DEFAULT_CORRECTION_POLICY, now: new Date().toISOString(), proposals: await this.proposals.readAll() })
+    if (!assessment.candidate) throw new OperationError(assessment.candidateReason === 'already-proposed' ? 'already-proposed' : 'insufficient-evidence', `pattern ${patternId} is not eligible: ${assessment.candidateReason}`)
+    const loaded = new Map<string, number>()
+    for (const event of events) if (event.kind === 'skill-loaded' && event.skill?.name !== undefined) loaded.set(event.skill.name, (loaded.get(event.skill.name) ?? 0) + 1)
+    const promoted = (await this.proposals.readAll()).filter(item => item.status === 'promoted' && item.source?.patternId === patternId).at(-1)?.skillName
+    const managedNames = await this.managedSkillNames()
+    const skillNames = [...new Set([...managedNames, ...loaded.keys(), ...(await this.proposals.readAll()).filter(item => item.status === 'promoted').map(item => item.skillName)])]
+    const similarities = new Map<string, number>()
+    for (const skillName of skillNames) {
+      const current = await this.versions.readCurrent(skillName)
+      if (current !== undefined) similarities.set(skillName, tokenSimilarity(`${pattern.intent} ${pattern.errorSignature} ${pattern.correction.join(' ')}`, skillMetadata(current.content, skillName)))
+    }
+    const selection = selectPatternTarget({ explicitSkill: options.skillName, promotedTarget: promoted, loadedSkills: loaded, similarities })
+    if (selection.reason === 'ambiguous') throw new OperationError('ambiguous-target', `ambiguous pattern target: ${selection.candidates?.join(', ')}`)
+    const input = patternDesignerInput(pattern, evidenceByEpisode)
+    let candidate: string
+    try { candidate = await designer(input) } catch (error) { throw new OperationError('designer-failed', error instanceof Error ? error.message : String(error), error) }
+    const observedMachineValues = events.flatMap(event => collectMachineValues(event.payload)).slice(0, 128)
+    const validation = validateEnvironmentNeutralCandidate(candidate, observedMachineValues)
+    if (!validation.valid) throw new OperationError('invalid-option', validation.errors.join('; '))
+    const base = selection.target === undefined ? undefined : await this.versions.readCurrent(selection.target)
+    const proposal = createPatternProposal({ pattern, skillName: selection.target, proposedVersion: options.proposedVersion, candidateContent: candidate, ...(base === undefined ? {} : { baseVersion: base.manifest.version, baseContent: base.content }), evidenceEventIds: evidence, targetReason: selection.reason, targetCandidates: selection.candidates })
+    return this.stageProposal(proposal)
+  }
+
+  private async managedSkillNames(): Promise<readonly string[]> {
+    try {
+      return (await readdir(this.options.root, { withFileTypes: true })).filter(item => item.isDirectory() && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(item.name)).map(item => item.name)
+    } catch { return [] }
   }
 
   async stageProposal(proposal: SkillProposal): Promise<SkillProposal> {
@@ -293,17 +352,19 @@ export class EvolutionService {
       : proposal
     const proposalId = proposalRootId(proposal.id)
     const current = await this.versions.readCurrent(proposal.skillName)
-    if (current === undefined) throw new Error(`cannot evaluate without a current Skill: ${proposal.skillName}`)
-    if (current.manifest.contentHash !== proposal.expectedBase.contentHash) throw new Error(`proposal ${proposal.id} base no longer matches the current Skill`)
+    const absentBase = proposal.expectedBase.contentHash === 'absent'
+    if (current === undefined && !absentBase) throw new Error(`cannot evaluate without a current Skill: ${proposal.skillName}`)
+    if (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash) throw new Error(`proposal ${proposal.id} base no longer matches the current Skill`)
     if (this.options.evaluationPolicy !== undefined) validateEvaluationPolicy(this.options.evaluationPolicy)
     const input: EvaluateCandidateInput = {
       candidateId: proposalId,
-      baseContent: current.content,
+      baseContent: current?.content ?? '',
       candidateContent: proposal.candidateContent,
       cases,
       runner,
       expectedSkillName: proposal.skillName,
       policy: this.options.evaluationPolicy,
+      ...(absentBase ? { baseContentHash: 'absent' } : {}),
     }
     validateEvaluationCases(cases)
     const result = await evaluateCandidate(input)
@@ -338,6 +399,11 @@ export class EvolutionService {
   }
 
   async acceptProposal(proposal: SkillProposal, reason: string, evidenceIds: readonly string[] = []): Promise<SkillProposal> {
+    if (proposal.source?.kind === 'pattern') {
+      const artifact = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (artifact === undefined) throw new OperationError('evaluation-missing', `pattern proposal ${proposal.id} requires an evaluation artifact before acceptance`)
+      if (!artifact.passedGate || !artifact.result.passedGate) throw new OperationError('gate-failed', `pattern proposal ${proposal.id} failed the evaluation gate`)
+    }
     return (await this.ledger.transition(proposal, 'accepted', { reason, action: 'accepted', evidenceIds })).record
   }
 
@@ -348,6 +414,9 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
+    if (!isPatternScopeAllowed(proposal, scope)) {
+      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
+    }
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)
     if (latest?.status === 'promoted') {
@@ -357,6 +426,9 @@ export class EvolutionService {
       return
     }
     const artifact = await this.preparePromotion(proposal, evaluation)
+    const current = await this.versions.readCurrent(proposal.skillName)
+    const pending = await this.versions.pendingPublication(proposal.skillName)
+    if (pending?.proposalId !== rootId) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = rootId
     try {
@@ -405,12 +477,6 @@ export class EvolutionService {
 
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
     return resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
-  }
-
-  /** Validate the proposal state before resolving an evaluation artifact. */
-  async assertPromotionAllowed(proposal: SkillProposal): Promise<void> {
-    if (proposal.status === 'accepted' || await this.versions.hasPendingPublication(proposal.skillName)) return
-    throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
   }
 
   async rollback(skillName: string, version: string, reason = 'manual rollback'): Promise<void> {
@@ -531,34 +597,93 @@ export class EvolutionService {
   private async refreshDerivedUnlocked(options: { readonly force?: boolean }): Promise<ReturnType<EvolutionWorkflow['snapshot']>> {
     const observations = await this.observations.readAll()
     const cursor = await readCursor(this.projectionCursorPath)
+    this.correctionClassifierFailures = cursor?.correctionClassifierFailures ?? this.correctionClassifierFailures
     const lastId = observations.at(-1)?.id
     const fingerprint = fingerprintOf(observations.map(item => item.id))
     const memoEntries = await this.classifications.readAll()
-    const memo = new Map(memoEntries.map(entry => [entry.id, entry]))
+    const memo = new Map(memoEntries.filter((entry): entry is ClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge !== 'correction').map(entry => [entry.id, entry]))
     const lastMemo = memoEntries.at(-1)
-    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null }))
+    const derivationKey = createContentHash(JSON.stringify({ rules: FOLLOW_UP_RULES_VERSION, policy: INTENT_POLICY_VERSION, windowRules: this.options.windowRulesVersion ?? 'skill-windows-v1', classifier: this.followUpClassifier?.version ?? 'none', memoCount: memoEntries.length, memoLastId: lastMemo?.id ?? null, correction: { rules: this.options.correctionRulesVersion ?? CORRECTION_RULES_VERSION, policy: CORRECTION_POLICY_VERSION, classifier: this.correctionClassifier?.version ?? 'none' } }))
     if (!options.force && cursor?.count === observations.length && cursor.lastId === lastId && cursor.fingerprint === fingerprint && cursor.derivationKey === derivationKey) {
+      this.correctionRejectedDrafts = cursor.correctionRejectedDrafts ?? 0
+      this.correctionClassifierFailures = cursor.correctionClassifierFailures ?? 0
       return {
         experiences: await this.experiences.readAll(),
         failures: await this.failures.readAll(),
         clusters: await this.clusters.readAll(),
         diagnoses: await this.diagnoses.readAll(),
         followUps: await this.followUps.readAll(),
+        episodes: await this.episodes.readAll(), patterns: await this.patterns.readAll(),
       }
     }
     const workflow = new EvolutionWorkflow({ memo, ...(this.followUpClassifier === undefined ? {} : { classifierVersion: this.followUpClassifier.version }) })
     workflow.add(observations)
     const snapshot = workflow.snapshot()
+    const episodes: CorrectionEpisode[] = []
+    let rejectedDrafts = 0
+    const memoMap = new Map(memoEntries.filter((entry): entry is CorrectionClassificationMemoEntry => (entry as CorrectionClassificationMemoEntry).judge === 'correction').map(entry => [entry.id, entry]))
+    const sessions = new Map<string, RuntimeObservation[]>()
+    for (const event of observations) if (event.sessionId !== undefined) sessions.set(event.sessionId, [...sessions.get(event.sessionId) ?? [], event])
+    for (const [sessionId, sessionEvents] of sessions) {
+      const attempts = correlateToolAttempts(sessionEvents); const hash = createContentHash(JSON.stringify(attempts)); const version = this.correctionClassifier?.version ?? CORRECTION_RULES_VERSION
+      const memoEntry = memoMap.get(`classification:correction:${version}:${hash}`)
+      const rawDrafts = memoEntry?.drafts ?? recognizeCorrections(sessionId, attempts)
+      const drafts = rawDrafts.filter(draft => validateEpisodeDraft(draft, attempts))
+      rejectedDrafts += rawDrafts.length - drafts.length
+      for (const draft of drafts) episodes.push(episodeFromDraft(sessionId, draft, attempts, observations, memoEntry ? version : CORRECTION_RULES_VERSION, memoEntry ? undefined : 'not-classified'))
+    }
+    const patterns = groupPatterns(episodes)
     await this.skillWindows.replaceAll(buildSkillWindows(observations))
-    await this.experiences.replaceAll(snapshot.experiences)
+    await this.experiences.replaceAll([...snapshot.experiences, ...episodes.map(experienceForEpisode)])
     await this.followUps.replaceAll(snapshot.followUps)
     await this.failures.replaceAll(snapshot.failures)
     await this.clusters.replaceAll(snapshot.clusters)
     await this.diagnoses.replaceAll(snapshot.diagnoses)
-    await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey })
-    return snapshot
+    await this.episodes.replaceAll(episodes)
+    await this.patterns.replaceAll(patterns)
+    this.correctionRejectedDrafts = rejectedDrafts
+    await writeCursor(this.projectionCursorPath, { count: observations.length, ...(lastId === undefined ? {} : { lastId }), fingerprint, derivationKey, correctionRejectedDrafts: rejectedDrafts, correctionClassifierFailures: this.correctionClassifierFailures })
+    return { ...snapshot, experiences: [...snapshot.experiences, ...episodes.map(experienceForEpisode)], episodes, patterns }
   }
 }
+
+function collectMachineValues(value: unknown, key = ''): string[] {
+  if (typeof value === 'string') {
+    if (/command|proxy/iu.test(key)) {
+      const values: string[] = []
+      for (const match of value.matchAll(/(?:https?|socks5?):\/\/([^\s]+)/giu)) {
+        try {
+          const url = new URL(match[0]!)
+          for (const item of [url.hostname, url.host, url.username, url.password]) if (item.length > 0) values.push(item)
+        } catch { /* malformed URLs are not machine facts */ }
+      }
+      for (const match of value.matchAll(/(?:proxy|http|https)[_ -]?(?:host|url)?=([^\s]+)/giu)) {
+        const raw = match[1]!
+        try {
+          const url = new URL(raw.includes('://') ? raw : `http://${raw}`)
+          for (const item of [url.hostname, url.host, url.username, url.password]) if (item.length > 0) values.push(item)
+        } catch { values.push(raw) }
+      }
+      return values
+    }
+    return /^(?:proxy(?:[-_].*)?|host|ip|address|username|password|user|pass)$/iu.test(key) ? [value] : []
+  }
+  if (Array.isArray(value)) return value.flatMap(item => collectMachineValues(item, key))
+  if (value !== null && typeof value === 'object') return Object.entries(value).flatMap(([name, item]) => collectMachineValues(item, name))
+  return []
+}
+
+function tokenSimilarity(left: string, right: string): number {
+  const terms = (value: string) => new Set(value.toLowerCase().split(/[^a-z0-9]+/u).filter(item => item.length > 2))
+  const a = terms(left); const b = terms(right); const intersection = [...a].filter(item => b.has(item)).length
+  return a.size === 0 ? 0 : intersection / a.size
+}
+
+function skillMetadata(content: string, name: string): string {
+  const description = content.match(/^description:\s*(.+)$/imu)?.[1] ?? ''
+  return `${name} ${description}`
+}
+
 
 function validateEvaluationCases(cases: readonly SkillEvaluationCase[]): void {
   if (cases.length === 0) throw new Error('evaluation requires at least one case')

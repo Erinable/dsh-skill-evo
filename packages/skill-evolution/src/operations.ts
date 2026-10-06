@@ -7,8 +7,11 @@ import { renderProposalMarkdown } from './report.js'
 import { EvolutionService } from './service.js'
 import { assertPublicationScope, InvalidOptionError, type EvaluationArtifact, type PublicationScope, type SkillEvalResult, type SkillEvaluationCase, type SkillProposal } from './types.js'
 import { OperationError } from './errors.js'
+import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
 import { classificationInputFor, isFollowUpClassification } from './follow-up.js'
 import type { ClassificationMemoEntry, FollowUpIntent } from './types.js'
+import { correlateToolAttempts, DEFAULT_CORRECTION_POLICY, inputHash, validateEpisodeDraft, isPatternScopeAllowed } from './correction.js'
+import type { CorrectionClassificationMemoEntry } from './types.js'
 
 export { OperationError } from './errors.js'
 
@@ -29,6 +32,24 @@ export interface ProposeSkillChangeOptions {
 export interface ProposeSkillChangeResult {
   readonly proposal: SkillProposal
   readonly reportPath: string
+}
+
+export interface DesignPatternOptions {
+  readonly root?: string
+  readonly patternId: string
+  readonly skillName?: string
+  readonly proposedVersion: string
+  readonly designer: (input: import('./workflow.js').PatternDesignerInput) => string | Promise<string>
+  readonly reportPath?: string
+}
+
+export interface DesignPatternResult { readonly proposal: SkillProposal; readonly reportPath: string }
+
+export async function designPattern(service: EvolutionService, options: DesignPatternOptions): Promise<DesignPatternResult> {
+  const proposal = await service.proposePattern(options.patternId, options.designer, { proposedVersion: options.proposedVersion, ...(options.skillName === undefined ? {} : { skillName: options.skillName }) })
+  const reportPath = options.reportPath ?? join(service.layout.proposalReportsDir, `${proposalRootId(proposal.id)}.md`)
+  await writeText(reportPath, renderProposalMarkdown({ proposal }))
+  return { proposal, reportPath }
 }
 
 export interface EvaluateProposalOptions {
@@ -127,6 +148,39 @@ export async function classifyFollowUps(service: EvolutionService, options: { re
   return { classifierVersion: classifier.version, classified, cached, skipped: { explicit, pending }, failed }
 }
 
+export interface ClassifyCorrectionsResult { readonly classifierVersion: string; readonly classified: number; readonly cached: number; readonly skipped: { readonly open: number }; readonly failed: readonly { readonly sessionId: string; readonly reason: 'timeout' | 'error' | 'invalid-output'; readonly message: string }[] }
+export async function classifyCorrections(service: EvolutionService, options: { readonly signal?: AbortSignal; readonly limit?: number } = {}): Promise<ClassifyCorrectionsResult> {
+  const classifier = service.correctionClassifier
+  if (classifier === undefined) throw new OperationError('classifier-unavailable', 'correction classifier is not configured')
+  const events = await service.observations.readAll(); const sessions = [...new Set(events.flatMap(e => e.sessionId === undefined ? [] : [e.sessionId]))]; const existing = new Map((await service.classifications.readAll()).map(item => [item.id, item])); let classified = 0; let cached = 0; let open = 0
+  const failed: ClassifyCorrectionsResult['failed'][number][] = []
+  const closed = sessions.filter(sessionId => events.some(e => e.sessionId === sessionId && e.kind === 'task-finished'))
+  open = sessions.length - closed.length
+  for (const sessionId of closed.slice(0, options.limit ?? Number.POSITIVE_INFINITY)) {
+    const session = events.filter(e => e.sessionId === sessionId)
+    const attempts = correlateToolAttempts(session); const hash = inputHash(attempts); const id = `classification:correction:${classifier.version}:${hash}`; if (existing.has(id)) { cached++; continue }
+    if (options.signal?.aborted) break
+    let timedOut = false; let callerAborted = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
+    try {
+      const controller = new AbortController()
+      let rejectTimer: ((error: Error) => void) | undefined
+      timer = setTimeout(() => { timedOut = true; controller.abort(); rejectTimer?.(new Error('classifier timed out')) }, service.classifierTimeoutMs)
+      onAbort = () => { callerAborted = true; controller.abort(); rejectTimer?.(new Error('classifier aborted by caller')) }
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      const call = classifier.classify({ sessionId, attempts }, controller.signal); call.catch(() => undefined)
+      const abort = new Promise<never>((_, reject) => { rejectTimer = reject })
+      const result = await Promise.race([call, abort])
+      if (!Array.isArray(result) || result.some(draft => !validateEpisodeDraft(draft, attempts, DEFAULT_CORRECTION_POLICY))) { await service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: 'invalid-output', message: 'classifier returned invalid drafts' }); continue }
+      const memo: CorrectionClassificationMemoEntry = { id, judge: 'correction', classifierVersion: classifier.version, inputHash: hash, sessionId, drafts: result, createdAt: new Date().toISOString() }
+      await service.classifications.append(memo); existing.set(id, memo); classified++
+    } catch (error) { await service.recordCorrectionClassifierFailure(); failed.push({ sessionId, reason: timedOut ? 'timeout' : 'error', message: error instanceof Error ? error.message : String(error) }) }
+    finally { if (timer !== undefined) clearTimeout(timer); if (onAbort !== undefined) options.signal?.removeEventListener('abort', onAbort) }
+  }
+  return { classifierVersion: classifier.version, classified, cached, skipped: { open }, failed }
+}
+
 export interface RollbackSkillOptions {
   readonly skillName: string
   readonly version: string
@@ -166,7 +220,7 @@ export async function evaluateProposal(service: EvolutionService, options: Evalu
   else if (proposal.status === 'evaluating') assertTransition(proposal, 'evaluated')
   else throw new OperationError('invalid-transition', `proposal ${proposal.id} cannot be evaluated from ${proposal.status}`)
   const current = await service.versions.readCurrent(proposal.skillName)
-  if (current === undefined || current.manifest.contentHash !== proposal.expectedBase.contentHash) {
+  if ((current === undefined && proposal.expectedBase.contentHash !== 'absent') || (current !== undefined && current.manifest.contentHash !== proposal.expectedBase.contentHash)) {
     throw new OperationError('stale-base', `proposal ${proposal.id} base no longer matches the current Skill`)
   }
   const cases = options.cases ?? await readJson<SkillEvaluationCase[]>(options.casesFile, 'evaluation cases')

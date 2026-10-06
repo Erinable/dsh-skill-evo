@@ -322,6 +322,7 @@ function assertVersion(value: string): void {
 }
 
 function assertExpectedBase(expected: AdoptionBase, current: CurrentSkill | undefined): void {
+  if (expected.contentHash === 'absent' && current === undefined) return
   if (current === undefined || current.manifest.name !== expected.name || current.manifest.contentHash !== expected.contentHash) {
     const actual = current?.manifest.contentHash ?? 'missing'
     throw new Error(`stale Skill base for "${expected.name}": expected ${expected.contentHash}, actual ${actual}`)

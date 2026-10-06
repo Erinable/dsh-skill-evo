@@ -1,6 +1,10 @@
 export type OperationErrorCode =
   | 'not-found'
   | 'ambiguous'
+  | 'ambiguous-target'
+  | 'insufficient-evidence'
+  | 'already-proposed'
+  | 'designer-failed'
   | 'invalid-option'
   | 'stale-base'
   | 'invalid-transition'
@@ -10,6 +14,7 @@ export type OperationErrorCode =
   | 'gate-failed'
   | 'publication-conflict'
   | 'classifier-unavailable'
+  | 'scope-not-allowed'
 
 export class OperationError extends Error {
   constructor(readonly code: OperationErrorCode, message: string, readonly cause?: unknown) {
