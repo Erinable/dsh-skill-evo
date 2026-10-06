@@ -1,10 +1,10 @@
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, createDefaultEventMapper, mapFileObservation, tokenize } from '../index.js'
-import { EvolutionService, createContentHash, rotateJsonl } from '@dsh-skill-evo/core'
+import { EvolutionService, classifyCorrections, createContentHash, createObservation, rotateJsonl } from '@dsh-skill-evo/core'
 import { createReferenceExecutor, runDshComparison } from '@dsh-skill-evo/dsh-adapter'
 
 async function createContext() {
@@ -699,3 +699,168 @@ test('preserves Windows path backslashes while tokenizing quoted values', () => 
   ])
   assert.deepEqual(tokenize('evaluate --cases "C:\\tmp\\cases.json"'), ['evaluate', '--cases', 'C:\\tmp\\cases.json'])
 })
+
+test('runs pattern design through the bundle and preserves typed errors', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-pattern-'))
+  try {
+    const eventsPath = join(dir, 'events.jsonl')
+    const service = new EvolutionService({ root: dir, store: eventsPath })
+    await seedCorrectionSessions(service, 3)
+    const patternId = (await service.refreshDerived()).patterns.find(item => item.totalSessionCount >= 3).id
+    const skillDir = join(dir, 'api-debugging')
+    await mkdir(join(skillDir, 'versions', '1.0.0'), { recursive: true })
+    const baseContent = '---\nname: api-debugging\ndescription: Debug APIs.\n---\n\nBase.\n'
+    await writeFile(join(skillDir, 'SKILL.md'), baseContent)
+    await writeFile(join(skillDir, 'manifest.json'), JSON.stringify({ name: 'api-debugging', version: '1.0.0', contentHash: createContentHash(baseContent), status: 'stable', scope: 'project', createdBy: 'human', createdAt: '2026-09-25T00:00:00.000Z', updatedAt: '2026-09-25T00:00:00.000Z' }))
+    const candidateFile = join(dir, 'candidate.md')
+    const reportFile = join(dir, 'custom-report.md')
+    await writeFile(candidateFile, '---\nname: api-debugging\ndescription: Conditional network procedure\n---\n\nImproved timeout diagnosis.\n')
+
+    const registered = []
+    const ctx = { on() {}, commands: { register(definition) { registered.push(definition) } }, logger: { warn() {} } }
+    apply(ctx, { storePath: eventsPath })
+    const invoke = rawInput => registered[0].handler({ rawInput, agent: { session: { id: 'bundle-design', header: { cwd: dir } } } })
+    const designed = await invoke(`design --pattern "${patternId}" --skill api-debugging --candidate-file "${candidateFile}" --proposed-version 1.1.0 --output "${reportFile}"`)
+    assert.equal(designed.kind, 'success')
+    const designedBody = JSON.parse(designed.text)
+    assert.equal(designedBody.status, 'proposed')
+    assert.ok(designedBody.proposalId)
+    assert.equal(designedBody.report, reportFile)
+    await access(reportFile)
+
+    const missing = await invoke(`design --pattern pattern:none --candidate-file "${candidateFile}" --proposed-version 1.1.0`)
+    assert.equal(missing.kind, 'error')
+    assert.equal(missing.code, 'not-found')
+
+    const casesFile = join(dir, 'cases.json')
+    await writeFile(casesFile, JSON.stringify([{ id: 'failure', category: 'original-failure', task: 'timeout', expected: { contains: ['Improved timeout diagnosis'] } }]))
+    const evaluated = JSON.parse((await invoke(`evaluate --proposal ${designedBody.proposalId} --cases "${casesFile}"`)).text)
+    const beforeAccept = await invoke(`promote --proposal ${evaluated.proposalId} --evaluation "${evaluated.evaluationPath}" --scope project --dry-run true`)
+    assert.equal(beforeAccept.kind, 'error')
+    assert.equal(beforeAccept.code, 'invalid-transition')
+    const acceptedResult = await invoke(`accept --proposal ${evaluated.proposalId} --reason "human review"`)
+    assert.equal(acceptedResult.kind, 'success', acceptedResult.text)
+    const accepted = JSON.parse(acceptedResult.text)
+    const stableDry = await invoke(`promote --proposal ${accepted.proposalId} --evaluation "${evaluated.evaluationPath}" --scope stable --dry-run true`)
+    assert.equal(stableDry.kind, 'error')
+    assert.equal(stableDry.code, 'scope-not-allowed')
+    const stableReal = await invoke(`promote --proposal ${accepted.proposalId} --evaluation "${evaluated.evaluationPath}" --scope stable --dry-run false`)
+    assert.equal(stableReal.kind, 'error')
+    assert.equal(stableReal.code, 'scope-not-allowed')
+    const promoted = await invoke(`promote --proposal ${accepted.proposalId} --evaluation "${evaluated.evaluationPath}" --scope project`)
+    assert.equal(promoted.kind, 'success', promoted.text)
+    assert.equal(JSON.parse(promoted.text).scope, 'project')
+    const publishedContent = await readFile(join(skillDir, 'SKILL.md'), 'utf8')
+    assert.match(publishedContent, /Improved timeout diagnosis/u)
+    const publishedManifest = JSON.parse(await readFile(join(skillDir, 'manifest.json'), 'utf8'))
+    assert.equal(publishedManifest.version, '1.1.0')
+    const current = JSON.parse(await readFile(join(skillDir, 'current.json'), 'utf8'))
+    assert.equal(current.version, '1.1.0')
+    assert.equal(current.contentHash, createContentHash(publishedContent))
+
+    const proposals = await service.proposals.readAll()
+    const rootProposal = proposals.find(item => item.id === designedBody.proposalId)
+    assert.equal(rootProposal?.baseVersion, '1.0.0')
+
+    const files = await allFiles(dir)
+    const serialized = (await Promise.all(files.map(path => readFile(path, 'utf8')))).join('\n')
+    assert.doesNotMatch(serialized, /alice|pw123/u)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('requires three distinct correction sessions before a pattern becomes eligible', async () => {
+  const oneDir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-one-session-'))
+  const threeDir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-three-session-'))
+  try {
+    const candidate = skillName => `---\nname: ${skillName}\ndescription: Conditional network procedure\n---\n\nThen rerun the command.\n`
+    const one = new EvolutionService({ root: oneDir })
+    await seedCorrectionSessions(one, 1)
+    const oneSnapshot = await one.refreshDerived()
+    assert.equal(oneSnapshot.patterns.length, 1)
+    assert.equal(oneSnapshot.patterns[0].totalSessionCount, 1)
+    assert.ok(oneSnapshot.experiences.some(item => item.attribution === 'tool'))
+    await assert.rejects(() => one.proposePattern(oneSnapshot.patterns[0].id, () => candidate('one-session'), { proposedVersion: '1.0.0' }), error => error.code === 'insufficient-evidence')
+
+    const three = new EvolutionService({ root: threeDir })
+    await seedCorrectionSessions(three, 3)
+    const threeSnapshot = await three.refreshDerived()
+    const pattern = threeSnapshot.patterns.find(item => item.totalSessionCount >= 3)
+    assert.ok(pattern)
+    const eventsPath = join(threeDir, '.skill-evolution', 'observations.jsonl')
+    const candidateFile = join(threeDir, 'candidate.md')
+    const casesFile = join(threeDir, 'cases.json')
+    await writeFile(candidateFile, candidate(`pattern-${pattern.intent.replaceAll(/[^a-z0-9]+/giu, '-')}-${pattern.signatureKey.slice(0, 39)}`))
+    await writeFile(casesFile, JSON.stringify([{ id: 'correction', category: 'original-failure', task: 'timeout', expected: { contains: ['Then rerun the command'] } }]))
+    const registered = []
+    const ctx = { on() {}, commands: { register(definition) { registered.push(definition) } }, logger: { warn() {} } }
+    apply(ctx, { storePath: eventsPath })
+    const invoke = rawInput => registered[0].handler({ rawInput, agent: { session: { id: 'create-skill-flow', header: { cwd: threeDir } } } })
+    const designed = JSON.parse((await invoke(`design --pattern "${pattern.id}" --candidate-file "${candidateFile}" --proposed-version 1.0.0`)).text)
+    const stored = (await three.proposals.readAll()).find(item => item.id === designed.proposalId)
+    assert.equal(stored?.baseVersion, 'absent')
+    assert.match(stored?.skillName ?? '', /^pattern-/u)
+    const evaluated = JSON.parse((await invoke(`evaluate --proposal ${designed.proposalId} --cases "${casesFile}"`)).text)
+    assert.equal(evaluated.evaluation.passedGate, true)
+    const accepted = JSON.parse((await invoke(`accept --proposal ${evaluated.proposalId} --reason "human review"`)).text)
+    const promoted = await invoke(`promote --proposal ${accepted.proposalId} --evaluation "${evaluated.evaluationPath}" --scope project`)
+    assert.equal(promoted.kind, 'success', promoted.text)
+    const generatedDir = join(threeDir, stored.skillName)
+    assert.match(await readFile(join(generatedDir, 'SKILL.md'), 'utf8'), /Then rerun the command/u)
+    assert.equal(JSON.parse(await readFile(join(generatedDir, 'current.json'), 'utf8')).version, '1.0.0')
+  } finally {
+    await rm(oneDir, { recursive: true, force: true })
+    await rm(threeDir, { recursive: true, force: true })
+  }
+})
+
+test('reprojects correction outputs with a new recognizer without changing observations', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-skill-evo-bundle-reproject-'))
+  try {
+    const eventsPath = join(dir, 'events.jsonl')
+    const first = new EvolutionService({ root: dir, store: eventsPath, correctionRulesVersion: 'rule-a' })
+    await seedCorrectionSessions(first, 3)
+    await first.refreshDerived()
+    const before = await readFile(eventsPath)
+    const beforeMetrics = await first.metrics()
+    const second = new EvolutionService({ root: dir, store: eventsPath, correctionRulesVersion: 'rule-b', correctionClassifier: { version: 'rule-b', classify: async () => [] } })
+    await classifyCorrections(second)
+    const after = await second.refreshDerived({ force: true })
+    const afterMetrics = await second.metrics()
+    assert.deepEqual(await readFile(eventsPath), before)
+    assert.notDeepEqual(after.episodes, (await first.refreshDerived()).episodes)
+    assert.notDeepEqual(after.patterns, (await first.refreshDerived()).patterns)
+    assert.notDeepEqual(afterMetrics.corrections, beforeMetrics.corrections)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+async function seedCorrectionSessions(service, count) {
+  const base = Date.now() - 60_000
+  const mapper = createDefaultEventMapper()
+  for (let session = 0; session < count; session += 1) {
+    const sessionId = `correction-${session + 1}`
+    for (let index = 0; index < 4; index += 1) {
+      const callId = `${sessionId}-call-${index}`
+      const command = index === 3 ? 'HTTPS_PROXY=http://alice:pw123@proxy.corp.internal:3128 git push origin main' : 'git push origin main'
+      const mappedCall = mapper({ id: sessionId }, { seq: index + 1, type: 'tool/call', data: { callId, name: 'bash', arguments: JSON.stringify({ command }) } }, { id: callId })
+      const call = createObservation({ ...mappedCall, occurredAt: new Date(base + session * 1000 + index * 100).toISOString(), sessionId })
+      const result = createObservation({ id: `${callId}-result`, kind: 'tool-result', occurredAt: new Date(base + session * 1000 + index * 100 + 1).toISOString(), sessionId, correlationIds: [callId], payload: { callId, exitCode: index === 3 ? 0 : 443, ...(index === 3 ? {} : { errorLine: 'connect port 443' }) }, source: 'runtime' })
+      await service.recordObservation(call); await service.recordObservation(result)
+    }
+    await service.recordObservation(createObservation({ id: `${sessionId}-finished`, kind: 'task-finished', occurredAt: new Date(base + session * 1000 + 999).toISOString(), sessionId, correlationIds: [], payload: {}, source: 'runtime' }))
+  }
+}
+
+async function allFiles(root) {
+  const entries = await readdir(root, { withFileTypes: true })
+  const files = []
+  for (const entry of entries) {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) files.push(...await allFiles(path))
+    else files.push(path)
+  }
+  return files
+}

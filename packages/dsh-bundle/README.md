@@ -59,6 +59,7 @@ In a DSH session, the bundle contributes the human slash commands
 `/skill-evolution metrics`, `/skill-evolution health`,
 `/skill-evolution repair`, `/skill-evolution feedback`,
 `/skill-evolution propose`, `/skill-evolution evaluate`,
+`/skill-evolution design`,
 `/skill-evolution accept`, `/skill-evolution reject`,
 `/skill-evolution defer`, `/skill-evolution promote`, and
 `/skill-evolution rollback`. The session workspace is the default evolution
@@ -69,6 +70,7 @@ dsh-skill-evolution observe --root /path/to/project
 dsh-skill-evolution failures --root /path/to/project --format markdown
 dsh-skill-evolution feedback --root /path/to/project --session SESSION --kind incorrect --skill api-debugging --note "遗漏代理超时配置"
 dsh-skill-evolution propose --root /path/to/project --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
+dsh-skill-evolution design --root /path/to/project --pattern pattern:episode-id --candidate-file candidate.md --proposed-version 1.0.0
 dsh-skill-evolution evaluate --root /path/to/project --proposal proposal-id --cases cases.json
 dsh-skill-evolution accept --root /path/to/project --proposal proposal-id --reason "Reviewed evaluation"
 dsh-skill-evolution promote --root /path/to/project --proposal proposal-id --scope project
@@ -88,6 +90,7 @@ uses the same root-based defaults:
 
 ```text
 /skill-evolution propose --skill api-debugging --base-file SKILL.md --candidate-file candidate.md --proposed-version 1.1.0 --intent "Add timeout diagnosis"
+/skill-evolution design --pattern pattern:episode-id --candidate-file candidate.md --proposed-version 1.0.0
 /skill-evolution evaluate --proposal proposal-id --cases cases.json
 /skill-evolution accept --proposal proposal-id --reason "Reviewed evaluation"
 /skill-evolution promote --proposal proposal-id --scope project --dry-run true
