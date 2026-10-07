@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
-import { assertFeedbackKind, createContentHash, EvolutionService, ObservationLog, OperationError, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
+import { assertFeedbackKind, createContentHash, EvolutionService, ObservationLog, OperationError, redactSensitiveText, renderFailuresMarkdown, proposeSkillChange, designPattern, evaluateProposal, reviewProposal, promoteProposal, rollbackSkill } from '@dsh-skill-evo/core'
 import { DshEvolutionAdapter } from '@dsh-skill-evo/dsh-adapter'
 
 export const name = 'dsh-skill-evo-bundle'
@@ -278,6 +278,19 @@ async function executeMaintenanceCommand(invocation, config) {
       })
       return { kind: 'success', text: JSON.stringify({ proposalId: result.proposal.id, status: result.proposal.status, report: result.reportPath }, null, 2) }
     }
+    if (action === 'design') {
+      const flags = parseFlags(words)
+      const candidateFile = requiredFlag(flags, 'candidate-file')
+      const candidateContent = await readFile(resolve(candidateFile), 'utf8')
+      const result = await designPattern(service, {
+        patternId: requiredFlag(flags, 'pattern'),
+        proposedVersion: requiredFlag(flags, 'proposed-version'),
+        ...(flags.skill === undefined ? {} : { skillName: flags.skill }),
+        ...(flags.output === undefined ? {} : { reportPath: resolve(flags.output) }),
+        designer: async () => candidateContent,
+      })
+      return { kind: 'success', text: JSON.stringify({ proposalId: result.proposal.id, status: result.proposal.status, report: result.reportPath }, null, 2) }
+    }
     if (action === 'evaluate') {
       const flags = parseFlags(words)
       const result = await evaluateProposal(service, {
@@ -315,7 +328,7 @@ async function executeMaintenanceCommand(invocation, config) {
       const record = await service.recordFeedback({ sessionId: flags.session ?? String(invocation.agent.session.id), skillName: flags.skill, kind: assertFeedbackKind(flags.kind ?? 'other'), note: flags.note ?? words.join(' '), source: 'user' })
       return { kind: 'success', text: `Feedback recorded: ${record.id}` }
     }
-    return { kind: 'error', text: 'Usage: /skill-evolution observe | failures | metrics | health | repair | feedback | propose | evaluate | accept | reject | defer | promote | rollback' }
+    return { kind: 'error', text: 'Usage: /skill-evolution observe | failures | metrics | health | repair | feedback | propose | design | evaluate | accept | reject | defer | promote | rollback' }
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
     return { kind: 'error', ...(code === undefined ? {} : { code }), text: error instanceof Error ? error.message : String(error) }
