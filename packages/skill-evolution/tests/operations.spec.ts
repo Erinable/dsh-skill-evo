@@ -220,6 +220,24 @@ describe('core maintenance operations', () => {
     service.versions.promote = original
   })
 
+  it('repairs a permanent publication mismatch by quarantining the raw journal', async () => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    const journal = { v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', proposalId: proposalRootId(proposalRef), from: { version: 'unversioned', contentHash: 'absent' }, to: { version: '1.1.0', contentHash: 'wrong-hash' }, startedAt: new Date().toISOString() }
+    const raw = `${JSON.stringify(journal, null, 2)}\n`
+    const journalPath = join(root, '.skill-evolution', 'publications', 'api-debugging.json')
+    await mkdir(join(root, '.skill-evolution', 'publications'), { recursive: true })
+    await writeFile(journalPath, raw, 'utf8')
+    const original = service.versions.recoverPublication
+    service.versions.recoverPublication = (async () => { throw new PublicationPermanentError('publication content does not match journal') }) as typeof original
+    const report = await service.repair()
+    service.versions.recoverPublication = original
+    expect(report.publications).toEqual([expect.objectContaining({ skillName: 'api-debugging', outcome: 'quarantined' })])
+    await expect(stat(journalPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    const quarantine = await readdir(join(root, '.skill-evolution', 'publications', 'quarantine'))
+    expect(quarantine).toHaveLength(1)
+    expect(JSON.parse(await readFile(join(root, '.skill-evolution', 'publications', 'quarantine', quarantine[0]!), 'utf8')).raw).toBe(raw)
+  })
+
   it('keeps one encoded root-keyed candidate directory when promoting a ledger record', async () => {
     const { root, service, proposalRef } = await acceptedProposal()
     await promoteProposal(service, { proposalRef, scope: 'project' })

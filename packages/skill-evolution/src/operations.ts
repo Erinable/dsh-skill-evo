@@ -258,7 +258,7 @@ export async function promoteProposal(service: EvolutionService, options: Promot
   const proposal = await resolveProposal(service, options.proposalRef)
   const supplied = options.evaluationPath === undefined ? options.evaluation : await readEvaluationFile(options.evaluationPath)
   if (options.dryRun === true) {
-    const artifact = await service.preparePromotion(proposal, supplied)
+    const artifact = await service.preparePromotion(proposal, supplied, scope)
     return { dryRun: true, proposal, evaluation: artifact }
   }
   await service.publishPromotion(proposal, supplied, scope, options.reason)

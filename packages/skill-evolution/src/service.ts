@@ -414,9 +414,6 @@ export class EvolutionService {
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
-    if (!isPatternScopeAllowed(proposal, scope)) {
-      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
-    }
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)
     if (latest?.status === 'promoted') {
@@ -425,7 +422,7 @@ export class EvolutionService {
       await this.versions.finalizePublication(proposal.skillName)
       return
     }
-    const artifact = await this.preparePromotion(proposal, evaluation)
+    const artifact = await this.preparePromotion(proposal, evaluation, scope)
     const current = await this.versions.readCurrent(proposal.skillName)
     const pending = await this.versions.pendingPublication(proposal.skillName)
     if (pending?.proposalId !== rootId) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
@@ -458,7 +455,10 @@ export class EvolutionService {
     await this.versions.finalizePublication(proposal.skillName)
   }
 
-  async preparePromotion(proposal: SkillProposal, evaluation?: SkillEvalResult | EvaluationArtifact): Promise<EvaluationArtifact> {
+  async preparePromotion(proposal: SkillProposal, evaluation?: SkillEvalResult | EvaluationArtifact, scope: PublicationScope = 'project'): Promise<EvaluationArtifact> {
+    if (!isPatternScopeAllowed(proposal, scope)) {
+      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
+    }
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(proposal.id))
     if (latest?.status === 'promoted') {
       const persisted = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
