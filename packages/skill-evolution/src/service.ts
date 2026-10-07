@@ -1,12 +1,12 @@
 import { join, basename } from 'node:path'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { createContentHash, isObservationValue, redactSensitiveText } from './events.js'
 import { fingerprintOf, ObservationLog, readCursor, resolveLayout, writeCursor } from './state-root.js'
 import { JsonlRecordStore } from './records.js'
 import { EvolutionWorkflow, type Designer } from './workflow.js'
 import { DEFAULT_EVALUATION_POLICY, evaluateCandidate, type EvaluateCandidateInput, type EvaluationRunner } from './evaluator.js'
 import { validateEvaluationPolicy } from './policy.js'
-import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot } from './proposal.js'
+import { assertCanTransition, latestProposalsByRoot, proposalRootId, assertProposalRoot, ProposalLedgerError } from './proposal.js'
 import { ProposalLedger } from './ledger.js'
 import { SkillVersionStore } from './lifecycle.js'
 import { aggregateMetrics, type EvolutionMetrics } from './metrics.js'
@@ -20,7 +20,7 @@ import { buildSkillWindows, type SkillWindow } from './skill-attribution.js'
 import type { ClassificationMemo, ClassificationMemoEntry, CorrectionClassifier, CorrectionClassificationMemoEntry, CorrectionEpisode, CorrectionPattern, FollowUpClassifier, FollowUpResolution } from './types.js'
 import { OperationError } from './errors.js'
 import { CORRECTION_POLICY_VERSION, CORRECTION_RULES_VERSION, correlateToolAttempts, episodeFromDraft, experienceForEpisode, groupPatterns, recognizeCorrections, validateEpisodeDraft, assessPattern, DEFAULT_CORRECTION_POLICY, isPatternScopeAllowed } from './correction.js'
-import { readPublication } from './publication.js'
+import { PublicationPermanentError, quarantinePublication, readPublication, removePublication } from './publication.js'
 import { createPatternProposal, patternDesignerInput, selectPatternTarget, validateEnvironmentNeutralCandidate } from './pattern-design.js'
 import type { PatternDesignerInput } from './workflow.js'
 import { checkPromotion, defaultPolicyVersion, resolvePromotionArtifact } from './promotion-check.js'
@@ -207,7 +207,7 @@ export class EvolutionService {
     const paths = this.layout.stores.filter(store => store.name !== 'observations').map(store => store.path)
     const jsonl: JsonlRepairResult[] = []
     const report = await repairEvolutionRoot(this.options.root, { jsonlPaths: paths, observationsPath: this.observations.filePath, layout: this.layout })
-    await this.repairPublications()
+    const publications = await this.repairPublications()
     await withLock(`${this.observations.filePath}.lock`, 'repair', async () => {
       jsonl.push(await repairJsonlFileUnlocked(this.observations.filePath, { parse: isObservationValue }))
       for (const path of await archivePaths(this.observations.filePath)) {
@@ -215,7 +215,7 @@ export class EvolutionService {
       }
     })
     await this.refreshDerived({ force: true })
-    return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true, publications: pendingPublications.map(item => ({ ...item, outcome: 'completed' })) }
+    return { ...report, jsonl: [...jsonl, ...report.jsonl], projectionCursorRebuilt: true, publications: publications.length > 0 ? publications : pendingPublications.map(item => ({ ...item, outcome: 'completed' })) }
   }
 
   private async publicationReports(): Promise<readonly Record<string, unknown>[]> {
@@ -230,27 +230,52 @@ export class EvolutionService {
     return reports
   }
 
-  private async repairPublications(): Promise<void> {
+  private async repairPublications(): Promise<readonly Record<string, unknown>[]> {
     let entries: string[] = []
-    try { entries = await readdir(this.layout.publicationsDir) } catch { return }
+    try { entries = await readdir(this.layout.publicationsDir) } catch { return [] }
+    const reports: Record<string, unknown>[] = []
     for (const entry of entries.filter(item => item.endsWith('.json'))) {
-      const skillName = basename(entry, '.json')
+      let journal: Awaited<ReturnType<typeof readPublication>>
       try {
-        const journal = await readPublication(join(this.layout.publicationsDir, entry))
+        journal = await readPublication(join(this.layout.publicationsDir, entry))
         if (journal === undefined) continue
         if (journal.operation === 'promote' && journal.proposalId !== undefined) {
           const proposal = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(journal.proposalId))
-          if (proposal !== undefined) {
-            await this.versions.recoverPublication(journal.skillName, true)
-            if (proposal.status === 'promoted') await this.ensurePromoteLedgerDecision(proposal)
-            else await this.completePromoteFromJournal(proposal, journal)
-            await this.versions.finalizePublication(journal.skillName)
-          }
+          if (proposal === undefined) throw new Error(`publication proposal ${journal.proposalId} is missing`)
+          await this.versions.recoverPublication(journal.skillName, true)
+          if (proposal.status === 'promoted') await this.ensurePromoteLedgerDecision(proposal)
+          else await this.completePromoteFromJournal(proposal, journal)
+          await this.versions.finalizePublication(journal.skillName)
         } else if (journal.operation === 'rollback') {
           await this.rollback(journal.skillName, journal.to.version)
         }
-      } catch (error) { throw error }
+        reports.push({ skillName: journal.skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt, outcome: 'completed' })
+      } catch (error) {
+        const permanent = this.isPermanentPublicationError(error)
+        let quarantined = false
+        if (permanent && journal !== undefined) {
+          const path = this.layout.publicationJournalPath(journal.skillName)
+          try {
+            const raw = await readFile(path, 'utf8')
+            await quarantinePublication(this.layout.publicationQuarantineDir, journal.skillName, raw, error, 'repair')
+            await removePublication(path)
+            quarantined = true
+          } catch { /* retain journal when isolation fails */ }
+        }
+        reports.push({
+          ...(journal === undefined ? {} : { skillName: journal.skillName, operation: journal.operation, proposalId: journal.proposalId, scope: journal.scope, fromVersion: journal.from.version, toVersion: journal.to.version, startedAt: journal.startedAt }),
+          outcome: quarantined ? 'quarantined' : 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
+    return reports
+  }
+
+  private isPermanentPublicationError(error: unknown): boolean {
+    return error instanceof PublicationPermanentError
+      || (error instanceof OperationError && error.code === 'publication-conflict')
+      || (error instanceof ProposalLedgerError && error.code === 'conflict')
   }
 
   async proposeChange(clusterId: string, designer: Designer): Promise<SkillProposal> {
@@ -382,16 +407,13 @@ export class EvolutionService {
     return (await this.ledger.transition(proposal, 'accepted', { reason, action: 'accepted', evidenceIds })).record
   }
 
-  async promote(
+  async publishPromotion(
     proposal: SkillProposal,
-    evaluation: SkillEvalResult,
+    evaluation: SkillEvalResult | EvaluationArtifact | undefined,
     scope: PublicationScope,
     reason = 'evaluation gate passed',
   ): Promise<void> {
     assertPublicationScope(scope)
-    if (!isPatternScopeAllowed(proposal, scope)) {
-      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
-    }
     const rootId = proposalRootId(proposal.id)
     const latest = latestProposalsByRoot(await this.proposals.readAll()).get(rootId)
     if (latest?.status === 'promoted') {
@@ -400,14 +422,18 @@ export class EvolutionService {
       await this.versions.finalizePublication(proposal.skillName)
       return
     }
-    if (proposal.status !== 'accepted') throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
-    const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
+    const artifact = await this.preparePromotion(proposal, evaluation, scope)
     const current = await this.versions.readCurrent(proposal.skillName)
     const pending = await this.versions.pendingPublication(proposal.skillName)
     if (pending?.proposalId !== rootId) checkPromotion({ proposal, artifact, current, policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
     const verifiedEvaluation = artifact.result
     const proposalId = rootId
-    await this.versions.promote(proposal, { scope, retainJournal: true })
+    try {
+      await this.versions.promote(proposal, { scope, retainJournal: true })
+    } catch (error) {
+      if (error instanceof PublicationPermanentError) throw new OperationError('publication-conflict', error.message, error)
+      throw error
+    }
     if (!(await this.observations.readAll()).some(item => item.id === `adoption:${proposalId}`)) await this.observations.append({
       id: `adoption:${proposalId}`,
       schemaVersion: 1,
@@ -429,6 +455,26 @@ export class EvolutionService {
     await this.versions.finalizePublication(proposal.skillName)
   }
 
+  async preparePromotion(proposal: SkillProposal, evaluation?: SkillEvalResult | EvaluationArtifact, scope: PublicationScope = 'project'): Promise<EvaluationArtifact> {
+    if (!isPatternScopeAllowed(proposal, scope)) {
+      throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
+    }
+    const latest = latestProposalsByRoot(await this.proposals.readAll()).get(proposalRootId(proposal.id))
+    if (latest?.status === 'promoted') {
+      const persisted = (await this.evaluations.readAll()).filter(item => item.proposalId === proposalRootId(proposal.id)).at(-1)
+      if (persisted !== undefined) return persisted
+    }
+    if (proposal.status !== 'accepted' && !(await this.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
+    const artifact = resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
+    const pending = await this.versions.pendingPublication(proposal.skillName)
+    if (pending?.proposalId !== proposalRootId(proposal.id)) checkPromotion({ proposal, artifact, current: await this.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(this.evaluationPolicy), policy: this.evaluationPolicy, now: Date.now() })
+    return artifact
+  }
+
+  async promote(proposal: SkillProposal, evaluation: SkillEvalResult, scope: PublicationScope, reason = 'evaluation gate passed'): Promise<void> {
+    return this.publishPromotion(proposal, evaluation, scope, reason)
+  }
+
   async verifyEvaluation(proposal: SkillProposal, evaluation: SkillEvalResult): Promise<EvaluationArtifact> {
     return resolvePromotionArtifact(await this.evaluations.readAll(), proposal, evaluation)
   }
@@ -441,7 +487,12 @@ export class EvolutionService {
     if (pending?.operation === 'rollback') {
       await this.versions.recoverPublication(skillName, true)
     } else if (before?.manifest.version !== version) {
-      await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
+      try {
+        await this.versions.rollback(skillName, version, { scope: 'project', retainJournal: true })
+      } catch (error) {
+        if (error instanceof PublicationPermanentError) throw new OperationError('publication-conflict', error.message, error)
+        throw error
+      }
     } else {
       const alreadyRolledBack = (await this.proposals.readAll()).filter(item => item.skillName === skillName && item.status === 'rolled-back' && item.proposedVersion === version).at(-1)
       if (alreadyRolledBack !== undefined) {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   EvolutionService,
   OperationError,
+  PublicationPermanentError,
   ProposalLedgerError,
   createProposal,
   evaluateProposal,
@@ -177,6 +178,64 @@ describe('core maintenance operations', () => {
     expect(published).toMatchObject({ promoted: true, version: '1.1.0', scope: 'project' })
     expect((await service.observations.readAll()).some(item => item.id === `adoption:${proposed.proposal.id}`)).toBe(true)
     expect((await service.proposals.readAll()).some(item => item.id === `${proposed.proposal.id}:promoted`)).toBe(true)
+  })
+
+  it('reruns a completed Promote through the shared publishPromotion seam without writes', async () => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    await promoteProposal(service, { proposalRef, scope: 'project' })
+    const before = {
+      observations: await service.observations.readAll(),
+      proposals: await service.proposals.readAll(),
+      decisions: await service.decisions.readAll(),
+      files: await readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8'),
+    }
+    await expect(promoteProposal(service, { proposalRef, scope: 'project' })).resolves.toMatchObject({ promoted: true, version: '1.1.0' })
+    expect(await service.observations.readAll()).toEqual(before.observations)
+    expect(await service.proposals.readAll()).toEqual(before.proposals)
+    expect(await service.decisions.readAll()).toEqual(before.decisions)
+    expect(await readFile(join(root, 'api-debugging', 'SKILL.md'), 'utf8')).toBe(before.files)
+  })
+
+  it('dry-run of an already promoted Proposal matches the idempotent real Promote', async () => {
+    const { service, proposalRef } = await acceptedProposal()
+    await promoteProposal(service, { proposalRef, scope: 'project' })
+    const before = await service.observations.readAll()
+    await expect(promoteProposal(service, { proposalRef, scope: 'project', dryRun: true })).resolves.toMatchObject({ dryRun: true })
+    expect(await service.observations.readAll()).toEqual(before)
+  })
+
+  it('maps a permanent Rollback publication mismatch to publication-conflict', async () => {
+    const { service } = await acceptedProposal()
+    const original = service.versions.rollback
+    service.versions.rollback = (async () => { throw new PublicationPermanentError('rollback target conflict') }) as typeof original
+    await expect(service.rollback('api-debugging', '1.0.0')).rejects.toMatchObject({ code: 'publication-conflict' })
+    service.versions.rollback = original
+  })
+
+  it('classifies a permanent publication mismatch as publication-conflict', async () => {
+    const { service, proposalRef } = await acceptedProposal()
+    const original = service.versions.promote
+    service.versions.promote = (async () => { throw new PublicationPermanentError('target manifest does not match journal') }) as typeof original
+    await expect(promoteProposal(service, { proposalRef, scope: 'project' })).rejects.toMatchObject({ code: 'publication-conflict' })
+    service.versions.promote = original
+  })
+
+  it('repairs a permanent publication mismatch by quarantining the raw journal', async () => {
+    const { root, service, proposalRef } = await acceptedProposal()
+    const journal = { v: 1, operation: 'promote', skillName: 'api-debugging', scope: 'project', proposalId: proposalRootId(proposalRef), from: { version: 'unversioned', contentHash: 'absent' }, to: { version: '1.1.0', contentHash: 'wrong-hash' }, startedAt: new Date().toISOString() }
+    const raw = `${JSON.stringify(journal, null, 2)}\n`
+    const journalPath = join(root, '.skill-evolution', 'publications', 'api-debugging.json')
+    await mkdir(join(root, '.skill-evolution', 'publications'), { recursive: true })
+    await writeFile(journalPath, raw, 'utf8')
+    const original = service.versions.recoverPublication
+    service.versions.recoverPublication = (async () => { throw new PublicationPermanentError('publication content does not match journal') }) as typeof original
+    const report = await service.repair()
+    service.versions.recoverPublication = original
+    expect(report.publications).toEqual([expect.objectContaining({ skillName: 'api-debugging', outcome: 'quarantined' })])
+    await expect(stat(journalPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    const quarantine = await readdir(join(root, '.skill-evolution', 'publications', 'quarantine'))
+    expect(quarantine).toHaveLength(1)
+    expect(JSON.parse(await readFile(join(root, '.skill-evolution', 'publications', 'quarantine', quarantine[0]!), 'utf8')).raw).toBe(raw)
   })
 
   it('keeps one encoded root-keyed candidate directory when promoting a ledger record', async () => {

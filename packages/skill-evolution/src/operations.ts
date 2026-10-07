@@ -256,17 +256,12 @@ export async function reviewProposal(service: EvolutionService, options: ReviewP
 export async function promoteProposal(service: EvolutionService, options: PromoteProposalOptions): Promise<PromoteResult> {
   const scope = assertScope(options.scope)
   const proposal = await resolveProposal(service, options.proposalRef)
-  if (!isPatternScopeAllowed(proposal, scope)) {
-    throw new OperationError('scope-not-allowed', `scope ${scope} is not allowed by ${DEFAULT_CORRECTION_POLICY.version}; allowed scopes: ${DEFAULT_CORRECTION_POLICY.allowedScopes.join(', ')}`)
+  const supplied = options.evaluationPath === undefined ? options.evaluation : await readEvaluationFile(options.evaluationPath)
+  if (options.dryRun === true) {
+    const artifact = await service.preparePromotion(proposal, supplied, scope)
+    return { dryRun: true, proposal, evaluation: artifact }
   }
-  if (proposal.status !== 'accepted' && !(await service.versions.hasPendingPublication(proposal.skillName))) throw new OperationError('invalid-transition', `proposal ${proposal.id} must be accepted before promotion`)
-  const artifact = options.evaluationPath === undefined
-    ? resolvePromotionArtifact(await service.evaluations.readAll(), proposal, options.evaluation)
-    : resolvePromotionArtifact(await service.evaluations.readAll(), proposal, await readEvaluationFile(options.evaluationPath))
-  const pendingPublication = await service.versions.pendingPublication(proposal.skillName)
-  if (pendingPublication?.proposalId !== proposalRootId(proposal.id)) checkPromotion({ proposal, artifact, current: await service.versions.readCurrent(proposal.skillName), policyVersion: defaultPolicyVersion(service.evaluationPolicy), policy: service.evaluationPolicy, now: Date.now() })
-  if (options.dryRun === true) return { dryRun: true, proposal, evaluation: artifact }
-  await service.promote(proposal, artifact.result, scope, options.reason)
+  await service.publishPromotion(proposal, supplied, scope, options.reason)
   return { promoted: true, skillName: proposal.skillName, version: proposal.proposedVersion, scope }
 }
 
