@@ -16,7 +16,7 @@ SKIL-189（父 SKIL-188，来源：架构扫描 SKIL-187 第 1 项 = SKIL-184 �
 
 | | CLI | bundle |
 |---|---|---|
-| 读派生记录 | `service.listFailures()`，一次 refresh | `service.refreshDerived()`，**再** `service.metrics()`：第二次 refresh，并全量读 Observation log、读当前 Skill 正文 |
+| 读派生记录 | `service.listFailures()`，一次 refresh | `service.refreshDerived()`，**再** `service.metrics()`：第二次 refresh，`metrics()` 里再全量读一次 Observation log（`service.ts:172`），并读当前 Skill 正文。refresh 本身每次都全量读 Observation log（`service.ts:547`），所以一次报告共读三遍 |
 | 渲染输入 | `renderFailuresMarkdown(records)`，没传第二个参数 | 在 core 外手工拼 5 个字段：`patterns`、`episodes`、`proposals`、`recognizerVersion`、`classifierFailures` |
 | Self-corrections 一节 | 没有 | 有 |
 | JSON | `--format json` 输出 `SkillFailureCase[]` | 无 |
@@ -102,7 +102,9 @@ SKIL-165 Task 6（R-33、R-34）要给 failures 报告加每个 Skill 的 window
 
 **默认答案：J1。** 采用默认答案，成员可推翻。
 
-理由：R-39 要求扩展已有 JSON 时只追加字段，数组改对象不满足；R-33 的每 case 权重和归因来源是 `SkillFailureCase` 上的追加字段（PR #113 / ADR-0027），在 J1 下会自然出现在数组元素里；每 Skill 汇总和全局数在 `metrics` JSON 里有（§3.5）。J1 不碰任何公开格式，是最容易回退的选择：以后真有调用方要整份报告，再按 J3 追加，J3 本身也是追加式的。成员改选 J2 时需要补一份 ADR，并通知 SKIL-165 改写 R-33 的 JSON 部分。
+理由：R-39 要求扩展已有 JSON 时只追加字段，数组改对象不满足；R-33 的每 case 权重和归因来源是 `SkillFailureCase` 上的追加字段（PR #113 / ADR-0027），在 J1 下会自然出现在数组元素里；每 Skill 汇总和全局数在 `metrics` JSON 里有（§3.6）。J1 不碰任何公开格式，是最容易回退的选择：以后真有调用方要整份报告，再按 J3 追加，J3 本身也是追加式的。成员改选 J2 时需要补一份 ADR，并通知 SKIL-165 改写 R-33 的 JSON 部分。
+
+**SKIL-165 的 spec 按 J1 读 R-33**：R-33「WHEN `failures` or `metrics` is rendered」里的每 Skill 汇总、全局数和未覆盖一节，落在 failures Markdown 和 metrics JSON 上；failures JSON 只多出每个 case 上的追加字段，不带汇总。
 
 ### 2.5 锁定「CLI 和 bundle 输出一致」的测试放在哪
 
@@ -199,16 +201,25 @@ export function renderFailuresReport(report: FailuresReport): string
 ### 3.4 service.ts
 
 ```ts
-/** 与 metrics() 共用的取数入口：refresh 一次，返回派生记录、proposals 和两个计数。 */
-private async readDerivedInputs(): Promise<{ readonly records: Awaited<ReturnType<EvolutionService['refreshDerived']>>; readonly proposals: readonly SkillProposal[]; readonly counters: FailuresReportInput['counters'] }>
-
-async failuresReport(options: { readonly now?: string } = {}): Promise<FailuresReport> {
-  const { records, proposals, counters } = await this.readDerivedInputs()
-  return buildFailuresReport({ records, proposals, counters, now: options.now ?? new Date().toISOString() })
+export interface DerivedReadOptions {
+  /** ISO 时刻，用于 correction 窗口评估（assessPattern 的 since、candidate）。缺省取一次墙钟。 */
+  readonly now?: string
 }
+
+/** 与 metrics() 共用的取数入口：refresh 一次，解析一次 now，返回派生记录、proposals、两个计数和 now。 */
+private async readDerivedInputs(options: DerivedReadOptions): Promise<{ readonly records: Awaited<ReturnType<EvolutionService['refreshDerived']>>; readonly proposals: readonly SkillProposal[]; readonly counters: FailuresReportInput['counters']; readonly now: string }>
+
+async failuresReport(options: DerivedReadOptions = {}): Promise<FailuresReport> {
+  const { records, proposals, counters, now } = await this.readDerivedInputs(options)
+  return buildFailuresReport({ records, proposals, counters, now })
+}
+
+async metrics(options: DerivedReadOptions = {}): Promise<EvolutionMetrics>   // 追加的可选参数
 ```
 
-- `metrics()` 改为先调 `readDerivedInputs()`，再像今天一样读 events、decisions、当前 Skill 正文，计数取自 `counters`。行为不变。
+- `readDerivedInputs()` 内部 `now = options.now ?? new Date().toISOString()`，是两个公开方法里唯一读墙钟的地方。
+- `metrics()` 改为先调 `readDerivedInputs(options)`，再像今天一样读 events、decisions、当前 Skill 正文；计数取自 `counters`，并把 `now` 传进 `aggregateMetrics` 的 correction 参数（今天它缺省时在 `metrics.ts:129` 自己取墙钟）。不传 `options` 时行为不变。
+- 为什么 `now` 也要同源：没有 promoted proposal 时，`assessments[].since = now - windowDays`（`correction.ts:122-124`），`candidate` 也取决于 `now`。两次调用各取一次墙钟，`since` 就相差几毫秒。R-34 的「同一份派生记录」只有在 `now` 也相同时才能用深度相等来验证。
 - `listFailures()` 保留（公开方法，测试在用）。
 - 今天 `readDerivedInputs()` 在 refresh 之后读两个私有字段。T4 合入后改成取 `this.projection.refresh()` 返回 view 里的 `records` 和 `counters`。只有这一处要跟着改，见 §5。
 - 只有 `metrics()` 和 `failuresReport()` 调用 `readDerivedInputs()`；R-34 的「同一份派生记录」靠这个单一入口保证。
@@ -232,7 +243,7 @@ bundle（`dsh-bundle/index.js:258-261`）：
 if (action === 'failures') return { kind: 'success', text: renderFailuresReport(await service.failuresReport()) }
 ```
 
-两边 import 的 `renderFailuresMarkdown` 如果不再使用就删掉，改为 import `renderFailuresReport`。参数解析的现有行为保持不变：`--format` 取 json 以外的值时照旧输出 Markdown。bundle 从每次 refresh 两次、全量读 Observation log，变成只 refresh 一次。
+两边 import 的 `renderFailuresMarkdown` 如果不再使用就删掉，改为 import `renderFailuresReport`。参数解析的现有行为保持不变：`--format` 取 json 以外的值时照旧输出 Markdown。bundle 每次报告从两次 refresh、三次 Observation log 全量读（两次 refresh 各一次，`metrics()` 自己 `service.ts:172` 一次），减到一次 refresh、一次全量读，并且不再读当前 Skill 正文。refresh 本身仍会全量读 Observation log（`service.ts:547`），这不是本票要解决的规模问题，不作为验收项。
 
 ### 3.6 SKIL-165 R-33 / R-34 的落点
 
@@ -256,7 +267,7 @@ SKIL-165 的落地方式：把 `FailuresReportInput.records` 从 `Pick<WorkflowS
 
 ### 4.2 service 层（放进 `tests/correction.spec.ts` 或新单测文件）
 
-5. 在已有记录的 store 上（一条显式反馈形成的 Failure case，再用 correction 测试的 session 辅助函数生成 episode 和 pattern；时间戳用相对 `Date.now()` 的近期时刻，保证在 30 天窗口内）：`(await service.failuresReport()).failures` 与 `await service.listFailures()` 深度相等；`report.corrections` 与 `(await service.metrics()).corrections` 深度相等。
+5. 在已有记录的 store 上（一条显式反馈形成的 Failure case，再用 correction 测试的 session 辅助函数生成 episode 和 pattern；时间戳用相对 `Date.now()` 的近期时刻，保证在 30 天窗口内）：取一个固定的 `now`（`new Date().toISOString()` 只算一次），`const report = await service.failuresReport({ now })`。断言 `report.failures` 与 `await service.listFailures()` 深度相等；`report.corrections` 与 `(await service.metrics({ now })).corrections` 深度相等；`report.corrections.assessments` 非空，确认比较的确实是带 `since` 的数据。两边必须传同一个 `now`：不传时各取一次墙钟，`since` 不同，深度相等必然失败（评审第 1 轮实测：两次调用相隔 5ms，`since` 相差 7ms）。
 
 ### 4.3 CLI（`tests/cli.spec.mjs`，补上 `failures`）
 
@@ -266,7 +277,16 @@ SKIL-165 的落地方式：把 `FailuresReportInput.records` 从 `Pick<WorkflowS
 
 ### 4.4 一致性锁定（`dsh-bundle/tests/bundle.spec.mjs`）
 
-9. 同一个 `dir`、同一个 `eventsPath`，先 seed 一条反馈 case，再用已有的 `seedCorrectionSessions` 生成 pattern。分别执行 bundle handler `failures`，以及 `spawn(process.execPath, [<bundle 包目录>/node_modules/@dsh-skill-evo/core/bin/dsh-skill-evolution.mjs, 'failures', '--root', dir, '--store', eventsPath])`。把两边的 `now: <ISO>` 归一成同一个占位后，断言 `cli.stdout === bundle.text + '\n'`（`console.log` 会多一个换行）。两边跑的是同一份 core 构建。
+9. 同一个 `dir`、同一个 `eventsPath`，先 seed 一条反馈 case，再用已有的 `seedCorrectionSessions` 生成 pattern。分别执行 bundle handler `failures`，以及 `spawn(process.execPath, [<bundle 包目录>/node_modules/@dsh-skill-evo/core/bin/dsh-skill-evolution.mjs, 'failures', '--root', dir, '--store', eventsPath])`。CLI 和 bundle 是两次独立运行，各取一次墙钟，所以 Policy 行的 `now: <ISO>` 和每条 pattern 行的 `since <ISO>`（`now - windowDays`，`report.ts:97`）都会不同。比较前把两边**所有** ISO 时刻替换成同一个占位：
+
+```js
+const normalize = text => text.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/gu, '<ISO>')
+assert.equal(normalize(cli.stdout), normalize(bundle.text) + '\n')   // console.log 多一个换行
+```
+
+再加两条断言：归一后的文本包含 `## Self-corrections`，并且至少有一行 pattern 行包含 `since <ISO>`，确认比较的确实是带 pattern 的输出。两边跑的是同一份 core 构建。seed 的时间戳用近期时刻，与窗口边界（30 天）相距远大于两次运行的间隔，`candidate` 的判定不会因为两次 `now` 不同而变化。
+
+不为这条测试给 CLI 或 bundle 加注入 `now` 的参数：那是新的公开接口，只为测试服务。
 
 ### 4.5 要跑的命令
 
@@ -287,7 +307,7 @@ README 里 `dsh-bundle/README.md:58-70` 关于 `failures` 的描述要同步一�
 
 ## 6. 迁移步骤（供 S2 拆 `specs/<slug>/tasks.md`）
 
-1. **core**：§3.1 抽出 `summarizeCorrections`（不改行为）；§3.2 新文件；§3.3 兼容包装；§3.4 新增 service 方法和私有取数方法。测试 1–5。验收：core 的 build 和测试通过，已有 metrics、correction、evolution 测试不改且全绿。
+1. **core**：§3.1 抽出 `summarizeCorrections`（不改行为）；§3.2 新文件；§3.3 兼容包装；§3.4 新增 service 方法、私有取数方法，以及 `metrics()` 的可选 `{ now? }` 参数。测试 1–5。验收：core 的 build 和测试通过，已有 metrics、correction、evolution 测试不改且全绿。
 2. **adapter**：§3.5 改 CLI 和 bundle，同步 README。测试 6–9。验收：bundle Markdown 与改动前逐字节相同（除 `now` 外）；CLI Markdown 多出 Self-corrections 一节；CLI JSON 与改动前逐字节相同。
 
 第 2 步依赖第 1 步。两步都含代码，按 delivery-contract 由成员合并。SKIL-165 Task 6 在这两步和 SKIL-183 T5 都合入之后开工，按 §3.6 落地。
@@ -298,7 +318,7 @@ README 里 `dsh-bundle/README.md:58-70` 关于 `failures` 的描述要同步一�
 
 - 落盘格式：报告不落盘，不新增 store，cursor 不变。
 - 公开输出格式：CLI `--format json` 保持数组（J1，§2.4），逐字节不变。CLI Markdown 多一节，是给人看的输出，不算契约，可以随时回退。成员如果改选 J2，那就是不可逆变更，届时补 ADR。
-- 公开接口：只有追加，包括 `EvolutionService.failuresReport`、`buildFailuresReport`、`renderFailuresReport`、`summarizeCorrections`，以及 `FailuresReport`、`FailuresReportInput`、`CorrectionPatternLine`、`CorrectionSummary`、`CorrectionSummaryInput` 这几个类型。`renderFailuresMarkdown` 签名和行为不变，只是标了 deprecated。`aggregateMetrics` 的参数在结构上等价。没有删除导出，没有不兼容的签名变更。
+- 公开接口：只有追加，包括 `EvolutionService.failuresReport`、`EvolutionService.metrics` 追加的可选参数 `{ now? }`（不传时行为不变）、`DerivedReadOptions` 类型、`buildFailuresReport`、`renderFailuresReport`、`summarizeCorrections`，以及 `FailuresReport`、`FailuresReportInput`、`CorrectionPatternLine`、`CorrectionSummary`、`CorrectionSummaryInput` 这几个类型。`renderFailuresMarkdown` 签名和行为不变，只是标了 deprecated。`aggregateMetrics` 的参数在结构上等价。没有删除导出，没有不兼容的签名变更。
 - 依赖方向：新增的边是 `service → failures-report → metrics / correction / types` 和 `report → failures-report`，都不成环。锁定测试放在 bundle 包里，依赖方向仍是 bundle → core（ADR-0014）。
 
 ## 8. 可逆的默认选择（采用默认答案，成员可推翻）
