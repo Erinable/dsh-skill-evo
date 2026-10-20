@@ -1,15 +1,48 @@
-import { mkdir, readdir, readFile, stat, writeFile, unlink } from 'node:fs/promises'
+import {
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+  unlink,
+} from 'node:fs/promises'
 import { rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
-import { createContentHash, parseObservation, serializeObservation } from './events.js'
-import { appendFrames, quarantinePath, readFrames, splitFrames } from './jsonl.js'
+import {
+  createContentHash,
+  parseObservation,
+  serializeObservation,
+} from './events.js'
+import {
+  appendFrames,
+  quarantinePath,
+  readFrames,
+  splitFrames,
+} from './jsonl.js'
 import { withLock } from './locking.js'
 import type { ObservationQuery } from './store.js'
 import type { RuntimeObservation } from './types.js'
 
 export type StoreRole = 'fact' | 'derived' | 'memo'
-export type StoreName = 'observations' | 'proposals' | 'decisions' | 'feedback' | 'evaluations' | 'classifications' | 'experiences' | 'follow-ups' | 'failures' | 'clusters' | 'diagnoses' | 'skill-windows' | 'episodes' | 'patterns'
+export type StoreName =
+  | 'observations'
+  | 'proposals'
+  | 'decisions'
+  | 'feedback'
+  | 'evaluations'
+  | 'classifications'
+  | 'emissions'
+  | 'experiences'
+  | 'follow-ups'
+  | 'failures'
+  | 'clusters'
+  | 'diagnoses'
+  | 'skill-windows'
+  | 'skill-posteriors'
+  | 'failure-attributions'
+  | 'episodes'
+  | 'patterns'
 
 export interface StoreDescriptor {
   readonly name: StoreName
@@ -25,6 +58,7 @@ export interface ProjectionCursor {
   readonly derivationKey?: string
   readonly correctionRejectedDrafts?: number
   readonly correctionClassifierFailures?: number
+  readonly judges?: Readonly<Record<string, string>>
 }
 
 export interface EvolutionLayout {
@@ -52,25 +86,51 @@ export interface RetentionResult {
   readonly bytes: number
 }
 
-export function resolveLayout(options: { readonly root: string; readonly observationStore?: string }): EvolutionLayout {
+export function resolveLayout(options: {
+  readonly root: string
+  readonly observationStore?: string
+}): EvolutionLayout {
   const stateDir = join(options.root, '.skill-evolution')
   const paths: Array<[StoreName, StoreRole, boolean, string]> = [
-    ['observations', 'fact', true, options.observationStore ?? join(stateDir, 'observations.jsonl')],
+    [
+      'observations',
+      'fact',
+      true,
+      options.observationStore ?? join(stateDir, 'observations.jsonl'),
+    ],
     ['proposals', 'fact', false, join(stateDir, 'proposals.jsonl')],
     ['decisions', 'fact', false, join(stateDir, 'decisions.jsonl')],
     ['feedback', 'fact', false, join(stateDir, 'feedback.jsonl')],
     ['evaluations', 'fact', false, join(stateDir, 'evaluations.jsonl')],
     ['classifications', 'memo', false, join(stateDir, 'classifications.jsonl')],
+    ['emissions', 'memo', false, join(stateDir, 'emissions.jsonl')],
     ['experiences', 'derived', false, join(stateDir, 'experiences.jsonl')],
     ['follow-ups', 'derived', false, join(stateDir, 'follow-ups.jsonl')],
     ['failures', 'derived', false, join(stateDir, 'failures.jsonl')],
     ['clusters', 'derived', false, join(stateDir, 'clusters.jsonl')],
     ['diagnoses', 'derived', false, join(stateDir, 'diagnoses.jsonl')],
     ['skill-windows', 'derived', false, join(stateDir, 'skill-windows.jsonl')],
+    [
+      'skill-posteriors',
+      'derived',
+      false,
+      join(stateDir, 'skill-posteriors.jsonl'),
+    ],
+    [
+      'failure-attributions',
+      'derived',
+      false,
+      join(stateDir, 'failure-attributions.jsonl'),
+    ],
     ['episodes', 'derived', false, join(stateDir, 'episodes.jsonl')],
     ['patterns', 'derived', false, join(stateDir, 'patterns.jsonl')],
   ]
-  const stores = paths.map(([name, role, projectionInput, path]) => ({ name, role, projectionInput, path }))
+  const stores = paths.map(([name, role, projectionInput, path]) => ({
+    name,
+    role,
+    projectionInput,
+    path,
+  }))
   return {
     root: options.root,
     stateDir,
@@ -80,34 +140,65 @@ export function resolveLayout(options: { readonly root: string; readonly observa
     proposalReportsDir: join(stateDir, 'proposals'),
     evaluationReportsDir: join(stateDir, 'evaluations'),
     publicationsDir: join(stateDir, 'publications'),
-    publicationJournalPath: (skillName: string) => join(stateDir, 'publications', `${skillName}.json`),
+    publicationJournalPath: (skillName: string) =>
+      join(stateDir, 'publications', `${skillName}.json`),
     publicationQuarantineDir: join(stateDir, 'publications', 'quarantine'),
     stores,
     observations: stores[0],
-    candidateDir: (proposalRootId: string) => join(stateDir, 'candidates', encodeURIComponent(proposalRootId)),
-    publicationLockPath: (skillName: string) => join(stateDir, 'locks', `${skillName}.lock`),
-    skillVersionsDir: (skillName: string) => join(options.root, skillName, 'versions'),
+    candidateDir: (proposalRootId: string) =>
+      join(stateDir, 'candidates', encodeURIComponent(proposalRootId)),
+    publicationLockPath: (skillName: string) =>
+      join(stateDir, 'locks', `${skillName}.lock`),
+    skillVersionsDir: (skillName: string) =>
+      join(options.root, skillName, 'versions'),
   }
 }
 
-export async function readCursor(path: string): Promise<ProjectionCursor | undefined> {
+export async function readCursor(
+  path: string,
+): Promise<ProjectionCursor | undefined> {
   try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as { count?: unknown; lastId?: unknown; fingerprint?: unknown; derivationKey?: unknown; correctionRejectedDrafts?: unknown; correctionClassifierFailures?: unknown }
-    if (typeof value.count !== 'number' || !Number.isFinite(value.count) || typeof value.fingerprint !== 'string') return undefined
+    const value = JSON.parse(await readFile(path, 'utf8')) as {
+      count?: unknown
+      lastId?: unknown
+      fingerprint?: unknown
+      derivationKey?: unknown
+      correctionRejectedDrafts?: unknown
+      correctionClassifierFailures?: unknown
+      judges?: unknown
+    }
+    if (
+      typeof value.count !== 'number' ||
+      !Number.isFinite(value.count) ||
+      typeof value.fingerprint !== 'string'
+    )
+      return undefined
     return {
       count: value.count,
       ...(typeof value.lastId === 'string' ? { lastId: value.lastId } : {}),
       fingerprint: value.fingerprint,
-      ...(typeof value.derivationKey === 'string' ? { derivationKey: value.derivationKey } : {}),
-      ...(typeof value.correctionRejectedDrafts === 'number' ? { correctionRejectedDrafts: value.correctionRejectedDrafts } : {}),
-      ...(typeof value.correctionClassifierFailures === 'number' ? { correctionClassifierFailures: value.correctionClassifierFailures } : {}),
+      ...(typeof value.derivationKey === 'string'
+        ? { derivationKey: value.derivationKey }
+        : {}),
+      ...(typeof value.correctionRejectedDrafts === 'number'
+        ? { correctionRejectedDrafts: value.correctionRejectedDrafts }
+        : {}),
+      ...(typeof value.correctionClassifierFailures === 'number'
+        ? { correctionClassifierFailures: value.correctionClassifierFailures }
+        : {}),
+      ...(typeof value.judges === 'object' && value.judges !== null
+        ? { judges: value.judges as Record<string, string> }
+        : {}),
     }
   } catch {
     return undefined
   }
 }
 
-export async function writeCursor(path: string, cursor: ProjectionCursor): Promise<void> {
+export async function writeCursor(
+  path: string,
+  cursor: ProjectionCursor,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
   await writeFile(temporary, `${JSON.stringify(cursor)}\n`, 'utf8')
@@ -121,19 +212,31 @@ export function fingerprintOf(ids: readonly string[]): string {
 export class ObservationLog {
   private initialized: Promise<void> | undefined
   private writeQueue: Promise<void> = Promise.resolve()
-  private readonly archiveCache = new Map<string, { readonly signature: string; readonly events: readonly RuntimeObservation[] }>()
+  private readonly archiveCache = new Map<
+    string,
+    {
+      readonly signature: string
+      readonly events: readonly RuntimeObservation[]
+    }
+  >()
 
   constructor(readonly filePath: string) {}
-  get currentPath(): string { return this.filePath }
+  get currentPath(): string {
+    return this.filePath
+  }
 
   async append(event: RuntimeObservation): Promise<boolean> {
-    return this.enqueue(() => withLock(`${this.filePath}.lock`, 'append', async () => {
-      await this.ensureInitialized()
-      const events = await this.readFacts()
-      if (events.some(item => item.id === event.id)) return false
-      await appendFrames(this.filePath, [serializeObservation(event).slice(0, -1)])
-      return true
-    }))
+    return this.enqueue(() =>
+      withLock(`${this.filePath}.lock`, 'append', async () => {
+        await this.ensureInitialized()
+        const events = await this.readFacts()
+        if (events.some((item) => item.id === event.id)) return false
+        await appendFrames(this.filePath, [
+          serializeObservation(event).slice(0, -1),
+        ])
+        return true
+      }),
+    )
   }
 
   async appendMany(events: readonly RuntimeObservation[]): Promise<number> {
@@ -150,18 +253,26 @@ export class ObservationLog {
   }
 
   async query(query: ObservationQuery = {}): Promise<RuntimeObservation[]> {
-    return (await this.readAll()).filter(event => (
-      (query.sessionId === undefined || event.sessionId === query.sessionId)
-      && (query.taskId === undefined || event.taskId === query.taskId)
-      && (query.skillName === undefined || event.skill?.name === query.skillName)
-      && (query.kind === undefined || event.kind === query.kind)
-      && (query.since === undefined || event.occurredAt >= query.since)
-      && (query.until === undefined || event.occurredAt <= query.until)
-    ))
+    return (await this.readAll()).filter(
+      (event) =>
+        (query.sessionId === undefined ||
+          event.sessionId === query.sessionId) &&
+        (query.taskId === undefined || event.taskId === query.taskId) &&
+        (query.skillName === undefined ||
+          event.skill?.name === query.skillName) &&
+        (query.kind === undefined || event.kind === query.kind) &&
+        (query.since === undefined || event.occurredAt >= query.since) &&
+        (query.until === undefined || event.occurredAt <= query.until),
+    )
   }
 
-  async rotate(options: { readonly maxBytes: number; readonly retentionDays?: number }): Promise<RetentionResult> {
-    return withLock(`${this.filePath}.lock`, 'rotate', async () => rotateFile(this.filePath, options))
+  async rotate(options: {
+    readonly maxBytes: number
+    readonly retentionDays?: number
+  }): Promise<RetentionResult> {
+    return withLock(`${this.filePath}.lock`, 'rotate', async () =>
+      rotateFile(this.filePath, options),
+    )
   }
 
   private async readFacts(): Promise<RuntimeObservation[]> {
@@ -179,10 +290,20 @@ export class ObservationLog {
       let events = cached?.events
       if (cached?.signature !== signature) {
         const { lines, tail } = await readFrames(path)
-        if (tail.length > 0) throw new Error(`invalid observation archive (unterminated line): ${path}`)
+        if (tail.length > 0)
+          throw new Error(
+            `invalid observation archive (unterminated line): ${path}`,
+          )
         const parsed: RuntimeObservation[] = []
         for (const line of lines) {
-          try { parsed.push(parseObservation(line)) } catch (error) { throw new Error(`invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }) }
+          try {
+            parsed.push(parseObservation(line))
+          } catch (error) {
+            throw new Error(
+              `invalid observation archive ${path}: ${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            )
+          }
         }
         events = parsed
         this.archiveCache.set(path, { signature, events })
@@ -190,14 +311,17 @@ export class ObservationLog {
       for (const event of events ?? []) addUnique(result, seen, event)
     }
     const current = await readFrames(this.filePath)
-    for (const line of current.lines) addUnique(result, seen, parseObservation(line))
+    for (const line of current.lines)
+      addUnique(result, seen, parseObservation(line))
     return result
   }
 
   private async ensureInitialized(): Promise<void> {
     this.initialized ??= (async () => {
       await mkdir(dirname(this.filePath), { recursive: true })
-      try { await stat(this.filePath) } catch (error) {
+      try {
+        await stat(this.filePath)
+      } catch (error) {
         if (!isMissingFile(error)) throw error
         await writeFile(this.filePath, '', 'utf8')
       }
@@ -207,7 +331,10 @@ export class ObservationLog {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.writeQueue.then(operation, operation)
-    this.writeQueue = result.then(() => undefined, () => undefined)
+    this.writeQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
     return result
   }
 }
@@ -215,18 +342,31 @@ export class ObservationLog {
 export async function archivePaths(path: string): Promise<string[]> {
   const dir = join(dirname(path), 'archive')
   const prefix = `${basename(path)}.`
-  const pattern = new RegExp(`^${escapeRegExp(basename(path))}\\.\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.\\d+\\.jsonl$`)
-  const entries = await readdir(dir).catch(error => isMissingFile(error) ? [] : Promise.reject(error))
-  const candidates = entries.filter(name => name.startsWith(prefix) && pattern.test(name)).sort()
-  const files = await Promise.all(candidates.map(async name => {
-    const info = await stat(join(dir, name)).catch(() => undefined)
-    return info?.isFile() === true ? join(dir, name) : undefined
-  }))
+  const pattern = new RegExp(
+    `^${escapeRegExp(basename(path))}\\.\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.\\d+\\.jsonl$`,
+  )
+  const entries = await readdir(dir).catch((error) =>
+    isMissingFile(error) ? [] : Promise.reject(error),
+  )
+  const candidates = entries
+    .filter((name) => name.startsWith(prefix) && pattern.test(name))
+    .sort()
+  const files = await Promise.all(
+    candidates.map(async (name) => {
+      const info = await stat(join(dir, name)).catch(() => undefined)
+      return info?.isFile() === true ? join(dir, name) : undefined
+    }),
+  )
   return files.filter((value): value is string => value !== undefined)
 }
 
-export async function rotateFile(path: string, options: { readonly maxBytes: number; readonly retentionDays?: number }): Promise<RetentionResult> {
-  const current = await stat(path).catch(error => isMissingFile(error) ? undefined : Promise.reject(error))
+export async function rotateFile(
+  path: string,
+  options: { readonly maxBytes: number; readonly retentionDays?: number },
+): Promise<RetentionResult> {
+  const current = await stat(path).catch((error) =>
+    isMissingFile(error) ? undefined : Promise.reject(error),
+  )
   const archiveDir = join(dirname(path), 'archive')
   await mkdir(archiveDir, { recursive: true })
   let rotated: string | undefined
@@ -239,7 +379,10 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
       invalidQuarantine = quarantinePath(path)
       await writeFile(invalidQuarantine, tail)
     }
-    rotated = join(archiveDir, `${basename(path)}.${new Date().toISOString().replaceAll(':', '-')}.${process.pid}.jsonl`)
+    rotated = join(
+      archiveDir,
+      `${basename(path)}.${new Date().toISOString().replaceAll(':', '-')}.${process.pid}.jsonl`,
+    )
     const temporary = `${rotated}.tmp-${process.pid}-${randomUUID()}`
     await writeFile(temporary, complete)
     await rename(temporary, rotated)
@@ -250,21 +393,46 @@ export async function rotateFile(path: string, options: { readonly maxBytes: num
     const cutoff = Date.now() - options.retentionDays * 86_400_000
     for (const archive of await archivePaths(path)) {
       const info = await stat(archive)
-      if (info.isFile() && info.mtimeMs < cutoff) { await unlink(archive); deleted.push(archive) }
+      if (info.isFile() && info.mtimeMs < cutoff) {
+        await unlink(archive)
+        deleted.push(archive)
+      }
     }
   }
   const size = await stat(path).catch(() => undefined)
-  return { ...(rotated === undefined ? {} : { rotated }), ...(invalidQuarantine === undefined ? {} : { invalidQuarantine }), deleted, bytes: size?.size ?? 0 }
+  return {
+    ...(rotated === undefined ? {} : { rotated }),
+    ...(invalidQuarantine === undefined ? {} : { invalidQuarantine }),
+    deleted,
+    bytes: size?.size ?? 0,
+  }
 }
 
-function addUnique(result: RuntimeObservation[], seen: Set<string>, event: RuntimeObservation): void {
+function addUnique(
+  result: RuntimeObservation[],
+  seen: Set<string>,
+  event: RuntimeObservation,
+): void {
   if (seen.has(event.id)) return
   seen.add(event.id)
   result.push(event)
 }
 
-function isMissingFile(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT' }
-function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
-function archiveSignature(info: { readonly ino: number; readonly size: number; readonly mtimeMs: number }): string {
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  )
+}
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+function archiveSignature(info: {
+  readonly ino: number
+  readonly size: number
+  readonly mtimeMs: number
+}): string {
   return `${info.ino}:${info.size}:${info.mtimeMs}`
 }
